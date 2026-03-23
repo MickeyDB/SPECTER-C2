@@ -207,7 +207,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             let serve = ServeDir::new(dir)
                 .append_index_html_on_directories(true);
             let web_routes: axum::Router = axum::Router::new()
-                .fallback_service(serve);
+                .nest_service("/ui", serve);
             builder
                 .add_routes(web_routes.into())
                 .add_service(grpc_web_svc)
@@ -236,7 +236,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             let serve = ServeDir::new(dir)
                 .append_index_html_on_directories(true);
             let web_routes: axum::Router = axum::Router::new()
-                .fallback_service(serve);
+                .nest_service("/ui", serve);
             builder
                 .add_routes(web_routes.into())
                 .add_service(grpc_web_svc)
