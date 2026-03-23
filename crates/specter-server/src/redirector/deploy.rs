@@ -231,15 +231,36 @@ fn resolve_module_dir(
 }
 
 /// Build the `.tfvars.json` values from a config.
+///
+/// Each Terraform module has its own expected variable names, so we map the
+/// generic `RedirectorConfig` fields to the provider-specific variables.
 fn build_tfvars(config: &RedirectorConfig) -> serde_json::Value {
-    serde_json::json!({
-        "redirector_id": config.id,
-        "domain": config.domain,
-        "alternative_domains": config.alternative_domains,
-        "backend_url": config.backend_url,
-        "profile_id": config.filtering_rules.profile_id,
-        "decoy_response": config.filtering_rules.decoy_response,
-    })
+    match (&config.redirector_type, &config.provider) {
+        // Azure App Service redirector expects: target_url, app_name, resource_group_name, location
+        (RedirectorType::VPS, RedirectorProvider::Azure) => {
+            // Derive a valid app name from the redirector name (lowercase, alphanumeric + hyphens)
+            let app_name = config
+                .name
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+                .collect::<String>();
+            serde_json::json!({
+                "target_url": config.backend_url,
+                "app_name": app_name,
+                "resource_group_name": format!("rg-specter-{}", config.id.chars().take(8).collect::<String>()),
+            })
+        }
+        // Default: pass generic vars used by most modules
+        _ => serde_json::json!({
+            "redirector_id": config.id,
+            "domain": config.domain,
+            "alternative_domains": config.alternative_domains,
+            "backend_url": config.backend_url,
+            "profile_id": config.filtering_rules.profile_id,
+            "decoy_response": config.filtering_rules.decoy_response,
+        }),
+    }
 }
 
 /// Execute a terraform command, returning an error if it fails.
@@ -255,11 +276,21 @@ async fn run_terraform(
         work_dir.display()
     );
 
+    // Build the full argument list, injecting -state for plan/apply/destroy/output
+    let state_path = work_dir.join("terraform.tfstate");
+    let state_flag = format!("-state={}", state_path.display());
+    let subcmd = args.first().copied().unwrap_or("");
+    let needs_state = matches!(subcmd, "apply" | "destroy" | "plan" | "output");
+
+    let mut full_args: Vec<&str> = args.to_vec();
+    if needs_state {
+        full_args.push(&state_flag);
+    }
+
     let output = Command::new("terraform")
-        .args(args)
+        .args(&full_args)
         .current_dir(module_dir)
         .env("TF_DATA_DIR", work_dir.join(".terraform"))
-        .env("TF_STATE", work_dir.join("terraform.tfstate"))
         .output()
         .await
         .map_err(|e| RedirectorError::TerraformError(format!("failed to spawn terraform: {e}")))?;
@@ -468,6 +499,32 @@ mod tests {
         assert_eq!(vars["backend_url"], "https://ts:443");
         assert_eq!(vars["profile_id"], "profile-abc");
         assert_eq!(vars["alternative_domains"][0], "alt.example.com");
+    }
+
+    #[test]
+    fn test_build_tfvars_azure_appservice() {
+        let config = RedirectorConfig {
+            id: "redir-002".into(),
+            name: "my-azure-redir".into(),
+            redirector_type: RedirectorType::VPS,
+            provider: RedirectorProvider::Azure,
+            domain: "redir.example.com".into(),
+            alternative_domains: vec![],
+            tls_cert_mode: super::super::TlsCertMode::ProviderManaged,
+            backend_url: "https://ts:8443".into(),
+            filtering_rules: super::super::FilteringRules {
+                profile_id: "p1".into(),
+                decoy_response: "nope".into(),
+            },
+            health_check_interval: 60,
+            auto_rotate_on_block: false,
+            fronting: None,
+        };
+
+        let vars = build_tfvars(&config);
+        assert_eq!(vars["target_url"], "https://ts:8443");
+        assert_eq!(vars["app_name"], "my-azure-redir");
+        assert!(vars["resource_group_name"].as_str().unwrap().starts_with("rg-specter-"));
     }
 
     #[tokio::test]
