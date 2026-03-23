@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file specter/v1/listeners.proto.
  */
 export const file_specter_v1_listeners: GenFile = /*@__PURE__*/
-  fileDesc("ChpzcGVjdGVyL3YxL2xpc3RlbmVycy5wcm90bxIKc3BlY3Rlci52MSK2AQoITGlzdGVuZXISCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIUCgxiaW5kX2FkZHJlc3MYAyABKAkSDAoEcG9ydBgEIAEoDRIQCghwcm90b2NvbBgFIAEoCRIqCgZzdGF0dXMYBiABKA4yGi5zcGVjdGVyLnYxLkxpc3RlbmVyU3RhdHVzEi4KCmNyZWF0ZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIlsKFUNyZWF0ZUxpc3RlbmVyUmVxdWVzdBIMCgRuYW1lGAEgASgJEhQKDGJpbmRfYWRkcmVzcxgCIAEoCRIMCgRwb3J0GAMgASgNEhAKCHByb3RvY29sGAQgASgJIkAKFkNyZWF0ZUxpc3RlbmVyUmVzcG9uc2USJgoIbGlzdGVuZXIYASABKAsyFC5zcGVjdGVyLnYxLkxpc3RlbmVyIhYKFExpc3RMaXN0ZW5lcnNSZXF1ZXN0IkAKFUxpc3RMaXN0ZW5lcnNSZXNwb25zZRInCglsaXN0ZW5lcnMYASADKAsyFC5zcGVjdGVyLnYxLkxpc3RlbmVyIiIKFFN0YXJ0TGlzdGVuZXJSZXF1ZXN0EgoKAmlkGAEgASgJIj8KFVN0YXJ0TGlzdGVuZXJSZXNwb25zZRImCghsaXN0ZW5lchgBIAEoCzIULnNwZWN0ZXIudjEuTGlzdGVuZXIiIQoTU3RvcExpc3RlbmVyUmVxdWVzdBIKCgJpZBgBIAEoCSI+ChRTdG9wTGlzdGVuZXJSZXNwb25zZRImCghsaXN0ZW5lchgBIAEoCzIULnNwZWN0ZXIudjEuTGlzdGVuZXIqawoOTGlzdGVuZXJTdGF0dXMSHwobTElTVEVORVJfU1RBVFVTX1VOU1BFQ0lGSUVEEAASGwoXTElTVEVORVJfU1RBVFVTX1JVTk5JTkcQARIbChdMSVNURU5FUl9TVEFUVVNfU1RPUFBFRBACYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("ChpzcGVjdGVyL3YxL2xpc3RlbmVycy5wcm90bxIKc3BlY3Rlci52MSK2AQoITGlzdGVuZXISCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIUCgxiaW5kX2FkZHJlc3MYAyABKAkSDAoEcG9ydBgEIAEoDRIQCghwcm90b2NvbBgFIAEoCRIqCgZzdGF0dXMYBiABKA4yGi5zcGVjdGVyLnYxLkxpc3RlbmVyU3RhdHVzEi4KCmNyZWF0ZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIlsKFUNyZWF0ZUxpc3RlbmVyUmVxdWVzdBIMCgRuYW1lGAEgASgJEhQKDGJpbmRfYWRkcmVzcxgCIAEoCRIMCgRwb3J0GAMgASgNEhAKCHByb3RvY29sGAQgASgJIkAKFkNyZWF0ZUxpc3RlbmVyUmVzcG9uc2USJgoIbGlzdGVuZXIYASABKAsyFC5zcGVjdGVyLnYxLkxpc3RlbmVyIhYKFExpc3RMaXN0ZW5lcnNSZXF1ZXN0IkAKFUxpc3RMaXN0ZW5lcnNSZXNwb25zZRInCglsaXN0ZW5lcnMYASADKAsyFC5zcGVjdGVyLnYxLkxpc3RlbmVyIiIKFFN0YXJ0TGlzdGVuZXJSZXF1ZXN0EgoKAmlkGAEgASgJIj8KFVN0YXJ0TGlzdGVuZXJSZXNwb25zZRImCghsaXN0ZW5lchgBIAEoCzIULnNwZWN0ZXIudjEuTGlzdGVuZXIiIQoTU3RvcExpc3RlbmVyUmVxdWVzdBIKCgJpZBgBIAEoCSI+ChRTdG9wTGlzdGVuZXJSZXNwb25zZRImCghsaXN0ZW5lchgBIAEoCzIULnNwZWN0ZXIudjEuTGlzdGVuZXIiIwoVRGVsZXRlTGlzdGVuZXJSZXF1ZXN0EgoKAmlkGAEgASgJIhgKFkRlbGV0ZUxpc3RlbmVyUmVzcG9uc2UqawoOTGlzdGVuZXJTdGF0dXMSHwobTElTVEVORVJfU1RBVFVTX1VOU1BFQ0lGSUVEEAASGwoXTElTVEVORVJfU1RBVFVTX1JVTk5JTkcQARIbChdMSVNURU5FUl9TVEFUVVNfU1RPUFBFRBACYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message specter.v1.Listener
@@ -207,6 +207,36 @@ export type StopListenerResponse = Message<"specter.v1.StopListenerResponse"> & 
  */
 export const StopListenerResponseSchema: GenMessage<StopListenerResponse> = /*@__PURE__*/
   messageDesc(file_specter_v1_listeners, 8);
+
+/**
+ * @generated from message specter.v1.DeleteListenerRequest
+ */
+export type DeleteListenerRequest = Message<"specter.v1.DeleteListenerRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message specter.v1.DeleteListenerRequest.
+ * Use `create(DeleteListenerRequestSchema)` to create a new message.
+ */
+export const DeleteListenerRequestSchema: GenMessage<DeleteListenerRequest> = /*@__PURE__*/
+  messageDesc(file_specter_v1_listeners, 9);
+
+/**
+ * @generated from message specter.v1.DeleteListenerResponse
+ */
+export type DeleteListenerResponse = Message<"specter.v1.DeleteListenerResponse"> & {
+};
+
+/**
+ * Describes the message specter.v1.DeleteListenerResponse.
+ * Use `create(DeleteListenerResponseSchema)` to create a new message.
+ */
+export const DeleteListenerResponseSchema: GenMessage<DeleteListenerResponse> = /*@__PURE__*/
+  messageDesc(file_specter_v1_listeners, 10);
 
 /**
  * @generated from enum specter.v1.ListenerStatus

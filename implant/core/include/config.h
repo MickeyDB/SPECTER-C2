@@ -80,7 +80,16 @@ typedef struct _IMPLANT_CONFIG {
     QWORD          kill_date;          /* FILETIME: 100-ns since 1601     */
     DWORD          profile_id;
     DWORD          checkin_count;      /* Incremented each check-in       */
+    DWORD          evasion_flags;      /* Bitmask of enabled evasion mods */
 } IMPLANT_CONFIG;
+
+/* ------------------------------------------------------------------ */
+/*  Evasion flag constants                                             */
+/* ------------------------------------------------------------------ */
+
+#define EVASION_FLAG_MODULE_OVERLOAD   0x01
+#define EVASION_FLAG_PDATA_REGISTER    0x02
+#define EVASION_FLAG_NTCONTINUE_ENTRY  0x04
 
 /* ------------------------------------------------------------------ */
 /*  Config blob header (appended after PIC binary by build_config.py)  */

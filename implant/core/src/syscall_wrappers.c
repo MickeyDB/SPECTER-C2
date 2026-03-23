@@ -202,3 +202,23 @@ NTSTATUS spec_NtSetInformationThread(HANDLE thread,
 NTSTATUS spec_NtTestAlert(void) {
     return evasion_syscall(get_evasion_ctx(), HASH_NTTESTALERT);
 }
+
+/* ------------------------------------------------------------------ */
+/*  NtCreateSection                                                    */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtCreateSection(PHANDLE section, ULONG access,
+    POBJECT_ATTRIBUTES oa, PLARGE_INTEGER max_size,
+    ULONG page_protect, ULONG alloc_attributes, HANDLE file) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTCREATESECTION,
+        section, access, oa, max_size, page_protect, alloc_attributes, file);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtContinue                                                         */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtContinue(PVOID context, BOOL raise_alert) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTCONTINUE,
+        context, raise_alert);
+}

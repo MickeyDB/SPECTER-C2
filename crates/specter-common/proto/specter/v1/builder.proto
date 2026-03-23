@@ -25,6 +25,8 @@ message GeneratePayloadRequest {
   string service_name = 8;
   // Stagers: download URL for payload retrieval.
   string stager_url = 9;
+  // Evasion features (module overloading, .pdata, NtContinue).
+  EvasionConfig evasion = 10;
 }
 
 message ChannelEndpoint {
@@ -43,6 +45,17 @@ message ObfuscationConfig {
   bool junk_code_insertion = 3;
   uint32 junk_density = 4;
   bool control_flow_flattening = 5;
+  bool xor_encryption = 6;
+}
+
+// Evasion features toggled at build time and applied at runtime by the implant.
+message EvasionConfig {
+  // Load implant into file-backed memory section (NtCreateSection + NtMapViewOfSection).
+  bool module_overloading = 1;
+  // Register .pdata exception handling data with the OS (RtlAddFunctionTable).
+  bool pdata_registration = 2;
+  // Use NtContinue to transfer execution with a synthetic clean call stack.
+  bool ntcontinue_entry = 3;
 }
 
 message YaraWarning {

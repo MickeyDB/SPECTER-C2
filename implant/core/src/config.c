@@ -177,6 +177,9 @@ IMPLANT_CONFIG *cfg_get(IMPLANT_CONTEXT *ctx) {
     return (IMPLANT_CONFIG *)ctx->config;
 }
 
+/* Forward declaration for TLV parser used in cfg_update */
+static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len);
+
 /* ================================================================== */
 /*  cfg_update — signed config update from teamserver                  */
 /* ================================================================== */
@@ -209,18 +212,63 @@ NTSTATUS cfg_update(IMPLANT_CONTEXT *ctx, const BYTE *data, DWORD len) {
     if (diff != 0)
         return STATUS_ACCESS_DENIED;
 
-    /* Apply update (clamp to struct size) */
-    if (payload_len > sizeof(IMPLANT_CONFIG))
-        payload_len = sizeof(IMPLANT_CONFIG);
+    /* Check if payload has TLV extension data after the struct */
+    DWORD struct_len = payload_len;
+    DWORD tlv_len = 0;
+    if (struct_len > sizeof(IMPLANT_CONFIG)) {
+        tlv_len = struct_len - (DWORD)sizeof(IMPLANT_CONFIG);
+        struct_len = (DWORD)sizeof(IMPLANT_CONFIG);
+    }
 
     /* Preserve implant private key — never updated remotely */
     BYTE saved_privkey[32];
     spec_memcpy(saved_privkey, cfg->implant_privkey, 32);
 
-    spec_memcpy(cfg, payload, payload_len);
+    spec_memcpy(cfg, payload, struct_len);
 
     spec_memcpy(cfg->implant_privkey, saved_privkey, 32);
     spec_memset(saved_privkey, 0, 32);
+
+    /* Parse TLV extension fields appended after the struct */
+    if (tlv_len > 0)
+        cfg_patch_tlv(cfg, payload + sizeof(IMPLANT_CONFIG), tlv_len);
+
+    return STATUS_SUCCESS;
+}
+
+/* ================================================================== */
+/*  cfg_patch_tlv — apply TLV-encoded partial config updates           */
+/* ================================================================== */
+
+/* TLV field IDs for config patch messages */
+#define CFG_TLV_EVASION_FLAGS  0x88
+
+static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) {
+    DWORD pos = 0;
+
+    while (pos + 3 <= len) {
+        BYTE fid = data[pos];
+        WORD vlen = (WORD)data[pos + 1] | ((WORD)data[pos + 2] << 8);
+        pos += 3;
+
+        if (pos + vlen > len)
+            break;  /* Truncated TLV — stop parsing */
+
+        const BYTE *val = data + pos;
+
+        switch (fid) {
+        case CFG_TLV_EVASION_FLAGS:
+            if (vlen >= 4)
+                cfg->evasion_flags = *(const DWORD *)val;
+            break;
+
+        default:
+            /* Unknown field — skip */
+            break;
+        }
+
+        pos += vlen;
+    }
 
     return STATUS_SUCCESS;
 }

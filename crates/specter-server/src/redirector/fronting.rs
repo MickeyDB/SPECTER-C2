@@ -161,6 +161,7 @@ mod tests {
             },
             health_check_interval: 60,
             auto_rotate_on_block: true,
+            azure_location: "westeurope".to_string(),
             fronting,
         }
     }

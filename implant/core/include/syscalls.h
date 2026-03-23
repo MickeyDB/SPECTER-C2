@@ -57,6 +57,8 @@ typedef struct _SYSCALL_TABLE {
 #define HASH_NTCREATENAMEDPIPEFILE      0xBF0D4289
 #define HASH_NTFSCONTROLFILE            0xCBD6E982
 #define HASH_NTTESTALERT                0xB67D903F
+#define HASH_NTCREATESECTION            0xC441B530
+#define HASH_NTCONTINUE                 0x819B886C
 
 /* ------------------------------------------------------------------ */
 /*  Syscall engine API                                                  */
@@ -160,5 +162,11 @@ NTSTATUS spec_NtQueueApcThread(HANDLE thread, PVOID apc_routine,
     PVOID arg1, PVOID arg2, PVOID arg3);
 
 NTSTATUS spec_NtTestAlert(void);
+
+NTSTATUS spec_NtCreateSection(PHANDLE section, ULONG access,
+    POBJECT_ATTRIBUTES oa, PLARGE_INTEGER max_size,
+    ULONG page_protect, ULONG alloc_attributes, HANDLE file);
+
+NTSTATUS spec_NtContinue(PVOID context, BOOL raise_alert);
 
 #endif /* SYSCALLS_H */

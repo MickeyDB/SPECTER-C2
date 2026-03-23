@@ -40,6 +40,8 @@ static const DWORD g_required_hashes[] = {
     HASH_NTWAITFORSINGLEOBJECT,
     HASH_NTQUEUEAPCTHREAD,
     HASH_NTOPENSECTION,
+    HASH_NTCREATESECTION,
+    HASH_NTCONTINUE,
 };
 
 #define REQUIRED_COUNT (sizeof(g_required_hashes) / sizeof(g_required_hashes[0]))

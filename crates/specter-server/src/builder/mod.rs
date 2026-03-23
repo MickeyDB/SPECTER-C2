@@ -3,7 +3,10 @@ pub mod formats;
 pub mod obfuscation;
 pub mod yara;
 
-pub use config_gen::{generate_config, ChannelConfig, GeneratedConfig, SleepConfig};
+pub use config_gen::{
+    generate_config, generate_config_with_evasion, ChannelConfig, EvasionFlags, GeneratedConfig,
+    SleepConfig,
+};
 pub use formats::{
     format_dll, format_dotnet, format_hta_stager, format_ps1_stager, format_raw,
     format_service_exe, list_formats, FormatInfo,
@@ -192,8 +195,36 @@ impl PayloadBuilder {
         sleep_config: &SleepConfig,
         kill_date: Option<i64>,
     ) -> Result<BuildResult, BuilderError> {
-        // Generate config
-        let gen = generate_config(profile, server_pubkey, channels, sleep_config, kill_date)?;
+        self.build_with_evasion(
+            format,
+            profile,
+            server_pubkey,
+            channels,
+            sleep_config,
+            kill_date,
+            EvasionFlags::default(),
+        )
+    }
+
+    pub fn build_with_evasion(
+        &self,
+        format: OutputFormat,
+        profile: &Profile,
+        server_pubkey: &PublicKey,
+        channels: &[ChannelConfig],
+        sleep_config: &SleepConfig,
+        kill_date: Option<i64>,
+        evasion: EvasionFlags,
+    ) -> Result<BuildResult, BuilderError> {
+        // Generate config with evasion flags
+        let gen = generate_config_with_evasion(
+            profile,
+            server_pubkey,
+            channels,
+            sleep_config,
+            kill_date,
+            evasion,
+        )?;
 
         let build_id = uuid::Uuid::new_v4().to_string();
 

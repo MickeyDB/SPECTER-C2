@@ -414,6 +414,7 @@ mod tests {
             },
             health_check_interval: 60,
             auto_rotate_on_block: false,
+            azure_location: "westeurope".to_string(),
             fronting: None,
         };
 
@@ -491,6 +492,7 @@ mod tests {
             },
             health_check_interval: 30,
             auto_rotate_on_block: true,
+            azure_location: "westeurope".to_string(),
             fronting: None,
         };
 
@@ -519,13 +521,17 @@ mod tests {
             },
             health_check_interval: 60,
             auto_rotate_on_block: false,
+            azure_location: "westeurope".to_string(),
             fronting: None,
         };
 
         let vars = build_tfvars(&config);
-        assert_eq!(vars["target_url"], "https://ts:8443");
-        assert_eq!(vars["app_name"], "my-azure-redir");
-        assert!(vars["resource_group_name"].as_str().unwrap().starts_with("rg-specter-"));
+        assert_eq!(vars["redirector_id"], "redir-002");
+        assert_eq!(vars["domain"], "redir.example.com");
+        assert_eq!(vars["backend_url"], "https://ts:8443");
+        assert_eq!(vars["profile_id"], "p1");
+        assert_eq!(vars["azure_location"], "westeurope");
+        assert_eq!(vars["decoy_response"], "nope");
     }
 
     #[tokio::test]

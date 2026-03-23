@@ -141,6 +141,10 @@ typedef union _LARGE_INTEGER {
 #define SECTION_QUERY           0x0001
 #define SECTION_ALL_ACCESS      0x000F
 
+/* Section allocation attributes */
+#define SEC_IMAGE               0x01000000
+#define SEC_COMMIT              0x08000000
+
 /* ------------------------------------------------------------------ */
 /*  File access & creation constants                                   */
 /* ------------------------------------------------------------------ */
@@ -176,5 +180,89 @@ typedef enum _SECTION_INHERIT {
     ViewShare = 1,
     ViewUnmap = 2,
 } SECTION_INHERIT;
+
+/* ------------------------------------------------------------------ */
+/*  CONTEXT64 — Thread context for x86-64 (16-byte aligned)           */
+/* ------------------------------------------------------------------ */
+
+#define CONTEXT_FULL            0x10000F
+
+typedef struct __attribute__((aligned(16))) _CONTEXT64 {
+    /* Register parameter home addresses */
+    QWORD P1Home;
+    QWORD P2Home;
+    QWORD P3Home;
+    QWORD P4Home;
+    QWORD P5Home;
+    QWORD P6Home;
+
+    /* Control flags */
+    DWORD ContextFlags;
+    DWORD MxCsr;
+
+    /* Segment registers */
+    WORD  SegCs;
+    WORD  SegDs;
+    WORD  SegEs;
+    WORD  SegFs;
+    WORD  SegGs;
+    WORD  SegSs;
+    DWORD EFlags;
+
+    /* Debug registers */
+    QWORD Dr0;
+    QWORD Dr1;
+    QWORD Dr2;
+    QWORD Dr3;
+    QWORD Dr6;
+    QWORD Dr7;
+
+    /* Integer registers */
+    QWORD Rax;
+    QWORD Rcx;
+    QWORD Rdx;
+    QWORD Rbx;
+    QWORD Rsp;
+    QWORD Rbp;
+    QWORD Rsi;
+    QWORD Rdi;
+    QWORD R8;
+    QWORD R9;
+    QWORD R10;
+    QWORD R11;
+    QWORD R12;
+    QWORD R13;
+    QWORD R14;
+    QWORD R15;
+
+    /* Program counter */
+    QWORD Rip;
+
+    /* Floating point state (512 bytes XSAVE area) */
+    BYTE  FltSave[512];
+
+    /* Vector registers */
+    QWORD VectorRegister[52];
+    QWORD VectorControl;
+
+    /* Special debug control */
+    QWORD DebugControl;
+    QWORD LastBranchToRip;
+    QWORD LastBranchFromRip;
+    QWORD LastExceptionToRip;
+    QWORD LastExceptionFromRip;
+} CONTEXT64, *PCONTEXT64;
+
+/* ------------------------------------------------------------------ */
+/*  RUNTIME_FUNCTION — .pdata entry for x64 exception handling         */
+/* ------------------------------------------------------------------ */
+
+/* Note: RUNTIME_FUNCTION is already defined in evasion.h — this is
+   provided here for files that include ntdefs.h but not evasion.h.
+   Guard against double definition. */
+#ifndef _RUNTIME_FUNCTION_DEFINED
+#define _RUNTIME_FUNCTION_DEFINED
+/* Defined in evasion.h */
+#endif
 
 #endif /* NTDEFS_H */

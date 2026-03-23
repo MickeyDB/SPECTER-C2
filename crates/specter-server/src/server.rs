@@ -132,7 +132,16 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
     webhook_manager.start_forwarding(event_bus.subscribe());
     tracing::info!("Webhook event forwarding started");
 
-    // 9. gRPC server with auth interceptor + gRPC-Web support
+    // 9. Payload builder — loads specter.bin and template stubs from implant/build/
+    let builder_config = crate::builder::BuilderConfig {
+        template_dir: std::path::PathBuf::from("implant/build"),
+    };
+    let payload_builder = Arc::new(
+        crate::builder::builder_init(&builder_config)
+            .expect("Failed to initialize payload builder"),
+    );
+
+    // 10. gRPC server with auth interceptor + gRPC-Web support
     let mut grpc_service = SpecterGrpcService::new(
         Arc::clone(&session_manager),
         Arc::clone(&task_dispatcher),
@@ -144,6 +153,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         Arc::clone(&audit_log),
         Arc::clone(&webhook_manager),
         Arc::clone(&campaign_manager),
+        Arc::clone(&payload_builder),
         Arc::clone(&presence_manager),
         Arc::clone(&chat_service),
         Arc::clone(&report_generator),

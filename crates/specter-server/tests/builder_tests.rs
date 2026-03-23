@@ -175,6 +175,7 @@ fn string_encryption_changes_blob() {
         junk_code_insertion: false,
         junk_density: 8,
         control_flow_flattening: false,
+        xor_encryption: false,
     };
 
     let r1 = obfuscate(&blob, &settings).unwrap();
@@ -203,6 +204,7 @@ fn obfuscation_with_junk_insertion_modifies_size() {
         junk_code_insertion: true,
         junk_density: 32,
         control_flow_flattening: false,
+        xor_encryption: false,
     };
 
     let result = obfuscate(&blob, &settings).unwrap();

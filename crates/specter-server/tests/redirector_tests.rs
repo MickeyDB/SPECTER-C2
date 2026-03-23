@@ -34,6 +34,7 @@ fn sample_config() -> RedirectorConfig {
         },
         health_check_interval: 30,
         auto_rotate_on_block: true,
+        azure_location: "westeurope".to_string(),
         fronting: None,
     }
 }

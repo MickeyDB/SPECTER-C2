@@ -15,14 +15,25 @@ SECTIONS
         *(.rdata*)           /* Read-only data (strings, constants) */
         *(.data*)            /* Initialized data */
         *(.bss*)             /* Uninitialized data */
+
+        /* .pdata (RUNTIME_FUNCTION array) and .xdata (UNWIND_INFO)
+           are kept in the PIC blob so the implant can register them
+           with RtlAddFunctionTable for proper stack unwinding. */
+        . = ALIGN(8);
+        __pdata_start = .;
+        *(.pdata)
+        __pdata_end = .;
+
+        . = ALIGN(8);
+        __xdata_start = .;
+        *(.xdata)
+        __xdata_end = .;
     }
 
     /DISCARD/ :
     {
         *(.reloc)
         *(.rsrc)
-        *(.pdata)
-        *(.xdata)
         *(.debug*)
         *(.comment)
         *(.note*)

