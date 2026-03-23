@@ -5,7 +5,7 @@ import { useAuth } from './useAuth'
 import { attemptMtlsAuth } from './mtls'
 
 export function LoginPage() {
-  const { loginWithToken, isAuthenticating, error } = useAuth()
+  const { loginWithToken, loginWithCert, isAuthenticating, error } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/dashboard'
@@ -26,8 +26,8 @@ export function LoginPage() {
     const baseUrl = import.meta.env.DEV ? '' : window.location.origin
     const result = await attemptMtlsAuth(baseUrl)
     if (result.success && result.token && result.username) {
-      // mTLS succeeded — use the returned token to authenticate via gRPC
-      const success = await loginWithToken(result.username, result.token)
+      // mTLS succeeded — store the token directly (no password-based gRPC auth needed)
+      const success = await loginWithCert(result.username, result.token)
       if (success) {
         navigate(from, { replace: true })
         return

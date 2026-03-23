@@ -1,7 +1,9 @@
 import { useEffect, useCallback } from 'react'
+import { create } from '@bufbuild/protobuf'
 import { useAuthStore } from '@/store/authStore'
 import type { AuthMethod } from '@/store/authStore'
 import { specterClient } from '@/lib/client'
+import { OperatorSchema } from '@/gen/specter/v1/operators_pb'
 import { AuthContext } from './AuthContext'
 import type { AuthContextValue } from './AuthContext'
 
@@ -25,6 +27,22 @@ export function AuthProvider({ children }: AuthProviderProps) {
       return false
     } catch (err) {
       store.setError(err instanceof Error ? err.message : 'Authentication failed')
+      return false
+    }
+  }, [store])
+
+  // mTLS cert login — the /auth/mtls endpoint already issued a valid bearer token,
+  // so we just store it and fetch operator info with it.
+  const loginWithCert = useCallback(async (username: string, token: string): Promise<boolean> => {
+    store.setAuthenticating(true)
+    try {
+      const method: AuthMethod = 'mtls'
+      // Create a placeholder operator and store the token so gRPC calls work
+      const op = create(OperatorSchema, { id: '', username, role: 0 })
+      store.setAuthenticated(op, token, method)
+      return true
+    } catch (err) {
+      store.setError(err instanceof Error ? err.message : 'Certificate authentication failed')
       return false
     }
   }, [store])
@@ -70,6 +88,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const value: AuthContextValue = {
     loginWithToken,
+    loginWithCert,
     loginWithOAuth,
     logout,
     operator: store.operator,
