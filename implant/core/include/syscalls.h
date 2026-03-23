@@ -58,7 +58,7 @@ typedef struct _SYSCALL_TABLE {
 #define HASH_NTFSCONTROLFILE            0xCBD6E982
 #define HASH_NTTESTALERT                0xB67D903F
 #define HASH_NTCREATESECTION            0xC441B530
-#define HASH_NTCONTINUE                 0x819B886C
+#define HASH_NTCONTINUE                 0x8197216C
 
 /* ------------------------------------------------------------------ */
 /*  Syscall engine API                                                  */

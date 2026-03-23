@@ -20,7 +20,8 @@
       "Bash(grep -r \"specterClient\\\\.\" web/src/pages/*.tsx)",
       "Bash(grep -r \"specterClient\\\\.\" /c/Users/localuser/Documents/SPECTER-C2/web/src/pages/*.tsx)",
       "Bash(grep -r \"DeleteListener\" /c/Users/localuser/Documents/SPECTER-C2/web/src/gen/specter/v1/*.ts)",
-      "Bash(python3 compute_hashes.py)"
+      "Bash(python3 compute_hashes.py)",
+      "Bash(python3 -c \":*)"
     ]
   }
 }

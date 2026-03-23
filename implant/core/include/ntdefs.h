@@ -182,76 +182,13 @@ typedef enum _SECTION_INHERIT {
 } SECTION_INHERIT;
 
 /* ------------------------------------------------------------------ */
-/*  CONTEXT64 — Thread context for x86-64 (16-byte aligned)           */
+/*  CONTEXT64 — defined in sleep.h (canonical definition).             */
+/*  Include sleep.h for CONTEXT64.  Only define CONTEXT_FULL here.     */
 /* ------------------------------------------------------------------ */
 
+#ifndef CONTEXT_FULL
 #define CONTEXT_FULL            0x10000F
-
-typedef struct __attribute__((aligned(16))) _CONTEXT64 {
-    /* Register parameter home addresses */
-    QWORD P1Home;
-    QWORD P2Home;
-    QWORD P3Home;
-    QWORD P4Home;
-    QWORD P5Home;
-    QWORD P6Home;
-
-    /* Control flags */
-    DWORD ContextFlags;
-    DWORD MxCsr;
-
-    /* Segment registers */
-    WORD  SegCs;
-    WORD  SegDs;
-    WORD  SegEs;
-    WORD  SegFs;
-    WORD  SegGs;
-    WORD  SegSs;
-    DWORD EFlags;
-
-    /* Debug registers */
-    QWORD Dr0;
-    QWORD Dr1;
-    QWORD Dr2;
-    QWORD Dr3;
-    QWORD Dr6;
-    QWORD Dr7;
-
-    /* Integer registers */
-    QWORD Rax;
-    QWORD Rcx;
-    QWORD Rdx;
-    QWORD Rbx;
-    QWORD Rsp;
-    QWORD Rbp;
-    QWORD Rsi;
-    QWORD Rdi;
-    QWORD R8;
-    QWORD R9;
-    QWORD R10;
-    QWORD R11;
-    QWORD R12;
-    QWORD R13;
-    QWORD R14;
-    QWORD R15;
-
-    /* Program counter */
-    QWORD Rip;
-
-    /* Floating point state (512 bytes XSAVE area) */
-    BYTE  FltSave[512];
-
-    /* Vector registers */
-    QWORD VectorRegister[52];
-    QWORD VectorControl;
-
-    /* Special debug control */
-    QWORD DebugControl;
-    QWORD LastBranchToRip;
-    QWORD LastBranchFromRip;
-    QWORD LastExceptionToRip;
-    QWORD LastExceptionFromRip;
-} CONTEXT64, *PCONTEXT64;
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  RUNTIME_FUNCTION — .pdata entry for x64 exception handling         */

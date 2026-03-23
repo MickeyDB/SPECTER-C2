@@ -16,6 +16,7 @@
 
 #include "specter.h"
 #include "ntdefs.h"
+#include "sleep.h"
 #include "syscalls.h"
 #include "evasion.h"
 #include "peb.h"
