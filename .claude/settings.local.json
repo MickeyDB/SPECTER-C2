@@ -10,7 +10,8 @@
       "Bash(cargo test:*)",
       "Bash(npx tsc:*)",
       "Bash(npm run:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(cargo check:*)"
     ]
   }
 }

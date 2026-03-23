@@ -3,6 +3,7 @@ use std::sync::Arc;
 use hyper::header;
 use tonic::transport::Server;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::services::ServeDir;
 
 use specter_common::proto::specter::v1::specter_service_server::SpecterServiceServer;
 
@@ -174,6 +175,11 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         tracing::info!("Serving Web UI from {web_dir} at /ui/");
     }
 
+    // Build a function that creates the combined gRPC + static-file router.
+    // We use axum::Router as the top-level service so we can add a fallback
+    // for serving the Web UI static files alongside gRPC-Web.
+    let web_dir = cfg.web_ui_dir.clone();
+
     if let Some(ref ca) = ca {
         // mTLS mode: configure TLS on the gRPC server
         let hostnames = vec![cfg.bind.clone(), "localhost".to_string()];
@@ -192,13 +198,27 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             interceptor,
         ));
 
-        Server::builder()
+        let mut builder = Server::builder()
             .tls_config(tls_config)?
             .accept_http1(true)
-            .layer(cors)
-            .add_service(grpc_web_svc)
-            .serve(grpc_addr)
-            .await?;
+            .layer(cors);
+
+        if let Some(ref dir) = web_dir {
+            let serve = ServeDir::new(dir)
+                .append_index_html_on_directories(true);
+            let web_routes: axum::Router = axum::Router::new()
+                .fallback_service(serve);
+            builder
+                .add_routes(web_routes.into())
+                .add_service(grpc_web_svc)
+                .serve(grpc_addr)
+                .await?;
+        } else {
+            builder
+                .add_service(grpc_web_svc)
+                .serve(grpc_addr)
+                .await?;
+        }
     } else {
         // Dev-mode: plain gRPC with token auth
         let interceptor = AuthInterceptor::new(auth_service.token_store(), cfg.dev_mode);
@@ -208,12 +228,26 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             interceptor,
         ));
 
-        Server::builder()
+        let mut builder = Server::builder()
             .accept_http1(true)
-            .layer(cors)
-            .add_service(grpc_web_svc)
-            .serve(grpc_addr)
-            .await?;
+            .layer(cors);
+
+        if let Some(ref dir) = web_dir {
+            let serve = ServeDir::new(dir)
+                .append_index_html_on_directories(true);
+            let web_routes: axum::Router = axum::Router::new()
+                .fallback_service(serve);
+            builder
+                .add_routes(web_routes.into())
+                .add_service(grpc_web_svc)
+                .serve(grpc_addr)
+                .await?;
+        } else {
+            builder
+                .add_service(grpc_web_svc)
+                .serve(grpc_addr)
+                .await?;
+        }
     }
 
     Ok(())
