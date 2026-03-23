@@ -13,7 +13,9 @@
       "WebSearch",
       "Bash(cargo check:*)",
       "Bash(grep -rn \"add_routes\\\\|Routes::new\\\\|RoutesBuilder\\\\|impl.*Into.*Routes.*for\" ~/.cargo/registry/src/*/tonic-0.12.3/src/transport/server/)",
-      "Bash(grep -n \"impl.*From.*for Routes\\\\|impl.*Into.*Routes\\\\|pub fn new\" ~/.cargo/registry/src/*/tonic-0.12.3/src/transport/server/service/router.rs)"
+      "Bash(grep -n \"impl.*From.*for Routes\\\\|impl.*Into.*Routes\\\\|pub fn new\" ~/.cargo/registry/src/*/tonic-0.12.3/src/transport/server/service/router.rs)",
+      "Bash(grep -l \"profile\\\\|Profile\" /c/Users/localuser/Documents/SPECTER-C2/web/src/store/*.ts)",
+      "Bash(xargs grep:*)"
     ]
   }
 }

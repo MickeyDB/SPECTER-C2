@@ -148,15 +148,18 @@ function parsePreview(content: string): { get: HttpPreview; post: HttpPreview } 
   return result
 }
 
-function parseTimingFromYaml(content: string): { sleep: number; jitter: number } {
-  const result = { sleep: 60, jitter: 25 }
+function parseTimingFromYaml(content: string): { sleep: number; jitter: number; distribution: string } {
+  const result = { sleep: 60, jitter: 25, distribution: 'uniform' }
   const lines = content.split('\n')
   for (const line of lines) {
     const trimmed = line.trim()
-    const sleepMatch = trimmed.match(/^sleep:\s*(\d+)/)
+    // Support both schema names
+    const sleepMatch = trimmed.match(/^(?:sleep|callback_interval):\s*(\d+)/)
     if (sleepMatch) result.sleep = parseInt(sleepMatch[1], 10)
-    const jitterMatch = trimmed.match(/^jitter:\s*(\d+)/)
+    const jitterMatch = trimmed.match(/^(?:jitter|jitter_percent):\s*(\d+)/)
     if (jitterMatch) result.jitter = parseInt(jitterMatch[1], 10)
+    const distMatch = trimmed.match(/^jitter_distribution:\s*(\w+)/)
+    if (distMatch) result.distribution = distMatch[1].toLowerCase()
   }
   return result
 }
@@ -272,7 +275,7 @@ function HttpPreviewPanel({ content }: { content: string }) {
             <span>Sleep: {timing.sleep}s</span>
             <span>Jitter: {timing.jitter}%</span>
           </div>
-          <TimingHistogram sleep={timing.sleep} jitter={timing.jitter} />
+          <TimingHistogram sleep={timing.sleep} jitter={timing.jitter} distribution={timing.distribution} />
           <div className="mt-1 flex justify-between text-[10px] text-specter-muted">
             <span>{Math.round(timing.sleep * (1 - timing.jitter / 100))}s</span>
             <span>{Math.round(timing.sleep * (1 + timing.jitter / 100))}s</span>
@@ -296,25 +299,45 @@ function HttpPreviewPanel({ content }: { content: string }) {
   )
 }
 
-function TimingHistogram({ sleep, jitter }: { sleep: number; jitter: number }) {
+function TimingHistogram({ sleep, jitter, distribution = 'uniform' }: { sleep: number; jitter: number; distribution?: string }) {
   const bars = useMemo(() => {
     const min = sleep * (1 - jitter / 100)
     const max = sleep * (1 + jitter / 100)
     const range = max - min
     const bucketCount = 20
     const buckets = new Array(bucketCount).fill(0)
+    const n = 2000
 
-    // Deterministic distribution of beacon intervals (uniform approximation)
-    for (let i = 0; i < 1000; i++) {
-      const u = i / 1000
-      const val = min + range * u
+    for (let i = 0; i < n; i++) {
+      const u = i / n
+      let val: number
+      switch (distribution) {
+        case 'gaussian': {
+          // Box-Muller approximation centered at sleep with stddev = range/6
+          const u1 = (i + 1) / (n + 1)
+          const u2 = ((i * 7 + 3) % n + 1) / (n + 1)
+          const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
+          val = sleep + z * (range / 6)
+          break
+        }
+        case 'pareto': {
+          // Pareto-like: heavy tail toward longer intervals
+          const alpha = 3
+          val = min + range * (1 - Math.pow(1 - u, 1 / alpha))
+          break
+        }
+        default:
+          // Uniform
+          val = min + range * u
+      }
+      val = Math.max(min, Math.min(max, val))
       const idx = Math.min(bucketCount - 1, Math.floor(((val - min) / range) * bucketCount))
       buckets[idx]++
     }
 
     const maxVal = Math.max(...buckets)
     return buckets.map((v) => (maxVal > 0 ? v / maxVal : 0))
-  }, [sleep, jitter])
+  }, [sleep, jitter, distribution])
 
   return (
     <div className="flex h-12 items-end gap-px">
