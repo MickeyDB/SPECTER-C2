@@ -298,8 +298,8 @@ export function Listeners() {
             setListeners((prev) => prev.map((l) => (l.id === id ? res.listener! : l)))
           }
         }
-      } catch {
-        // Refresh the list to get accurate state
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to toggle listener')
         await fetchListeners()
       } finally {
         setTogglingIds((prev) => {

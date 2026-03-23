@@ -245,11 +245,19 @@ impl std::str::FromStr for RedirectorState {
 pub struct RedirectorOrchestrator {
     pool: SqlitePool,
     event_bus: Arc<EventBus>,
+    infra_root: std::path::PathBuf,
 }
 
 impl RedirectorOrchestrator {
     pub fn new(pool: SqlitePool, event_bus: Arc<EventBus>) -> Self {
-        Self { pool, event_bus }
+        // Default infra root is relative to the working directory.
+        // resolve_module_dir appends terraform/modules/<name> to this path.
+        let infra_root = std::path::PathBuf::from("infrastructure");
+        Self {
+            pool,
+            event_bus,
+            infra_root,
+        }
     }
 
     /// Deploy a new redirector from configuration. Inserts it into DB as
@@ -287,6 +295,41 @@ impl RedirectorOrchestrator {
                 "Redirector '{}' ({}) created in Provisioning state",
                 config.name, config.id
             ),
+        });
+
+        // Spawn Terraform deployment in the background so the RPC returns immediately.
+        let pool = self.pool.clone();
+        let event_bus = Arc::clone(&self.event_bus);
+        let config_clone = config.clone();
+        let infra_root = self.infra_root.clone();
+        let id = config.id.clone();
+
+        tokio::spawn(async move {
+            match deploy::deploy_terraform(&pool, &event_bus, &config_clone, &infra_root).await {
+                Ok(outputs) => {
+                    tracing::info!(
+                        "Redirector '{}' deployed successfully: {:?}",
+                        id,
+                        outputs.keys().collect::<Vec<_>>()
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Redirector '{}' deployment failed: {e}", id);
+                    // Transition to Failed state
+                    let _ = sqlx::query(
+                        "UPDATE redirectors SET state = ?1, updated_at = ?2 WHERE id = ?3",
+                    )
+                    .bind(RedirectorState::Failed.to_string())
+                    .bind(Utc::now().timestamp())
+                    .bind(&id)
+                    .execute(&pool)
+                    .await;
+
+                    event_bus.publish(SpecterEvent::Generic {
+                        message: format!("Redirector '{id}' deployment failed: {e}"),
+                    });
+                }
+            }
         });
 
         Ok(config.id.clone())
