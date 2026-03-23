@@ -337,7 +337,7 @@ impl PayloadBuilder {
                 buf
             };
 
-            if config_with_len.len() > max_size + 20 {
+            if config_with_len.len() > max_size {
                 return Err(BuilderError::Config(format!(
                     "config blob ({} bytes) exceeds template capacity ({} bytes)",
                     config_with_len.len(),
@@ -345,18 +345,22 @@ impl PayloadBuilder {
                 )));
             }
 
-            // Patch: overwrite marker + size + reserved area
-            let patch_region = marker_pos..marker_pos + 20 + max_size;
-            let patch_end = patch_region.end.min(payload.len());
-            let patch_start = patch_region.start;
+            // Preserve the marker (16 bytes) and max_size field (4 bytes) so the
+            // stub can find them at runtime. Write config data into the reserved
+            // area starting at marker_pos + 20.
+            let data_start = marker_pos + 20; // after marker(16) + max_size(4)
+            let data_end = data_start + max_size;
+            let data_end = data_end.min(payload.len());
 
-            // Zero the region first, then write config
-            for byte in &mut payload[patch_start..patch_end] {
+            // Zero the data region first
+            for byte in &mut payload[data_start..data_end] {
                 *byte = 0;
             }
-            let write_end = (patch_start + config_with_len.len()).min(patch_end);
-            payload[patch_start..write_end]
-                .copy_from_slice(&config_with_len[..write_end - patch_start]);
+
+            // Write [config_len: u32][config_blob] into the data region
+            let write_end = (data_start + config_with_len.len()).min(data_end);
+            payload[data_start..write_end]
+                .copy_from_slice(&config_with_len[..write_end - data_start]);
         } else {
             // No marker found — append config to the end (fallback)
             let config_len = gen.config_blob.len() as u32;
@@ -603,7 +607,8 @@ transform:
             .unwrap();
 
         // The marker region should be patched (no more "CCCC..." at offset 64)
-        assert_ne!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
+        // Marker is preserved so the stub can find it at runtime
+        assert_eq!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
         // Payload size should be same as stub (in-place patching)
         assert_eq!(result.payload.len(), stub.len());
     }
@@ -626,7 +631,8 @@ transform:
             &SleepConfig::default(),
             None,
         );
-        assert!(result.is_err());
+        // Falls back to generated PE stubs when no template exists
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -737,7 +743,8 @@ transform:
             .unwrap();
 
         // Config marker should be patched
-        assert_ne!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
+        // Marker is preserved so the stub can find it at runtime
+        assert_eq!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
 
         // PIC blob size should be written at offset 2060
         let pic_size = u32::from_le_bytes([
