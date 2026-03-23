@@ -49,7 +49,7 @@ Implant: `/Users/mdebaets/Documents/SPECTER/implant/`
     - Chat widget: floating chat panel (bottom-right corner), supports global and per-session channels
     - Shared cursor visibility (optional): when two operators interact with the same session, show the other operator's cursor position in the terminal
 
-- [ ] Implement engagement report generation:
+- [x] Implement engagement report generation:
   - Create `crates/specter-server/src/reports/mod.rs`:
     - **Report generator** that produces engagement reports from the task timeline and audit log:
     - `ReportConfig` struct:
