@@ -187,7 +187,7 @@ function CampaignCard({
           <div className="flex items-center gap-1.5 text-xs ml-auto">
             <Calendar className="h-3 w-3 text-specter-muted" />
             <span className="text-specter-muted">
-              {formatDate(campaign.createdAt.toDate())}
+              {formatDate(new Date(Number(campaign.createdAt.seconds) * 1000))}
             </span>
           </div>
         )}

@@ -443,7 +443,7 @@ export function Listeners() {
 
                 {/* Created */}
                 <span className="flex-1 text-xs text-specter-muted">
-                  {listener.createdAt ? formatTimestamp(listener.createdAt.toDate()) : '—'}
+                  {listener.createdAt ? formatTimestamp(new Date(Number(listener.createdAt.seconds) * 1000)) : '—'}
                 </span>
 
                 {/* Actions */}

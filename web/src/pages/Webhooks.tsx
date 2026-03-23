@@ -430,7 +430,6 @@ export function Webhooks() {
         secret: createForm.secret,
         eventFilters: JSON.stringify(filters),
         format: createForm.format,
-        enabled: createForm.enabled,
       })
 
       await specterClient.createWebhook(req)
@@ -660,7 +659,7 @@ export function Webhooks() {
 
                 {/* Created */}
                 <span className="whitespace-nowrap text-xs text-specter-muted">
-                  {wh.createdAt ? formatDate(wh.createdAt.toDate()) : '—'}
+                  {wh.createdAt ? formatDate(new Date(Number(wh.createdAt.seconds) * 1000)) : '—'}
                 </span>
 
                 {/* Actions */}
