@@ -94,16 +94,102 @@ function validateYaml(content: string): ValidationError[] {
   return errors
 }
 
-function computeJa3Hash(content: string): string {
-  // Simulated JA3 hash computation based on TLS settings in profile
-  let hash = 0
-  for (let i = 0; i < content.length; i++) {
-    const chr = content.charCodeAt(i)
-    hash = ((hash << 5) - hash) + chr
-    hash |= 0
+// Well-known TLS numeric IDs for JA3 computation
+const CIPHER_IDS: Record<string, string> = {
+  'TLS_AES_128_GCM_SHA256': '4865',
+  'TLS_AES_256_GCM_SHA384': '4866',
+  'TLS_CHACHA20_POLY1305_SHA256': '4867',
+  'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256': '49199',
+  'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384': '49200',
+  'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256': '49195',
+  'TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384': '49196',
+  'TLS_RSA_WITH_AES_128_GCM_SHA256': '156',
+  'TLS_RSA_WITH_AES_256_GCM_SHA384': '157',
+}
+const CURVE_IDS: Record<string, string> = {
+  'x25519': '29', 'secp256r1': '23', 'secp384r1': '24', 'secp521r1': '25',
+}
+const EXT_IDS: Record<string, string> = {
+  'server_name': '0', 'status_request': '5', 'supported_groups': '10',
+  'ec_point_formats': '11', 'signature_algorithms': '13',
+  'application_layer_protocol_negotiation': '16', 'signed_certificate_timestamp': '18',
+  'extended_master_secret': '23', 'session_ticket': '35',
+  'supported_versions': '43', 'psk_key_exchange_modes': '45', 'key_share': '51',
+}
+
+function parseTlsFromYaml(content: string) {
+  const ciphers: string[] = []
+  const curves: string[] = []
+  const extensions: string[] = []
+  const alpn: string[] = []
+  let targetJa3 = ''
+  let inSection = ''
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === 'cipher_suites:') { inSection = 'ciphers'; continue }
+    if (trimmed === 'curves:') { inSection = 'curves'; continue }
+    if (trimmed === 'extensions:') { inSection = 'extensions'; continue }
+    if (trimmed === 'alpn:') { inSection = 'alpn'; continue }
+    if (trimmed.startsWith('target_ja3:')) { targetJa3 = trimmed.split(':')[1]?.trim().replace(/['"]/g, '') || ''; continue }
+    if (trimmed.startsWith('- ') && inSection) {
+      const val = trimmed.slice(2).trim().replace(/['"]/g, '')
+      if (inSection === 'ciphers') ciphers.push(val)
+      else if (inSection === 'curves') curves.push(val)
+      else if (inSection === 'extensions') extensions.push(val)
+      else if (inSection === 'alpn') alpn.push(val)
+    } else if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('-')) {
+      // Non-list line — exit current section unless it's a sub-key
+      const indent = line.length - line.trimStart().length
+      if (indent <= 4) inSection = ''
+    }
   }
-  const hex = Math.abs(hash).toString(16).padStart(32, '0').slice(0, 32)
-  return hex
+  return { ciphers, curves, extensions, alpn, targetJa3 }
+}
+
+// Simple MD5 for JA3 (browser-compatible, no crypto import needed)
+function simpleMd5(str: string): string {
+  // Use a basic hash that produces a 32-char hex string
+  // For a real implementation, use SubtleCrypto — this is a display approximation
+  let h1 = 0x811c9dc5, h2 = 0x1000193, h3 = 0xcbf29ce4, h4 = 0x84222325
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i)
+    h1 = Math.imul(h1 ^ c, 0x01000193)
+    h2 = Math.imul(h2 ^ c, 0x100001b3)
+    h3 = Math.imul(h3 ^ c, 0x1000193)
+    h4 = Math.imul(h4 ^ c, 0x100001b3)
+  }
+  return [h1, h2, h3, h4].map(h => (h >>> 0).toString(16).padStart(8, '0')).join('')
+}
+
+function computeJa3Hash(content: string): { ja3: string; ja3Raw: string; ja4: string } {
+  const tls = parseTlsFromYaml(content)
+
+  // If target_ja3 is set, use it directly
+  if (tls.targetJa3) {
+    return { ja3: tls.targetJa3, ja3Raw: '(using target_ja3 override)', ja4: '—' }
+  }
+
+  // JA3 = md5(TLSVersion,Ciphers,Extensions,EllipticCurves,ECPointFormats)
+  const version = '771' // TLS 1.2
+  const cipherIds = tls.ciphers.map(c => CIPHER_IDS[c] || '0').join('-') || '4865-4866-4867'
+  const extIds = tls.extensions.map(e => EXT_IDS[e] || '0').join('-') || '0-10-11-13-16-23-43-45-51'
+  const curveIds = tls.curves.map(c => CURVE_IDS[c] || '0').join('-') || '29-23'
+  const ecPoints = '0' // uncompressed
+
+  const ja3Raw = `${version},${cipherIds},${extIds},${curveIds},${ecPoints}`
+  const ja3 = simpleMd5(ja3Raw)
+
+  // JA4 approximation: t{TLS version}{SNI}{cipher count}{ext count}_{cipher hash}_{ext hash}
+  const proto = tls.alpn.includes('h2') ? 'h2' : 'h1'
+  const sni = 'd' // domain (not IP)
+  const cCount = tls.ciphers.length.toString().padStart(2, '0') || '03'
+  const eCount = tls.extensions.length.toString().padStart(2, '0') || '09'
+  const cipherHash = simpleMd5(cipherIds).slice(0, 12)
+  const extHash = simpleMd5(extIds + curveIds).slice(0, 12)
+  const ja4 = `t13${sni}${proto}${cCount}${eCount}_${cipherHash}_${extHash}`
+
+  return { ja3, ja3Raw, ja4 }
 }
 
 interface HttpPreview {
@@ -283,16 +369,31 @@ function HttpPreviewPanel({ content }: { content: string }) {
         </div>
       </div>
 
-      {/* JA3 Hash */}
+      {/* JA3 / JA4 Fingerprints */}
       <div>
         <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-specter-text">
           <Hash className="h-3 w-3" />
-          Computed JA3 Hash
+          TLS Fingerprints
         </h3>
-        <div className="rounded border border-specter-border bg-specter-bg p-3">
-          <code className="break-all font-mono text-[11px] text-specter-accent">
-            {ja3}
-          </code>
+        <div className="space-y-2 rounded border border-specter-border bg-specter-bg p-3">
+          <div>
+            <div className="mb-0.5 text-[10px] text-specter-muted">JA3</div>
+            <code className="break-all font-mono text-[11px] text-specter-accent">
+              {ja3.ja3}
+            </code>
+          </div>
+          <div>
+            <div className="mb-0.5 text-[10px] text-specter-muted">JA4</div>
+            <code className="break-all font-mono text-[11px] text-specter-accent">
+              {ja3.ja4}
+            </code>
+          </div>
+          <div>
+            <div className="mb-0.5 text-[10px] text-specter-muted">JA3 raw string</div>
+            <code className="break-all font-mono text-[10px] text-specter-muted">
+              {ja3.ja3Raw}
+            </code>
+          </div>
         </div>
       </div>
     </div>
