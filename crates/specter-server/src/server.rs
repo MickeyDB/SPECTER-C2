@@ -153,6 +153,12 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         grpc_service = grpc_service.with_ca(Arc::clone(ca));
     }
 
+    // 10. Redirector orchestrator
+    let redirector_orchestrator = Arc::new(
+        crate::redirector::RedirectorOrchestrator::new(pool.clone(), Arc::clone(&event_bus)),
+    );
+    grpc_service = grpc_service.with_redirector_orchestrator(Arc::clone(&redirector_orchestrator));
+
     // CORS layer for gRPC-Web browser requests
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::any())
