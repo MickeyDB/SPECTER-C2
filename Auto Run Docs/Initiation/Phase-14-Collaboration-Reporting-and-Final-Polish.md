@@ -154,7 +154,7 @@ Implant: `/Users/mdebaets/Documents/SPECTER/implant/`
     - Optional: PostgreSQL service for multi-teamserver deployments
   - Update `CLAUDE.md` with CI/CD and Docker instructions
 
-- [ ] Implement offline capability for the Web UI:
+- [x] Implement offline capability for the Web UI:
   - Create `web/src/sw.ts` — Service Worker for offline support:
     - Cache static assets (JS, CSS, fonts) for offline access
     - Cache session data and task history in IndexedDB
