@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "specter/v1/sessions.proto";
+import "specter/v1/tasks.proto";
+import "specter/v1/listeners.proto";
+import "specter/v1/operators.proto";
+import "specter/v1/profiles.proto";
+import "specter/v1/certificates.proto";
+import "specter/v1/webhooks.proto";
+import "specter/v1/campaigns.proto";
+import "specter/v1/modules.proto";
+import "specter/v1/builder.proto";
+import "specter/v1/azure.proto";
+import "specter/v1/collaboration.proto";
+import "specter/v1/reports.proto";
+
+// Unified event message for the SubscribeEvents stream.
+message Event {
+  oneof event {
+    SessionEvent session_event = 1;
+    TaskEvent task_event = 2;
+    PresenceUpdate presence_update = 3;
+    ChatMessage chat_message = 4;
+  }
+}
+
+message SubscribeEventsRequest {}
+
+service SpecterService {
+  // Session RPCs
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+
+  // Task RPCs
+  rpc QueueTask(QueueTaskRequest) returns (QueueTaskResponse);
+  rpc GetTaskResult(GetTaskResultRequest) returns (GetTaskResultResponse);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+
+  // Listener RPCs
+  rpc CreateListener(CreateListenerRequest) returns (CreateListenerResponse);
+  rpc ListListeners(ListListenersRequest) returns (ListListenersResponse);
+  rpc StartListener(StartListenerRequest) returns (StartListenerResponse);
+  rpc StopListener(StopListenerRequest) returns (StopListenerResponse);
+
+  // Operator RPCs
+  rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
+  rpc ListOperators(ListOperatorsRequest) returns (ListOperatorsResponse);
+
+  // Profile RPCs
+  rpc CreateProfile(CreateProfileRequest) returns (CreateProfileResponse);
+  rpc ListProfiles(ListProfilesRequest) returns (ListProfilesResponse);
+  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+  rpc CompileProfile(CompileProfileRequest) returns (CompileProfileResponse);
+
+  // Certificate RPCs
+  rpc IssueOperatorCertificate(IssueOperatorCertificateRequest) returns (IssueOperatorCertificateResponse);
+  rpc RevokeOperatorCertificate(RevokeOperatorCertificateRequest) returns (RevokeOperatorCertificateResponse);
+  rpc ListOperatorCertificates(ListOperatorCertificatesRequest) returns (ListOperatorCertificatesResponse);
+  rpc GetCACertificate(GetCACertificateRequest) returns (GetCACertificateResponse);
+  rpc RotateServerCertificate(RotateServerCertificateRequest) returns (RotateServerCertificateResponse);
+
+  // Webhook RPCs
+  rpc CreateWebhook(CreateWebhookRequest) returns (CreateWebhookResponse);
+  rpc ListWebhooks(ListWebhooksRequest) returns (ListWebhooksResponse);
+  rpc DeleteWebhook(DeleteWebhookRequest) returns (DeleteWebhookResponse);
+  rpc TestWebhook(TestWebhookRequest) returns (TestWebhookResponse);
+
+  // Campaign RPCs
+  rpc CreateCampaign(CreateCampaignRequest) returns (CreateCampaignResponse);
+  rpc ListCampaigns(ListCampaignsRequest) returns (ListCampaignsResponse);
+  rpc GetCampaign(GetCampaignRequest) returns (GetCampaignResponse);
+  rpc AddSessionToCampaign(AddSessionToCampaignRequest) returns (AddSessionToCampaignResponse);
+  rpc AddOperatorToCampaign(AddOperatorToCampaignRequest) returns (AddOperatorToCampaignResponse);
+  rpc RemoveOperatorFromCampaign(RemoveOperatorFromCampaignRequest) returns (RemoveOperatorFromCampaignResponse);
+  rpc RemoveSessionFromCampaign(RemoveSessionFromCampaignRequest) returns (RemoveSessionFromCampaignResponse);
+
+  // Module RPCs
+  rpc ListModules(ListModulesRequest) returns (ListModulesResponse);
+  rpc GetModuleInfo(GetModuleInfoRequest) returns (GetModuleInfoResponse);
+  rpc LoadModule(LoadModuleRequest) returns (LoadModuleResponse);
+
+  // Builder RPCs
+  rpc GeneratePayload(GeneratePayloadRequest) returns (GeneratePayloadResponse);
+  rpc ListFormats(ListFormatsRequest) returns (ListFormatsResponse);
+  rpc GetBuildStatus(GetBuildStatusRequest) returns (GetBuildStatusResponse);
+
+  // Azure Dead Drop RPCs
+  rpc CreateAzureListener(CreateAzureListenerRequest) returns (CreateAzureListenerResponse);
+  rpc ListAzureContainers(ListAzureContainersRequest) returns (ListAzureContainersResponse);
+
+  // Redirector RPCs
+  rpc DeployRedirector(DeployRedirectorRequest) returns (DeployRedirectorResponse);
+  rpc DestroyRedirector(DestroyRedirectorRequest) returns (DestroyRedirectorResponse);
+  rpc BurnRedirector(BurnRedirectorRequest) returns (BurnRedirectorResponse);
+  rpc ListRedirectors(ListRedirectorsRequest) returns (ListRedirectorsResponse);
+  rpc GetRedirectorHealth(GetRedirectorHealthRequest) returns (GetRedirectorHealthResponse);
+  rpc AddDomainToPool(AddDomainToPoolRequest) returns (AddDomainToPoolResponse);
+
+  // Real-time event stream
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
+
+  // Collaboration — Presence
+  rpc UpdatePresence(UpdatePresenceRequest) returns (UpdatePresenceResponse);
+  rpc GetActiveOperators(GetActiveOperatorsRequest) returns (GetActiveOperatorsResponse);
+  rpc SubscribePresence(SubscribePresenceRequest) returns (stream PresenceUpdate);
+
+  // Collaboration — Chat
+  rpc SendChatMessage(SendChatMessageRequest) returns (SendChatMessageResponse);
+  rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
+  rpc SubscribeChat(SubscribeChatRequest) returns (stream ChatMessage);
+
+  // Report RPCs
+  rpc GenerateReport(GenerateReportRequest) returns (GenerateReportResponse);
+  rpc ListReports(ListReportsRequest) returns (ListReportsResponse);
+  rpc GetReport(GetReportRequest) returns (GetReportResponse);
+}

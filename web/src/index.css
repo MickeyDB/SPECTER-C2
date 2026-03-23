@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/*
+ * SPECTER C2 — Dark theme (Catppuccin/Dracula-inspired)
+ *
+ * Core palette:
+ *   bg:      zinc-950  (#09090b)
+ *   surface: zinc-900  (#18181b)
+ *   border:  zinc-800  (#27272a)
+ *   muted:   zinc-400  (#a1a1aa)
+ *   text:    zinc-100  (#f4f4f5)
+ *   accent:  emerald-500 (#10b981)
+ */
+
+@theme {
+  --color-specter-bg: #09090b;
+  --color-specter-surface: #18181b;
+  --color-specter-border: #27272a;
+  --color-specter-muted: #a1a1aa;
+  --color-specter-text: #f4f4f5;
+  --color-specter-accent: #10b981;
+  --color-specter-accent-dim: #065f46;
+  --color-specter-danger: #ef4444;
+  --color-specter-warning: #f59e0b;
+  --color-specter-info: #3b82f6;
+
+  /* Session status colors */
+  --color-status-active: #10b981;
+  --color-status-stale: #f59e0b;
+  --color-status-dead: #ef4444;
+  --color-status-new: #3b82f6;
+}
+
+/* Base styles */
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  background-color: var(--color-specter-bg);
+  color: var(--color-specter-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-specter-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-specter-muted);
+}

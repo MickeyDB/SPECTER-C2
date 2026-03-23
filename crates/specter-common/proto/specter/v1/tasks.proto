@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+enum TaskPriority {
+  TASK_PRIORITY_UNSPECIFIED = 0;
+  TASK_PRIORITY_LOW = 1;
+  TASK_PRIORITY_NORMAL = 2;
+  TASK_PRIORITY_HIGH = 3;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_QUEUED = 1;
+  TASK_STATUS_DISPATCHED = 2;
+  TASK_STATUS_COMPLETE = 3;
+  TASK_STATUS_FAILED = 4;
+}
+
+message Task {
+  string id = 1;
+  string session_id = 2;
+  string task_type = 3;
+  bytes arguments = 4;
+  TaskPriority priority = 5;
+  TaskStatus status = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp completed_at = 8;
+  string operator_id = 9;
+  bytes result = 10;
+}
+
+message QueueTaskRequest {
+  string session_id = 1;
+  string task_type = 2;
+  bytes arguments = 3;
+  TaskPriority priority = 4;
+  string operator_id = 5;
+}
+
+message QueueTaskResponse {
+  string task_id = 1;
+  Task task = 2;
+}
+
+message GetTaskResultRequest {
+  string task_id = 1;
+}
+
+message GetTaskResultResponse {
+  Task task = 1;
+}
+
+message ListTasksRequest {
+  string session_id = 1;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+}
+
+message TaskEvent {
+  string event_type = 1;
+  Task task = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}

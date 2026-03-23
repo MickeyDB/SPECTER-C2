@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Azure dead drop listener configuration
+message AzureListenerInfo {
+  string id = 1;
+  string name = 2;
+  string account_name = 3;
+  string account_sas_token = 4;
+  uint64 poll_interval_secs = 5;
+  uint64 max_blob_age_secs = 6;
+  string encryption_key_hex = 7;
+  string status = 8;
+}
+
+// Azure container per implant session
+message AzureContainerInfo {
+  string session_id = 1;
+  string container_name = 2;
+  string sas_token = 3;
+  string encryption_key_hex = 4;
+  uint32 next_cmd_seq = 5;
+  uint32 next_result_seq = 6;
+  bool provisioned = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// CreateAzureListener
+message CreateAzureListenerRequest {
+  string name = 1;
+  string account_name = 2;
+  string account_sas_token = 3;
+  uint64 poll_interval_secs = 4;
+  uint64 max_blob_age_secs = 5;
+  string encryption_key_hex = 6;
+}
+
+message CreateAzureListenerResponse {
+  AzureListenerInfo listener = 1;
+}
+
+// ListAzureContainers
+message ListAzureContainersRequest {
+  string listener_id = 1;
+}
+
+message ListAzureContainersResponse {
+  repeated AzureContainerInfo containers = 1;
+}
+
+// Redirector management messages
+message RedirectorInfo {
+  string id = 1;
+  string name = 2;
+  string redirector_type = 3;
+  string provider = 4;
+  string domain = 5;
+  string state = 6;
+  string backend_url = 7;
+  string config_yaml = 8;
+}
+
+// DeployRedirector
+message DeployRedirectorRequest {
+  string config_yaml = 1;
+}
+
+message DeployRedirectorResponse {
+  RedirectorInfo redirector = 1;
+}
+
+// DestroyRedirector
+message DestroyRedirectorRequest {
+  string id = 1;
+}
+
+message DestroyRedirectorResponse {
+  bool success = 1;
+}
+
+// BurnRedirector
+message BurnRedirectorRequest {
+  string id = 1;
+}
+
+message BurnRedirectorResponse {
+  bool success = 1;
+}
+
+// ListRedirectors
+message ListRedirectorsRequest {}
+
+message ListRedirectorsResponse {
+  repeated RedirectorInfo redirectors = 1;
+}
+
+// GetRedirectorHealth
+message GetRedirectorHealthRequest {
+  string id = 1;
+}
+
+message GetRedirectorHealthResponse {
+  string id = 1;
+  string state = 2;
+  bool healthy = 3;
+}
+
+// AddDomainToPool
+message AddDomainToPoolRequest {
+  string domain = 1;
+  string provider = 2;
+}
+
+message AddDomainToPoolResponse {
+  bool success = 1;
+}

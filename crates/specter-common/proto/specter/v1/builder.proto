@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ── Payload Generation ──────────────────────────────────────────────────────
+
+message GeneratePayloadRequest {
+  // Output format: "raw", "dll", "service_exe", "dotnet", "ps1_stager", "hta_stager"
+  string format = 1;
+  // Profile name to compile into the payload.
+  string profile_name = 2;
+  // Channel endpoints for implant callbacks.
+  repeated ChannelEndpoint channels = 3;
+  // Sleep configuration.
+  SleepSettings sleep = 4;
+  // Optional Unix timestamp kill date (0 = no kill date).
+  int64 kill_date = 5;
+  // Obfuscation settings.
+  ObfuscationConfig obfuscation = 6;
+  // DLL sideload: target DLL for export proxying.
+  string proxy_target = 7;
+  // Service EXE: Windows service name.
+  string service_name = 8;
+  // Stagers: download URL for payload retrieval.
+  string stager_url = 9;
+}
+
+message ChannelEndpoint {
+  string kind = 1;
+  string address = 2;
+}
+
+message SleepSettings {
+  uint64 interval_secs = 1;
+  uint32 jitter_percent = 2;
+}
+
+message ObfuscationConfig {
+  bool string_encryption = 1;
+  bool api_hash_randomization = 2;
+  bool junk_code_insertion = 3;
+  uint32 junk_density = 4;
+  bool control_flow_flattening = 5;
+}
+
+message YaraWarning {
+  string rule_name = 1;
+  string namespace = 2;
+  repeated string tags = 3;
+}
+
+message GeneratePayloadResponse {
+  bool success = 1;
+  // Build identifier.
+  string build_id = 2;
+  // Implant X25519 public key (32 bytes).
+  bytes implant_pubkey = 3;
+  // The generated payload binary.
+  bytes payload = 4;
+  // Output format used.
+  string format = 5;
+  // YARA scan warnings (empty = clean).
+  repeated YaraWarning yara_warnings = 6;
+  // Error message if success is false.
+  string error = 7;
+}
+
+// ── List Formats ────────────────────────────────────────────────────────────
+
+message ListFormatsRequest {}
+
+message FormatDescription {
+  string name = 1;
+  string extension = 2;
+  string description = 3;
+  bool opsec_warning = 4;
+}
+
+message ListFormatsResponse {
+  repeated FormatDescription formats = 1;
+}
+
+// ── Build Status ────────────────────────────────────────────────────────────
+
+message GetBuildStatusRequest {
+  string build_id = 1;
+}
+
+message GetBuildStatusResponse {
+  string build_id = 1;
+  // "pending", "building", "complete", "failed"
+  string status = 2;
+  string format = 3;
+  google.protobuf.Timestamp created_at = 4;
+  string error = 5;
+}

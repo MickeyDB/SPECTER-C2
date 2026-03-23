@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ── Presence ─────────────────────────────────────────────────────────
+
+enum OperatorStatus {
+  OPERATOR_STATUS_UNSPECIFIED = 0;
+  OPERATOR_STATUS_ONLINE = 1;
+  OPERATOR_STATUS_IDLE = 2;
+  OPERATOR_STATUS_OFFLINE = 3;
+}
+
+message PresenceInfo {
+  string operator_id = 1;
+  string username = 2;
+  OperatorStatus status = 3;
+  // Session ID the operator is actively interacting with (empty if none).
+  string active_session_id = 4;
+  google.protobuf.Timestamp last_activity = 5;
+}
+
+message PresenceUpdate {
+  string event_type = 1; // "connected", "disconnected", "active_session", "idle"
+  PresenceInfo presence = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message UpdatePresenceRequest {
+  string active_session_id = 1;
+}
+
+message UpdatePresenceResponse {}
+
+message GetActiveOperatorsRequest {}
+
+message GetActiveOperatorsResponse {
+  repeated PresenceInfo operators = 1;
+}
+
+message SubscribePresenceRequest {}
+
+// ── Chat ─────────────────────────────────────────────────────────────
+
+message ChatMessage {
+  string id = 1;
+  string sender_id = 2;
+  string sender_username = 3;
+  string content = 4;
+  // Channel: "global" for team chat, or a session ID for per-session chat.
+  string channel = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+message SendChatMessageRequest {
+  string content = 1;
+  string channel = 2;
+}
+
+message SendChatMessageResponse {
+  ChatMessage message = 1;
+}
+
+message GetChatHistoryRequest {
+  string channel = 1;
+  google.protobuf.Timestamp since = 2;
+  int32 limit = 3;
+}
+
+message GetChatHistoryResponse {
+  repeated ChatMessage messages = 1;
+}
+
+message SubscribeChatRequest {
+  // Empty = all channels, or specify a channel to filter.
+  string channel = 1;
+}

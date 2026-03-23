@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/specter-common",
+    "crates/specter-server",
+    "crates/specter-client",
+    "tools/mock-implant",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"

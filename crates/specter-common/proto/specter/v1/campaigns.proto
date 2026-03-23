@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+enum CampaignAccessLevel {
+  CAMPAIGN_ACCESS_LEVEL_UNSPECIFIED = 0;
+  CAMPAIGN_ACCESS_LEVEL_READ_ONLY = 1;
+  CAMPAIGN_ACCESS_LEVEL_FULL = 2;
+}
+
+message CampaignInfo {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 4;
+  string created_by = 5;
+  repeated string session_ids = 6;
+  repeated CampaignOperator operators = 7;
+  string listener_id = 8;
+}
+
+message CampaignOperator {
+  string operator_id = 1;
+  string username = 2;
+  CampaignAccessLevel access_level = 3;
+}
+
+message CreateCampaignRequest {
+  string name = 1;
+  string description = 2;
+  string listener_id = 3;
+}
+
+message CreateCampaignResponse {
+  CampaignInfo campaign = 1;
+}
+
+message ListCampaignsRequest {}
+
+message ListCampaignsResponse {
+  repeated CampaignInfo campaigns = 1;
+}
+
+message GetCampaignRequest {
+  string id = 1;
+}
+
+message GetCampaignResponse {
+  CampaignInfo campaign = 1;
+}
+
+message AddSessionToCampaignRequest {
+  string campaign_id = 1;
+  string session_id = 2;
+}
+
+message AddSessionToCampaignResponse {
+  bool success = 1;
+}
+
+message AddOperatorToCampaignRequest {
+  string campaign_id = 1;
+  string operator_id = 2;
+  CampaignAccessLevel access_level = 3;
+}
+
+message AddOperatorToCampaignResponse {
+  bool success = 1;
+}
+
+message RemoveOperatorFromCampaignRequest {
+  string campaign_id = 1;
+  string operator_id = 2;
+}
+
+message RemoveOperatorFromCampaignResponse {
+  bool success = 1;
+}
+
+message RemoveSessionFromCampaignRequest {
+  string campaign_id = 1;
+  string session_id = 2;
+}
+
+message RemoveSessionFromCampaignResponse {
+  bool success = 1;
+}

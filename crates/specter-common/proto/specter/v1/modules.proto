@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message ModuleInfo {
+  string module_id = 1;
+  string name = 2;
+  string version = 3;
+  string module_type = 4;
+  string description = 5;
+  uint64 blob_size = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message ListModulesRequest {}
+
+message ListModulesResponse {
+  repeated ModuleInfo modules = 1;
+}
+
+message GetModuleInfoRequest {
+  string name = 1;
+}
+
+message GetModuleInfoResponse {
+  ModuleInfo module = 1;
+}
+
+message LoadModuleRequest {
+  string session_id = 1;
+  string module_name = 2;
+  bytes arguments = 3;
+}
+
+message LoadModuleResponse {
+  string task_id = 1;
+  bool success = 2;
+  string message = 3;
+}

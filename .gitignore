@@ -1,0 +1,28 @@
+# Rust build artifacts
+/target/
+
+# Node.js
+web/node_modules/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build output
+implant/build/*.bin
+implant/build/*.exe
+implant/build/*.o
+
+# Test executables
+implant/tests/*.exe

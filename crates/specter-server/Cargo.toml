@@ -1,0 +1,61 @@
+[package]
+name = "specter-server"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "specter_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "specter-server"
+path = "src/main.rs"
+
+[dependencies]
+specter-common = { path = "../specter-common" }
+tonic = { version = "0.12", features = ["tls"] }
+tonic-web = "0.12"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+hyper = { version = "1", features = ["full"] }
+argon2 = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+prost = "0.13"
+prost-types = "0.13"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+thiserror = "2"
+tokio-stream = "0.1"
+serde_yaml = "0.9"
+lz4_flex = "0.11"
+base64 = "0.22"
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+rustls = "0.23"
+rustls-pemfile = "2.0"
+tokio-rustls = "0.26"
+x509-parser = "0.16"
+time = "0.3"
+reqwest = { version = "0.12", features = ["json"], default-features = false, optional = false }
+regex-lite = "0.1"
+
+[dev-dependencies]
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+rand = "0.8"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+tempfile = "3"

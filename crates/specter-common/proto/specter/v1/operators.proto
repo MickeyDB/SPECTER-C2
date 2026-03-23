@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+enum OperatorRole {
+  OPERATOR_ROLE_UNSPECIFIED = 0;
+  OPERATOR_ROLE_OBSERVER = 1;
+  OPERATOR_ROLE_OPERATOR = 2;
+  OPERATOR_ROLE_ADMIN = 3;
+}
+
+message Operator {
+  string id = 1;
+  string username = 2;
+  OperatorRole role = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp last_login = 5;
+}
+
+message AuthenticateRequest {
+  string username = 1;
+  string token = 2;
+}
+
+message AuthenticateResponse {
+  bool success = 1;
+  Operator operator = 2;
+  string auth_token = 3;
+}
+
+message ListOperatorsRequest {}
+
+message ListOperatorsResponse {
+  repeated Operator operators = 1;
+}

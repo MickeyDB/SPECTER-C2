@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+enum ListenerStatus {
+  LISTENER_STATUS_UNSPECIFIED = 0;
+  LISTENER_STATUS_RUNNING = 1;
+  LISTENER_STATUS_STOPPED = 2;
+}
+
+message Listener {
+  string id = 1;
+  string name = 2;
+  string bind_address = 3;
+  uint32 port = 4;
+  string protocol = 5;
+  ListenerStatus status = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message CreateListenerRequest {
+  string name = 1;
+  string bind_address = 2;
+  uint32 port = 3;
+  string protocol = 4;
+}
+
+message CreateListenerResponse {
+  Listener listener = 1;
+}
+
+message ListListenersRequest {}
+
+message ListListenersResponse {
+  repeated Listener listeners = 1;
+}
+
+message StartListenerRequest {
+  string id = 1;
+}
+
+message StartListenerResponse {
+  Listener listener = 1;
+}
+
+message StopListenerRequest {
+  string id = 1;
+}
+
+message StopListenerResponse {
+  Listener listener = 1;
+}

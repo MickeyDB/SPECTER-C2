@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message CertificateInfo {
+  string serial = 1;
+  string subject_cn = 2;
+  string subject_ou = 3;
+  google.protobuf.Timestamp issued_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  bool revoked = 6;
+  google.protobuf.Timestamp revoked_at = 7;
+}
+
+// Issue a new operator client certificate
+message IssueOperatorCertificateRequest {
+  string username = 1;
+  string role = 2;
+  uint32 validity_days = 3;
+}
+
+message IssueOperatorCertificateResponse {
+  string cert_pem = 1;
+  string key_pem = 2;
+  string ca_cert_pem = 3;
+  string serial = 4;
+}
+
+// Revoke an operator certificate
+message RevokeOperatorCertificateRequest {
+  string serial = 1;
+}
+
+message RevokeOperatorCertificateResponse {
+  bool success = 1;
+}
+
+// List all operator certificates
+message ListOperatorCertificatesRequest {}
+
+message ListOperatorCertificatesResponse {
+  repeated CertificateInfo certificates = 1;
+}
+
+// Get the CA root certificate
+message GetCACertificateRequest {}
+
+message GetCACertificateResponse {
+  string ca_cert_pem = 1;
+}
+
+// Rotate the server TLS certificate
+message RotateServerCertificateRequest {
+  repeated string hostnames = 1;
+}
+
+message RotateServerCertificateResponse {
+  bool success = 1;
+  string serial = 2;
+}

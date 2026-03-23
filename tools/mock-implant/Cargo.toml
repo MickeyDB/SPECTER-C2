@@ -1,0 +1,18 @@
+[package]
+name = "mock-implant"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "specter-beacon"
+path = "src/main.rs"
+
+[dependencies]
+specter-common = { path = "../../crates/specter-common" }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }

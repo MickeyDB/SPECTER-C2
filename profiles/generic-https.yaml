@@ -1,0 +1,92 @@
+name: generic-https
+description: >
+  Plain HTTPS POST profile with standard Chrome TLS fingerprint.
+  Minimal configuration for testing or low-sophistication environments.
+
+tls:
+  cipher_suites:
+    - TLS_AES_128_GCM_SHA256
+    - TLS_AES_256_GCM_SHA384
+    - TLS_CHACHA20_POLY1305_SHA256
+    - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+    - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+  extensions:
+    - server_name
+    - extended_master_secret
+    - renegotiation_info
+    - supported_groups
+    - ec_point_formats
+    - session_ticket
+    - application_layer_protocol_negotiation
+    - status_request
+    - signature_algorithms
+    - signed_certificate_timestamp
+    - key_share
+    - psk_key_exchange_modes
+    - supported_versions
+  curves:
+    - x25519
+    - secp256r1
+    - secp384r1
+  alpn:
+    - h2
+    - http/1.1
+  target_ja3: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-24,0"
+
+http:
+  uri_rotation: sequential
+  request:
+    method: POST
+    uri_patterns:
+      - /api/v1/data
+    headers:
+      - name: Host
+        value: "{{host}}"
+      - name: User-Agent
+        value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      - name: Content-Type
+        value: application/json
+      - name: Accept
+        value: application/json, text/plain, */*
+      - name: Accept-Encoding
+        value: gzip, deflate, br
+      - name: Accept-Language
+        value: en-US,en;q=0.9
+      - name: Connection
+        value: keep-alive
+    body_template: '{"data":"{{data}}","timestamp":{{timestamp}}}'
+    data_embed_points:
+      - location: json_field
+        field_name: data
+        encoding: base64
+  response:
+    method: POST
+    status_code: 200
+    uri_patterns: []
+    headers:
+      - name: Content-Type
+        value: application/json
+      - name: Cache-Control
+        value: no-store
+      - name: X-Request-Id
+        value: "{{random_hex(16)}}"
+    body_template: '{"status":"ok","data":"{{data}}","ts":{{timestamp}}}'
+    data_embed_points:
+      - location: json_field
+        field_name: data
+        encoding: base64
+
+timing:
+  callback_interval: 60
+  jitter_distribution: uniform
+  jitter_percent: 20.0
+  initial_delay: 0
+
+transform:
+  compress: lz4
+  encrypt: chacha20-poly1305
+  encode: base64

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  SESSION_STATUS_NEW = 1;
+  SESSION_STATUS_ACTIVE = 2;
+  SESSION_STATUS_STALE = 3;
+  SESSION_STATUS_DEAD = 4;
+}
+
+message SessionInfo {
+  string id = 1;
+  string hostname = 2;
+  string username = 3;
+  uint32 pid = 4;
+  string os_version = 5;
+  string integrity_level = 6;
+  string process_name = 7;
+  string internal_ip = 8;
+  string external_ip = 9;
+  google.protobuf.Timestamp last_checkin = 10;
+  google.protobuf.Timestamp first_seen = 11;
+  SessionStatus status = 12;
+  string active_channel = 13;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+message GetSessionResponse {
+  SessionInfo session = 1;
+}
+
+message SessionEvent {
+  string event_type = 1;
+  SessionInfo session = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}

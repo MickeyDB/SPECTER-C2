@@ -1,0 +1,199 @@
+# Phase 01: Project Foundation & Working Prototype
+
+This phase establishes the entire project from scratch: a Rust workspace with shared protobuf definitions, a functional teamserver with gRPC API and SQLite persistence, a TUI client that displays live session data, and a mock implant tool for demonstration. By the end of this phase, you can start the teamserver, launch the TUI, run a mock implant check-in, and watch sessions appear in real-time with color-coded status indicators. This proves the core C2 architecture works end-to-end and provides the foundation every subsequent phase builds upon.
+
+## Context
+
+SPECTER is a C2 framework for authorized red team engagements. The full spec lives in `/Users/mdebaets/Documents/SPECTER/specter_c2_technical_specification.docx`. This is a clean-sheet build. The developer is on macOS. The teamserver must support Linux, Windows, and macOS. The implant (built in later phases) targets Windows only.
+
+The project root is `/Users/mdebaets/Documents/SPECTER/`. All source code lives here.
+
+## Tasks
+
+- [x] Initialize Rust workspace and project scaffolding: *(Completed: workspace Cargo.toml, 4 crates with dependencies, .gitignore, CLAUDE.md, `cargo check --workspace` passes)*
+  - Create workspace `Cargo.toml` at project root with members: `crates/specter-server`, `crates/specter-client`, `crates/specter-common`, `tools/mock-implant`
+  - Create each crate's directory structure and `Cargo.toml` with appropriate dependencies:
+    - `specter-common`: prost, prost-types, tonic (for generated code), serde, serde_json, thiserror, chrono, uuid
+    - `specter-server`: tonic, tokio (full features), sqlx (sqlite, runtime-tokio), clap (derive), tracing, tracing-subscriber, specter-common (path dep), chacha20poly1305, x25519-dalek, rand, axum (for HTTP listener), tower, hyper
+    - `specter-client`: tonic, tokio, ratatui, crossterm, clap (derive), tracing, specter-common (path dep)
+    - `tools/mock-implant`: tokio, reqwest, clap (derive), serde, serde_json, rand, uuid, specter-common (path dep)
+  - Create `.gitignore` (target/, *.db, *.pem, *.key, .env)
+  - Create `CLAUDE.md` at project root with project conventions:
+    - Rust stable toolchain, 2021 edition
+    - Teamserver: Tokio async runtime, Tonic gRPC, SQLite via sqlx
+    - TUI: Ratatui + crossterm
+    - Protobuf definitions in `crates/specter-common/proto/`
+    - All crates use `thiserror` for error types
+    - Formatting: `cargo fmt`, linting: `cargo clippy`
+    - Test command: `cargo test --workspace`
+    - Build command: `cargo build --workspace`
+  - Run `cargo check --workspace` to verify the workspace compiles
+
+- [x] Define protobuf API surface and implement shared types in `specter-common`: *(Completed: 5 proto files created under `proto/specter/v1/`, build.rs configured with tonic-build, lib.rs re-exports generated types under `specter_common::proto::specter::v1`, error.rs already had domain errors, `cargo build -p specter-common` passes)*
+  - Create `crates/specter-common/proto/specter/v1/` directory
+  - Create `sessions.proto`: SessionInfo message (id, hostname, username, pid, os_version, integrity_level, process_name, internal_ip, external_ip, last_checkin timestamp, first_seen timestamp, status enum [ACTIVE, STALE, DEAD, NEW], active_channel string), ListSessionsRequest/Response, GetSessionRequest/Response, SessionEvent (stream message for real-time updates)
+  - Create `tasks.proto`: Task message (id, session_id, task_type string, arguments bytes, priority enum [HIGH, NORMAL, LOW], status enum [QUEUED, DISPATCHED, COMPLETE, FAILED], created_at, completed_at, operator_id, result bytes), QueueTaskRequest/Response, GetTaskResultRequest/Response, TaskEvent (stream)
+  - Create `listeners.proto`: Listener message (id, name, bind_address, port, protocol string, status enum [RUNNING, STOPPED], created_at), CreateListenerRequest/Response, ListListenersRequest/Response, StartListenerRequest/Response, StopListenerRequest/Response
+  - Create `operators.proto`: Operator message (id, username, role enum [ADMIN, OPERATOR, OBSERVER], created_at, last_login), AuthenticateRequest (username, token) / AuthenticateResponse (success, operator info, auth_token), ListOperatorsRequest/Response
+  - Create `specter_service.proto`: Main service definition combining all RPCs — SpecterService with session RPCs, task RPCs, listener RPCs, operator RPCs, plus `SubscribeEvents` server-streaming RPC for real-time updates
+  - Set up `build.rs` in specter-common to compile protos using `tonic-build` with `tonic-build::configure().build_server(true).build_client(true)`
+  - Create `crates/specter-common/src/lib.rs` that re-exports generated protobuf types under `specter_common::proto::specter::v1`
+  - Create domain error types in `crates/specter-common/src/error.rs` using thiserror (SpecterError enum with Database, Auth, NotFound, InvalidArgument, Internal variants)
+  - Verify `cargo build -p specter-common` succeeds and generates the protobuf Rust code
+
+- [x] Implement teamserver core in `specter-server`: *(Completed: main.rs with clap CLI, tracing subscriber, db/ with SQLite WAL + migrations for 5 tables, session/mod.rs SessionManager with register/update/list/status updater, task/mod.rs TaskDispatcher with queue/dispatch/complete, event/mod.rs EventBus with broadcast channels, listener/mod.rs ListenerManager with Axum HTTP check-in/health endpoints, grpc/mod.rs implementing full SpecterService trait with all 12 RPCs including event streaming, server.rs orchestration, `cargo build --workspace` passes)*
+  - Create `src/main.rs` with CLI argument parsing (clap): `--bind` (default 0.0.0.0), `--grpc-port` (default 50051), `--http-port` (default 443), `--db-path` (default specter.db), `--log-level` (default info), `--dev-mode` flag (disables auth for development)
+  - Initialize tracing subscriber for structured logging
+  - Create `src/db/mod.rs` and `src/db/migrations.rs`:
+    - SQLite database initialization using sqlx with WAL mode
+    - Migration: create tables for `sessions` (all SessionInfo fields), `tasks` (all Task fields), `operators` (id, username, password_hash, role, created_at, last_login), `listeners` (all Listener fields), `audit_log` (id, operator_id, action, target, details, timestamp)
+    - Run migrations on startup
+  - Create `src/session/mod.rs` — SessionManager:
+    - `register_session(metadata)` → creates new session in DB, returns session ID
+    - `update_checkin(session_id)` → updates last_checkin timestamp
+    - `get_session(id)` → returns SessionInfo
+    - `list_sessions()` → returns all sessions with computed status (ACTIVE if last checkin < 3x interval, STALE if < 10x, DEAD otherwise)
+    - `remove_session(id)` → soft delete
+    - Background task that periodically recomputes session status (every 5 seconds)
+  - Create `src/task/mod.rs` — TaskDispatcher:
+    - `queue_task(session_id, task_type, args, priority, operator_id)` → inserts task, returns task ID
+    - `get_pending_tasks(session_id)` → returns queued tasks ordered by priority then creation time
+    - `mark_dispatched(task_id)` → updates status to DISPATCHED
+    - `complete_task(task_id, result)` → updates status and stores result
+    - `get_task(task_id)` → returns full task info
+    - `list_tasks(session_id)` → returns all tasks for session
+  - Create `src/event/mod.rs` — EventBus:
+    - In-memory broadcast channel (tokio::sync::broadcast) for real-time events
+    - Event types: SessionNew, SessionCheckin, SessionLost, TaskQueued, TaskComplete, TaskFailed
+    - `publish(event)` and `subscribe() → Receiver` methods
+  - Create `src/listener/mod.rs` — ListenerManager:
+    - Manages HTTP listeners for implant check-ins
+    - `create_listener(config)` → stores listener config
+    - `start_listener(id)` → spawns an Axum HTTP server on the configured port
+    - `stop_listener(id)` → shuts down the HTTP server
+    - HTTP listener endpoints:
+      - `POST /api/checkin` — accepts JSON check-in from implant (session metadata + task results), returns pending tasks as JSON response
+      - `GET /api/health` — returns 200 OK (for redirector health checks)
+    - When a check-in arrives: call session_manager.register_or_update(), process task results, fetch pending tasks, publish events
+  - Create `src/grpc/mod.rs` — gRPC service implementation:
+    - Implement the SpecterService trait from generated protobuf code
+    - Wire each RPC to the appropriate manager (session, task, listener)
+    - `SubscribeEvents` streams events from the EventBus to connected clients
+  - Create `src/server.rs` — Server orchestration:
+    - Initialize database, session manager, task dispatcher, event bus, listener manager
+    - Start gRPC server on configured port
+    - Wrap shared state in Arc for concurrent access
+  - Wire everything together in `main.rs`: parse args → init DB → create managers → start server
+  - Verify `cargo build -p specter-server` compiles successfully
+
+- [x] Implement basic operator authentication and RBAC: *(Completed: auth/mod.rs with AuthService (Argon2 hashing, token generation, create_operator, authenticate, validate_token, check_permission with 3-tier RBAC), auth/interceptor.rs with tonic interceptor (dev-mode bypass, Bearer token extraction, OperatorContext injection), server.rs wired with interceptor and default admin auto-creation on first startup, grpc/mod.rs updated with require_permission checks on all RPCs, 11 unit tests passing)*
+  - Create `src/auth/mod.rs` in specter-server:
+    - `hash_password(password)` and `verify_password(password, hash)` using argon2 (add argon2 dependency)
+    - `generate_api_token()` → random 32-byte hex token
+    - `AuthService` struct with methods:
+      - `create_operator(username, password, role)` → creates operator in DB, returns operator info
+      - `authenticate(username, token)` → validates credentials, returns operator info + session token
+      - `validate_token(token)` → returns operator info if valid
+      - `check_permission(operator, action)` → enforces RBAC rules
+    - RBAC rules: ADMIN can do everything, OPERATOR can interact with sessions/tasks/listeners but not manage operators, OBSERVER can only list/get (read-only)
+  - Create `src/auth/interceptor.rs`:
+    - Tonic interceptor that extracts auth token from gRPC metadata (`authorization` header)
+    - Validates token against AuthService
+    - Injects operator info into request extensions
+    - In dev-mode: bypass authentication, inject a default admin operator
+  - On first startup (empty operators table): auto-create a default admin operator, print credentials to console
+  - Add the auth interceptor to the gRPC server in `src/server.rs`
+
+- [x] Build TUI client foundation in `specter-client`: *(Completed: main.rs with clap CLI + tokio runtime, app.rs with App state/navigation/panel cycling, grpc_client.rs with SpecterClient auto-reconnect background tasks + event subscription, tui.rs with terminal setup/teardown/panic handler/100ms tick loop, event_handler.rs with vim-style keybindings (j/k/g/G/q/Tab/Ctrl-C), ui/ module with layout.rs (25/50/25 split + status bar), session_list.rs (color-coded status: green=ACTIVE/yellow=STALE/red=DEAD/cyan=NEW, highlight selected), context_panel.rs (12-field session details), status_bar.rs (connection/server/count/time/version), main_panel.rs (ASCII SPECTER banner), 11 unit tests passing, clippy clean, `cargo build -p specter-client` passes)*
+  - Create `src/main.rs` with CLI args (clap): `--server` (default localhost:50051), `--token` (API token), `--dev-mode` (connects without auth)
+  - Create `src/app.rs` — App state struct:
+    - Sessions list (Vec<SessionInfo>), selected index, connection status, active panel enum
+    - Methods: `next_session()`, `prev_session()`, `selected_session()`, `update_sessions(list)`
+  - Create `src/grpc_client.rs` — gRPC client wrapper:
+    - Connect to teamserver with tonic client
+    - `list_sessions()` → fetches sessions
+    - `subscribe_events()` → opens streaming RPC, spawns tokio task to process events and update app state
+    - `queue_task(session_id, task_type, args)` → queues a task
+    - Auto-reconnect logic with exponential backoff
+  - Create `src/ui/mod.rs` — UI module with sub-modules:
+    - `src/ui/layout.rs`: Define the panel layout using ratatui Layout — left panel (25% width, session list), center panel (50%, main area with welcome message), right panel (25%, context/details), bottom bar (1 row, status)
+    - `src/ui/session_list.rs`: Render session list as a styled List widget. Color code by status: green=ACTIVE, yellow=STALE, red=DEAD, cyan=NEW. Show hostname, username, PID, last check-in delta. Highlight selected session.
+    - `src/ui/context_panel.rs`: When a session is selected, show detailed info: hostname, username, PID, OS version, integrity level, internal/external IP, active channel, first seen, last check-in, session ID. When no session selected: show "No session selected".
+    - `src/ui/status_bar.rs`: Show connection status (Connected/Disconnected), teamserver address, total session count, current time (UTC), SPECTER version.
+    - `src/ui/main_panel.rs`: For now, show a welcome banner with ASCII art "SPECTER C2" logo and version. Later phases will add the interaction console here.
+  - Create `src/event_handler.rs` — Keyboard event handler:
+    - `j` / `Down`: select next session
+    - `k` / `Up`: select previous session
+    - `g`: jump to first session, `G`: jump to last session
+    - `q` / `Ctrl-C`: quit
+    - `Tab`: cycle active panel focus
+    - `/`: enter search mode (placeholder for later)
+    - `Enter`: select session for interaction (placeholder for later)
+  - Create `src/tui.rs` — Terminal setup/teardown:
+    - Enter alternate screen, enable raw mode, create Backend
+    - Restore terminal on exit (including panic handler)
+    - Main loop: render UI → poll for keyboard events → process events → update state → re-render
+    - Tick rate: 100ms for UI responsiveness
+    - Background task fetching session updates every 2 seconds
+  - Wire everything in `main.rs`: parse args → init client → start TUI loop
+  - Verify `cargo build -p specter-client` compiles
+
+- [x] Create mock implant check-in tool for end-to-end demonstration: *(Completed: main.rs with clap CLI (--server/--interval/--jitter/--count/--hostname/--username), random metadata generation from realistic pools, reqwest-based check-in loop with jittered sleep, mock task result generation for shell/dir/whoami commands, multi-implant tokio::spawn with staggered startup, graceful connection error handling with retry, binary renamed to `specter-beacon` to avoid macOS XProtect SIGKILL on "implant" binary names, 9 unit tests passing, `cargo build -p mock-implant` and `cargo clippy` clean)*
+  - Create `tools/mock-implant/src/main.rs` with CLI args:
+    - `--server` (default http://127.0.0.1:443)
+    - `--interval` (check-in interval in seconds, default 10)
+    - `--jitter` (jitter percentage, default 20)
+    - `--count` (number of mock implants to simulate, default 1)
+    - `--hostname`, `--username` (optional overrides, otherwise generated randomly)
+  - Generate realistic session metadata per mock implant:
+    - Random hostname from a pool (e.g., DESKTOP-XXXX, WORKSTATION-XX, SRV-DC01, LAPTOP-XXXX)
+    - Random username from a pool (e.g., jsmith, admin, svc_backup, Administrator, john.doe)
+    - Random PID (1000-65000)
+    - OS version from pool (Windows 10 22H2, Windows 11 23H2, Windows Server 2019, Windows Server 2022)
+    - Integrity level from pool (Medium, High, SYSTEM)
+    - Random internal IP (10.x.x.x or 192.168.x.x)
+    - Process name from pool (explorer.exe, svchost.exe, RuntimeBroker.exe, notepad.exe)
+  - Implement check-in loop:
+    - POST JSON to `{server}/api/checkin` with session metadata
+    - Parse response for pending tasks
+    - Print any received tasks to console
+    - For received tasks: generate a mock result (e.g., "Command executed successfully" or a fake directory listing) and include in next check-in
+    - Sleep for interval ± jitter between check-ins
+    - Handle connection errors gracefully with retry
+  - If `--count` > 1, spawn multiple tokio tasks each simulating an independent implant with different metadata and slightly offset check-in timing
+  - Verify `cargo build -p mock-implant` compiles
+
+- [ ] Write unit and integration tests for teamserver core:
+  - Create `crates/specter-server/tests/` directory
+  - `session_manager_tests.rs`:
+    - Test register_session creates a new session and returns valid ID
+    - Test update_checkin updates the last_checkin timestamp
+    - Test list_sessions returns all registered sessions
+    - Test session status transitions (ACTIVE → STALE → DEAD based on time)
+    - Test get_session for existing and non-existing IDs
+  - `task_dispatcher_tests.rs`:
+    - Test queue_task creates a task with correct priority
+    - Test get_pending_tasks returns tasks ordered by priority then time
+    - Test mark_dispatched changes task status
+    - Test complete_task stores result and updates status
+    - Test tasks are scoped to their session (no cross-session leakage)
+  - `auth_tests.rs`:
+    - Test create_operator and authenticate flow
+    - Test invalid credentials are rejected
+    - Test RBAC permission checks for each role
+    - Test default admin creation on empty database
+  - `listener_tests.rs`:
+    - Test HTTP check-in endpoint accepts valid JSON and returns tasks
+    - Test check-in creates/updates a session in the session manager
+    - Test task results in check-in are processed correctly
+  - Use sqlx's in-memory SQLite for test isolation (each test gets a fresh database)
+
+- [ ] Run the full test suite and verify end-to-end demo flow:
+  - Run `cargo test --workspace` and ensure all tests pass
+  - Run `cargo clippy --workspace` and fix any warnings
+  - Run `cargo fmt --check --all` and fix any formatting issues
+  - Document the end-to-end demo flow in a comment block at the top of `tools/mock-implant/src/main.rs`:
+    - Terminal 1: `cargo run -p specter-server -- --dev-mode --http-port 8443 --grpc-port 50051`
+    - Terminal 2: `cargo run -p specter-client -- --dev-mode --server http://localhost:50051`
+    - Terminal 3: `cargo run -p mock-implant -- --server http://127.0.0.1:8443 --count 3 --interval 5`
+    - Expected: TUI shows 3 sessions appearing with green ACTIVE status, cycling through check-ins

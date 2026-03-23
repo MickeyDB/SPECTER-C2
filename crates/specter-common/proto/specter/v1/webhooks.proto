@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Webhook payload format.
+enum WebhookFormat {
+  WEBHOOK_FORMAT_UNSPECIFIED = 0;
+  WEBHOOK_FORMAT_GENERIC_JSON = 1;
+  WEBHOOK_FORMAT_SLACK = 2;
+  WEBHOOK_FORMAT_SIEM_CEF = 3;
+}
+
+// Webhook configuration.
+message WebhookInfo {
+  string id = 1;
+  string name = 2;
+  string url = 3;
+  string secret = 4;           // HMAC-SHA256 signing secret (write-only, redacted on read)
+  string event_filters = 5;    // JSON array of event type strings, empty = all
+  WebhookFormat format = 6;
+  bool enabled = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// ── Create ──────────────────────────────────────────────────────────────────
+
+message CreateWebhookRequest {
+  string name = 1;
+  string url = 2;
+  string secret = 3;
+  string event_filters = 4;
+  WebhookFormat format = 5;
+}
+
+message CreateWebhookResponse {
+  WebhookInfo webhook = 1;
+}
+
+// ── List ────────────────────────────────────────────────────────────────────
+
+message ListWebhooksRequest {}
+
+message ListWebhooksResponse {
+  repeated WebhookInfo webhooks = 1;
+}
+
+// ── Delete ──────────────────────────────────────────────────────────────────
+
+message DeleteWebhookRequest {
+  string id = 1;
+}
+
+message DeleteWebhookResponse {
+  bool success = 1;
+}
+
+// ── Test ────────────────────────────────────────────────────────────────────
+
+message TestWebhookRequest {
+  string id = 1;
+}
+
+message TestWebhookResponse {
+  bool success = 1;
+  string status_message = 2;
+}

@@ -1,0 +1,214 @@
+# Phase 13: Web UI
+
+This phase builds the optional Web UI — a React/TypeScript single-page application with Tailwind CSS and ShadCN/UI components. The Web UI connects to the same gRPC API as the TUI (via gRPC-Web) and provides a modern, dark-themed dashboard with: a global overview dashboard, an interactive session map (D3.js force-directed graph showing pivot relationships), a full interaction console (xterm.js terminal emulator), a chronological task timeline, a visual module browser, and a malleable profile editor with real-time preview. The design is inspired by linear.app and Vercel's dashboard — minimal, flat, information-dense, and beautiful. By the end of this phase, operators have a web-based alternative to the TUI for session management, tasking, and engagement monitoring.
+
+## Context
+
+The Web UI is served by the teamserver as static assets. It communicates with the teamserver via gRPC-Web (a browser-compatible gRPC transport) through an Envoy proxy or tonic-web middleware. The UI must support mTLS authentication via client certificates in the browser, with OAuth2/OIDC as a fallback for environments where browser client certs are impractical.
+
+Web UI source: `/Users/mdebaets/Documents/SPECTER/web/`
+Teamserver source: `/Users/mdebaets/Documents/SPECTER/crates/specter-server/`
+
+## Tasks
+
+- [ ] Set up the React/TypeScript project and configure gRPC-Web connectivity:
+  - Create `web/` directory at project root
+  - Initialize React project with Vite (fast, modern bundler):
+    - `npm create vite@latest . -- --template react-ts`
+    - Or manually create `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`
+  - Install dependencies:
+    - React 18+, React DOM, React Router DOM
+    - Tailwind CSS 3+, PostCSS, Autoprefixer
+    - ShadCN/UI (via `npx shadcn-ui@latest init`)
+    - `@connectrpc/connect`, `@connectrpc/connect-web` (gRPC-Web client, modern alternative to grpc-web)
+    - `@bufbuild/protobuf`, `@bufbuild/buf` (protobuf code generation)
+    - `d3` + `@types/d3` (for session map visualization)
+    - `@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-web-links` (terminal emulator)
+    - `lucide-react` (icons), `date-fns` (date formatting), `zustand` (state management)
+    - `recharts` (for dashboard charts)
+  - Configure Tailwind with dark theme:
+    - `tailwind.config.ts`: dark mode 'class', extend colors with Catppuccin/Dracula-inspired palette
+    - Base styles: bg-zinc-950, text-zinc-100, accent-emerald-500, warning-amber-500, error-red-500
+  - Generate TypeScript gRPC client from protobuf definitions:
+    - Use `buf` or `protoc-gen-es` + `protoc-gen-connect-es` to generate TS types and client stubs from the proto files in `crates/specter-common/proto/`
+    - Output to `web/src/gen/` — generated client code
+  - Add gRPC-Web support to the teamserver:
+    - Add `tonic-web` crate dependency to specter-server
+    - Wrap the gRPC service with `tonic_web::enable()` to support gRPC-Web protocol
+    - Add CORS headers for browser requests
+    - Serve static files from `web/dist/` via the teamserver's HTTP server (embedded static file serving)
+  - Update `CLAUDE.md` with Web UI build instructions:
+    - Dev: `cd web && npm run dev`
+    - Build: `cd web && npm run build` (outputs to `web/dist/`)
+    - Teamserver serves `web/dist/` at `/ui/`
+
+- [ ] Build the global dashboard page:
+  - Create `web/src/pages/Dashboard.tsx`:
+    - Layout: full-width page with grid of dashboard widgets
+    - **Session overview cards** (top row):
+      - Total sessions (large number), Active (green), Stale (amber), Dead (red), New (cyan)
+      - Each card clickable → navigates to filtered session list
+    - **Activity timeline** (center):
+      - Chronological feed of recent events (new sessions, completed tasks, operator actions)
+      - Each entry: timestamp, icon, description, operator name
+      - Auto-updates in real-time via gRPC event stream
+      - Scrollable, max last 100 events
+    - **Redirector health** (sidebar widget):
+      - List of active redirectors with status indicators (green dot = healthy, red = unhealthy)
+      - Domain name, provider icon, last health check time
+      - Click → navigates to redirector management page
+    - **Session check-in chart** (bottom):
+      - Line chart (recharts) showing check-in frequency over time (last 24h)
+      - Helps identify when sessions are most active
+  - Create `web/src/components/layout/` — shared layout components:
+    - `Sidebar.tsx`: navigation sidebar (collapsed by default, expand on hover):
+      - Links: Dashboard, Sessions, Task Timeline, Modules, Profiles, Redirectors, Operators, Settings
+      - SPECTER logo at top, operator name/role at bottom
+    - `TopBar.tsx`: breadcrumb navigation, search bar, notification bell, operator avatar
+    - `AppLayout.tsx`: Sidebar + TopBar + content area wrapper
+
+- [ ] Build the session list and interaction console pages:
+  - Create `web/src/pages/Sessions.tsx`:
+    - Table view of all sessions with columns: Status (color dot), Hostname, Username, PID, OS, Integrity, Internal IP, Last Check-in (relative time), First Seen, Actions
+    - Sortable columns (click header to sort)
+    - Filterable: search bar filters by hostname/username/IP, dropdown filters by status
+    - Row click → navigates to session interaction page
+    - Virtualized list for performance with 1000+ sessions (use `@tanstack/react-virtual`)
+    - Real-time updates: new sessions appear automatically, status changes animate
+  - Create `web/src/pages/SessionInteract.tsx`:
+    - Split layout: terminal console (70% height) + session details sidebar (30% width, collapsible)
+    - **Terminal console** (xterm.js):
+      - Full xterm.js terminal emulator for authentic terminal experience
+      - Input at bottom with `specter>` prompt
+      - Command output streams above in real-time
+      - Supports ANSI colors, cursor movement, scrollback (10000 lines)
+      - Tab completion (send partial command to backend, receive completions)
+      - Command history (up/down arrows)
+    - **Session details sidebar**:
+      - Session metadata (hostname, user, PID, OS, IPs, etc.)
+      - Active modules list
+      - Quick actions: Sleep, Kill, Upload, Download buttons
+    - Task queuing: on command submission, call QueueTask gRPC, subscribe to task events for results
+    - Multi-session tabs: open multiple sessions in tabs, each with its own xterm instance
+
+- [ ] Build the session map (interactive network graph):
+  - Create `web/src/pages/SessionMap.tsx`:
+    - Full-page interactive network graph using D3.js force-directed layout:
+      - Nodes represent sessions
+      - Edges represent pivot relationships (SMB links, lateral movement parent→child)
+      - Node styling:
+        - Shape: rounded rectangle with session info (hostname, username)
+        - Color: green=active, amber=stale, red=dead, cyan=new
+        - Size: proportional to number of child pivots
+        - Icon: OS icon (Windows logo)
+      - Edge styling:
+        - Solid line = active link, dashed = historical/dead link
+        - Arrow indicates direction (parent → child)
+        - Label: link type (SMB, lateral movement technique)
+    - Interactions:
+      - Click node → show session details popup, option to interact
+      - Drag nodes to rearrange
+      - Zoom and pan (mouse wheel + drag)
+      - Double-click node → navigate to session interaction page
+    - Auto-layout: D3 force simulation positions nodes, user can pin nodes
+    - Export: SVG/PNG export button for documentation/reports
+  - Create `web/src/components/graph/` — reusable graph components:
+    - `SessionNode.tsx`: SVG node rendering
+    - `PivotEdge.tsx`: SVG edge rendering
+    - `GraphControls.tsx`: zoom controls, layout reset, export buttons
+
+- [ ] Build the task timeline and module browser pages:
+  - Create `web/src/pages/TaskTimeline.tsx`:
+    - Engagement-wide chronological timeline of all operator actions:
+      - Vertical timeline with entries on alternating sides
+      - Each entry: timestamp, operator avatar/name, session target, task type, status icon, brief result
+      - Color-coded by task type: blue=recon, orange=lateral, red=injection, green=success, red=failure
+    - Filters:
+      - By operator (multi-select dropdown)
+      - By session (searchable dropdown)
+      - By task type (checkboxes)
+      - By time range (date picker)
+      - By status (success/failure/pending)
+    - This timeline is the primary data source for engagement report generation (Phase 14)
+    - Expandable entries: click to see full task output
+    - Export: Markdown export for report drafting
+  - Create `web/src/pages/Modules.tsx` — module browser:
+    - Grid/list view of all available modules from the teamserver repository
+    - Module card:
+      - Name, version, description
+      - OPSEC rating (1-5 shields, green to red)
+      - Module type (PIC, COFF/BOF)
+      - "Deploy" button → opens deployment dialog
+    - Deployment dialog:
+      - Select target session(s) — multi-select
+      - Configure module arguments (dynamic form based on module's argument schema)
+      - "Execute" button → queues module load task
+    - Search and filter by name, type, OPSEC rating
+
+- [ ] Build the profile editor and redirector dashboard pages:
+  - Create `web/src/pages/ProfileEditor.tsx`:
+    - YAML editor with syntax highlighting (use `@monaco-editor/react` — VS Code editor in the browser)
+    - Split view: YAML editor (left 50%) + live preview (right 50%)
+    - Live preview shows:
+      - Generated HTTP request example (formatted, with highlighted embedded data points)
+      - Generated HTTP response example
+      - Timing graph: histogram of expected check-in intervals with jitter distribution
+      - TLS fingerprint: computed JA3 hash from the profile's cipher suite config
+    - Profile validation: real-time validation as you type, show errors inline
+    - Save button: calls CreateProfile or UpdateProfile gRPC RPC
+    - Load existing profiles: dropdown to select and edit saved profiles
+  - Create `web/src/pages/Redirectors.tsx` — redirector dashboard:
+    - Grid of redirector cards, each showing:
+      - Name, domain, provider (with icon: CloudFlare/AWS/Azure/DO)
+      - Status indicator (green=active, yellow=degraded, red=burned)
+      - Last health check timestamp and result
+      - TLS cert expiry date (warning if < 30 days)
+      - Traffic volume (requests/hour from health metrics)
+    - Actions per redirector:
+      - Health check (manual trigger)
+      - Burn & Replace (confirmation dialog → triggers domain rotation)
+      - Destroy (confirmation dialog)
+    - Deploy new redirector:
+      - Wizard dialog: select provider → configure domain → select profile → deploy
+      - Real-time deployment progress (polling GetRedirectorStatus)
+    - Domain pool management:
+      - Table of domains: domain, provider, status (available/active/burned), actions
+      - Add domain button
+
+- [ ] Implement authentication and state management:
+  - Create `web/src/auth/` — authentication module:
+    - mTLS: browser client certificate selection (handled by browser natively when server requests client cert)
+    - OAuth2/OIDC fallback: configure provider (Auth0, Azure AD, etc.) in teamserver settings
+      - Login page with "Sign in with SSO" button
+      - OAuth2 authorization code flow with PKCE
+      - Token storage in httpOnly cookie (set by teamserver)
+    - Auth state: authenticated operator info (username, role) stored in Zustand store
+    - Protected routes: redirect to login if not authenticated
+    - Role-based UI: hide admin-only features (operator management, redirector deployment) for non-admin roles
+  - Create `web/src/store/` — Zustand state stores:
+    - `sessionStore.ts`: sessions list, selected session, real-time updates from gRPC stream
+    - `taskStore.ts`: task history, active tasks, streaming task results
+    - `uiStore.ts`: sidebar state, active page, theme, notifications
+    - `authStore.ts`: current operator, auth token, permissions
+  - Create `web/src/hooks/` — custom React hooks:
+    - `useGrpcStream(method, params)` — generic hook for subscribing to server-streaming RPCs
+    - `useSessions()` — subscribe to session updates, return reactive session list
+    - `useTaskResults(sessionId)` — subscribe to task completion events for a session
+    - `useNotifications()` — manage notification queue (toast messages for events)
+
+- [ ] Write tests and verify the Web UI build:
+  - Create `web/src/__tests__/` directory:
+    - `Dashboard.test.tsx`: test dashboard renders with mock session data
+    - `Sessions.test.tsx`: test session list filtering and sorting
+    - `CommandParsing.test.tsx`: test command input parsing
+  - Configure Vitest as the test runner (faster than Jest for Vite projects):
+    - `vitest.config.ts` with React testing library support
+    - `npm test` runs all tests
+  - Build verification:
+    - `npm run build` produces optimized static assets in `web/dist/`
+    - `npm run lint` (ESLint) passes without errors
+    - `npm run type-check` (tsc --noEmit) passes without errors
+  - Update teamserver to serve Web UI:
+    - Add static file serving middleware: serve files from `web/dist/` at `/ui/*`
+    - SPA fallback: all `/ui/*` routes serve `index.html` (for client-side routing)
+    - Only serve if `web/dist/` directory exists (Web UI is optional)

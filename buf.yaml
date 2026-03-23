@@ -1,0 +1,5 @@
+version: v2
+modules:
+  - path: crates/specter-common/proto
+deps:
+  - buf.build/protocolbuffers/wellknowntypes

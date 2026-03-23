@@ -1,0 +1,201 @@
+# Phase 09: Core Modules
+
+This phase implements the six core capability modules that ship with the SPECTER module repository: SOCKS5 reverse proxy, token manipulation, lateral movement, process injection, exfiltration, and keylogger/screen capture. Each module is a self-contained PIC blob or COFF object that uses only the module bus API — no direct syscalls, no direct memory allocation, no direct networking. All operations route through the evasion engine automatically. By the end of this phase, operators can pivot through compromised hosts, steal and manipulate tokens, move laterally to new targets, inject into processes, exfiltrate data, and collect keystrokes/screenshots — all while maintaining full evasion coverage.
+
+## Context
+
+Modules use the MODULE_BUS_API table from Phase 05. They are compiled as PIC blobs using the same MinGW cross-compilation toolchain as the implant core. Each module is a single C file with an entry point that receives a pointer to the bus API table and a parameter blob containing operator-specified arguments. Module output goes through `bus->output()`. All Windows API calls go through `bus->resolve()` or bus API functions. The teamserver stores modules in its repository, signs them with Ed25519, and encrypts them per-implant before delivery.
+
+Implant modules: `/Users/mdebaets/Documents/SPECTER/implant/modules/`
+Teamserver: `/Users/mdebaets/Documents/SPECTER/crates/specter-server/`
+
+## Tasks
+
+- [ ] Set up the module development framework and build system:
+  - Create `implant/modules/` directory with subdirectories for each module
+  - Create `implant/modules/include/module.h` — standard module header:
+    - `MODULE_BUS_API` typedef (matching the bus API table from Phase 05)
+    - `MODULE_ENTRY` typedef: `int (*)(MODULE_BUS_API* bus, BYTE* args, DWORD args_len)`
+    - `MODULE_ARGS` helper macros for parsing argument blobs:
+      - Arguments are serialized as: `[4-byte count][4-byte type][4-byte len][data]...` for each argument
+      - `ARGS_GET_INT(args, index)`, `ARGS_GET_STRING(args, index)`, `ARGS_GET_BYTES(args, index, len_out)`
+    - Common constants: OUTPUT_TEXT, OUTPUT_BINARY, OUTPUT_ERROR, LOG_DEBUG, LOG_INFO, etc.
+  - Update `implant/Makefile` to build modules:
+    - Each module compiles to a standalone PIC blob: `implant/build/modules/<name>.bin`
+    - Modules use the same CFLAGS as the core (no CRT, PIC, minimal size)
+    - Additional target: `make modules` builds all modules
+    - Each module has its own linker script entry point: `module_entry`
+  - Create `implant/modules/template/module_template.c` — reference module template:
+    - Standard entry point signature
+    - Example argument parsing
+    - Example bus API usage (mem_alloc, output, log)
+    - Example error handling pattern
+
+- [ ] Implement the SOCKS5 reverse proxy module:
+  - Create `implant/modules/socks5/socks5.c`:
+    - **Architecture**: Reverse SOCKS — the implant initiates all connections outbound, no listening socket on target
+    - Module entry: receive SOCKS configuration (max connections, bandwidth throttle, timeout)
+    - SOCKS protocol handling:
+      - Parse SOCKS5 negotiation (method selection, auth if configured)
+      - Handle CONNECT command: `bus->net_connect(target_addr, target_port, TCP)` to the target
+      - Handle UDP ASSOCIATE if needed
+      - No BIND support (no listening sockets on target)
+    - Data transport:
+      - SOCKS tunnel data is chunked and mixed into regular C2 check-ins via `bus->output()`
+      - The module maintains a mapping of SOCKS connection IDs to bus network handles
+      - Per-check-in bandwidth throttle (configurable max bytes/check-in) to prevent traffic anomalies
+    - Concurrent connections: maintain array of active tunnel connections (max 16)
+    - Connection lifecycle: on SOCKS CONNECT request → open tunnel → relay data bidirectionally → close on client disconnect or timeout
+    - OPSEC: no listening socket, no dedicated connection, no SOCKS handshake on the wire (all SOCKS negotiation happens between operator client and teamserver)
+  - Update teamserver to support SOCKS proxying:
+    - Create `crates/specter-server/src/socks/mod.rs`:
+      - SOCKS5 listener on teamserver side (operator connects to this)
+      - Relay SOCKS data to/from the implant's SOCKS module via tasking
+      - Map teamserver SOCKS connections to implant tunnel IDs
+
+- [ ] Implement the token manipulation module:
+  - Create `implant/modules/token/token.c`:
+    - **Token theft**: `token_steal(pid)`
+      - `bus->proc_open(pid, PROCESS_QUERY_LIMITED_INFORMATION)` → get process handle
+      - Resolve NtOpenProcessToken via `bus->resolve()` → open process token
+      - Resolve NtDuplicateToken → duplicate token with SecurityImpersonation level
+      - `bus->token_impersonate(duplicated_token)` → impersonate
+      - Output: "Successfully impersonated token from PID {pid} ({username})"
+    - **Token creation**: `token_make(domain, username, password)`
+      - Resolve LogonUserW via `bus->resolve("advapi32.dll", "LogonUserW")`
+      - Call LogonUserW with LOGON32_LOGON_NEW_CREDENTIALS
+      - `bus->token_impersonate(new_token)`
+      - Output: "Created and impersonated token for {domain}\\{username}"
+    - **Token revert**: `token_revert()`
+      - `bus->token_revert()` → drop impersonation
+      - Output: "Reverted to original token"
+    - **List tokens**: `token_list()`
+      - Enumerate all processes via NtQuerySystemInformation (resolved via bus->resolve)
+      - For each accessible process: open process token, query token user (NtQueryInformationToken)
+      - Output formatted table: PID | User | Session | Integrity | Privileges
+    - Argument dispatch: module entry parses first argument as subcommand string ("steal", "make", "revert", "list"), routes to appropriate function
+
+- [ ] Implement the lateral movement module:
+  - Create `implant/modules/lateral/lateral.c`:
+    - **WMI execution**: `lateral_wmi(target_host, command_line)`
+      - Initialize COM (CoInitializeEx via bus->resolve)
+      - Connect to remote WMI namespace: `\\{target}\root\cimv2`
+      - Execute Win32_Process.Create with the command line
+      - No wmiprvse.exe spawning — direct DCOM method invocation
+      - Output: "WMI execution on {target}: PID {new_pid}"
+    - **SCM (Service Control Manager)**: `lateral_scm(target_host, payload_path)`
+      - Open remote SCM (OpenSCManagerW via bus->resolve)
+      - Create a service with a random name pointing to the payload
+      - Start the service
+      - Delete the service immediately after start (single-use)
+      - Output: "Service '{name}' created and started on {target}"
+    - **DCOM execution**: `lateral_dcom(target_host, payload, method)`
+      - Methods: ShellBrowserWindow, MMC20.Application, ShellWindows
+      - Direct COM instantiation via CoCreateInstance with remote server name
+      - Execute payload via the selected method's execution interface
+      - Output: "DCOM ({method}) execution on {target}"
+    - **Task Scheduler**: `lateral_schtask(target_host, payload_path)`
+      - Connect to remote Task Scheduler (ITaskService COM interface)
+      - Create immediate execution task
+      - Task auto-deletes after execution
+      - Output: "Scheduled task created on {target}"
+    - All COM operations via direct DCOM — no PowerShell, no wmic.exe, no schtasks.exe
+    - Argument dispatch: subcommand ("wmi", "scm", "dcom", "schtask") + target + payload arguments
+
+- [ ] Implement the process injection module:
+  - Create `implant/modules/inject/inject.c`:
+    - **Classic remote thread**: `inject_createthread(pid, shellcode, shellcode_len)`
+      - `bus->proc_open(pid, PROCESS_ALL_ACCESS)` → open target process
+      - `bus->mem_alloc()` in remote process (bus routes to NtAllocateVirtualMemory with target handle)
+      - `bus->proc_write(handle, remote_addr, shellcode, len)` → write shellcode
+      - `bus->mem_protect(remote_addr, len, PAGE_EXECUTE_READ)` → flip to RX
+      - `bus->thread_create(remote_addr, NULL, FALSE)` in target process → execute
+    - **APC injection**: `inject_apc(pid, tid, shellcode, shellcode_len)`
+      - Open target process and thread
+      - Allocate + write shellcode in target
+      - `bus->resolve("ntdll.dll", "NtQueueApcThread")` → queue APC to target thread
+      - Thread must be in alertable state for APC to fire
+    - **Thread hijacking**: `inject_hijack(pid, tid, shellcode, shellcode_len)`
+      - Open target thread, suspend it
+      - Get thread context (resolve NtGetContextThread)
+      - Allocate + write shellcode in target process
+      - Modify RIP in context to point to shellcode
+      - Set context + resume thread
+    - **Module stomping**: `inject_stomp(pid, dll_name, shellcode, shellcode_len)`
+      - Find a loaded DLL in the target process (enumerate modules via NtQueryInformationProcess + PEB)
+      - Overwrite the DLL's .text section with shellcode
+      - Create thread at the overwritten address
+      - Shellcode lives in image-backed memory — avoids unbacked RX detection
+    - All injection techniques use the bus API (which routes through evasion engine)
+    - Target validation: verify target PID exists, correct architecture (x64), and accessible before injection
+    - Argument dispatch: subcommand ("createthread", "apc", "hijack", "stomp") + PID + optional TID + shellcode argument
+
+- [ ] Implement exfiltration and collection modules:
+  - Create `implant/modules/exfil/exfil.c` — data exfiltration:
+    - `exfil_file(file_path, chunk_size, throttle_ms)`
+      - Read file in chunks using `bus->file_read()`
+      - Compress each chunk with LZ4 (inline implementation or bus-provided)
+      - Compute SHA256 hash of each chunk for integrity verification
+      - Send each chunk via `bus->output(data, len, OUTPUT_BINARY)` with chunk metadata (sequence number, total chunks, hash)
+      - Sleep between chunks (`throttle_ms`) to avoid traffic spikes
+      - Teamserver reassembles chunks and verifies integrity
+    - `exfil_directory(dir_path, pattern, recursive, chunk_size, throttle_ms)`
+      - List directory using `bus->file_list()`
+      - Filter files matching pattern (e.g., "*.docx", "*.xlsx")
+      - Exfil each matching file
+    - Scheduling: if arguments include schedule parameters, set up periodic exfil using the module's own timer (NtDelayExecution via bus)
+  - Create `implant/modules/collect/collect.c` — keylogger and screen capture:
+    - **Keylogger**: `collect_keylog(duration_secs)`
+      - Use Raw Input model: resolve RegisterRawInputDevices, GetRawInputData via bus->resolve
+      - Register for keyboard input (RID_INPUT, RIM_TYPEKEYBOARD)
+      - Process WM_INPUT messages for key events
+      - Buffer captured keystrokes with timestamps and foreground window title
+      - Time-boxed: automatically stops after `duration_secs`
+      - Output buffered keystrokes via `bus->output()` on completion
+      - No SetWindowsHookEx (heavily monitored by EDR)
+    - **Screen capture**: `collect_screenshot(interval_secs, count, quality)`
+      - GDI-based capture: resolve CreateDCA, GetDeviceCaps, CreateCompatibleDC, CreateCompatibleBitmap, BitBlt, SelectObject via bus->resolve
+      - Capture desktop DC at configured interval
+      - Compress as JPEG (simplified JPEG encoder or BMP with LZ4 compression)
+      - Output via `bus->output()` with OUTPUT_BINARY type
+      - Time-boxed: capture `count` screenshots then stop
+    - Both collection types are time-boxed by default — not persistent
+    - Data is buffered and exfiltrated via normal check-ins, not streamed
+
+- [ ] Register modules in the teamserver repository and add TUI commands:
+  - Update teamserver module repository (`crates/specter-server/src/modules/`):
+    - Create `ModuleRepository` service:
+      - `register_module(name, version, type, blob, description, opsec_rating)` → sign module blob with Ed25519, store in database
+      - `get_module(name, version)` → retrieve module package
+      - `list_modules()` → list all available modules with metadata
+      - `package_module(module_id, session_id)` → create a signed, encrypted MODULE_PACKAGE for a specific implant session (encrypt with session key)
+    - Seed the repository with all six modules (compiled .bin files from `implant/build/modules/`)
+    - Module metadata: name, version, type (PIC/COFF), description, OPSEC rating (1-5), argument schema
+  - Update TUI client with module commands:
+    - `socks start [port]` → load SOCKS5 module, start SOCKS listener on teamserver
+    - `socks stop` → stop SOCKS module
+    - `token steal <pid>` → load and run token module with steal subcommand
+    - `token make <domain> <user> <pass>` → token creation
+    - `token revert` → revert impersonation
+    - `token list` → list accessible tokens
+    - `lateral wmi <target> <command>` → WMI lateral movement
+    - `lateral scm <target> <payload>` → SCM lateral movement
+    - `lateral dcom <target> <payload> [method]` → DCOM lateral movement
+    - `inject <technique> <pid> [args]` → process injection
+    - `download <path>` → triggers exfil module
+    - `keylog <duration>` → start keylogger
+    - `screenshot [interval] [count]` → take screenshots
+    - `modules list` → show all available modules
+    - Each command: creates appropriate task with module arguments, queues via gRPC
+  - Add gRPC RPCs: `ListModules`, `GetModuleInfo`, `LoadModule(session_id, module_name, args)`
+
+- [ ] Write tests for module argument parsing and teamserver module repository:
+  - `implant/tests/test_module_args.c`:
+    - Test argument serialization/deserialization roundtrip
+    - Test subcommand dispatch with various argument types
+  - `crates/specter-server/tests/module_repo_tests.rs`:
+    - Test module registration and retrieval
+    - Test module signing and package creation
+    - Test module encryption with session-specific keys
+    - Test list modules returns correct metadata
+  - Run `cargo test --workspace` and `make -C implant test`
