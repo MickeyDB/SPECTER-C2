@@ -122,11 +122,8 @@ async fn queue_task_async(
         }
         Err(e) => {
             app.console_append(
-                ConsoleLine::new(
-                    LineKind::TaskFailed,
-                    format!("Failed to queue task: {e}"),
-                )
-                .with_session(session_id),
+                ConsoleLine::new(LineKind::TaskFailed, format!("Failed to queue task: {e}"))
+                    .with_session(session_id),
             );
         }
     }
@@ -141,7 +138,11 @@ async fn generate_report_async(
     match client.generate_report(&campaign_id, &format).await {
         Ok(content) => {
             let preview = if content.len() > 500 {
-                format!("{}...\n\n(Report truncated — {} bytes total)", &content[..500], content.len())
+                format!(
+                    "{}...\n\n(Report truncated — {} bytes total)",
+                    &content[..500],
+                    content.len()
+                )
             } else {
                 content
             };
@@ -159,12 +160,7 @@ async fn generate_report_async(
     }
 }
 
-async fn send_chat_async(
-    client: &SpecterClient,
-    app: &mut App,
-    content: String,
-    channel: String,
-) {
+async fn send_chat_async(client: &SpecterClient, app: &mut App, content: String, channel: String) {
     // Add the message locally immediately for responsiveness
     app.chat_messages.push(crate::app::ChatEntry {
         sender: "You".to_string(),
@@ -180,10 +176,7 @@ async fn send_chat_async(
     }
 }
 
-fn handle_event_update(
-    app: &mut App,
-    event: &specter_common::proto::specter::v1::Event,
-) {
+fn handle_event_update(app: &mut App, event: &specter_common::proto::specter::v1::Event) {
     use specter_common::proto::specter::v1::event::Event as Inner;
 
     let inner = match &event.event {
@@ -265,8 +258,7 @@ fn handle_event_update(
                     "disconnected" => {
                         app.operator_presence
                             .retain(|op| op.username != presence.username);
-                        app.connected_operators =
-                            app.connected_operators.saturating_sub(1);
+                        app.connected_operators = app.connected_operators.saturating_sub(1);
                     }
                     "connected" => {
                         app.operator_presence
@@ -276,8 +268,7 @@ fn handle_event_update(
                             active_session: presence.active_session_id.clone(),
                             status,
                         });
-                        app.connected_operators =
-                            app.operator_presence.len() as u32;
+                        app.connected_operators = app.operator_presence.len() as u32;
                     }
                     _ => {
                         // Update existing entry (active_session, idle, etc.)
@@ -286,8 +277,7 @@ fn handle_event_update(
                             .iter_mut()
                             .find(|op| op.username == presence.username)
                         {
-                            op.active_session =
-                                presence.active_session_id.clone();
+                            op.active_session = presence.active_session_id.clone();
                             op.status = status;
                         }
                     }

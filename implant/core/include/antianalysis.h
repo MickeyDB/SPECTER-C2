@@ -91,7 +91,6 @@ typedef struct _ANTIANALYSIS_CONFIG {
 /*  DJB2 hashes for resolved APIs                                      */
 /* ------------------------------------------------------------------ */
 
-#define HASH_WS2_32_DLL         0x492C19F7  /* "ws2_32.dll"              */
 #define HASH_IPHLPAPI_DLL       0x738E2C41  /* "iphlpapi.dll"            */
 #define HASH_GETADAPTERSINFO    0x50A2E01B  /* "GetAdaptersInfo"         */
 #define HASH_GETSYSFIRMWARETABLE 0x6A4D3B52 /* "GetSystemFirmwareTable"  */

@@ -597,7 +597,7 @@ fn execute_palette_selection(app: &mut App, item: &crate::ui::palette::PaletteIt
         }
         PaletteCategory::Session => {
             // Switch to the selected session
-            handle_use_session(app, &[item.action.clone()]);
+            handle_use_session(app, std::slice::from_ref(&item.action));
             EventResult::Continue
         }
         PaletteCategory::RecentTask => {
@@ -782,7 +782,10 @@ fn handle_sessions_list(app: &mut App) {
 
     app.console_append(ConsoleLine::new(
         LineKind::System,
-        format!("{:<10} {:<20} {:<15} {:<8}", "ID", "Hostname", "User", "PID"),
+        format!(
+            "{:<10} {:<20} {:<15} {:<8}",
+            "ID", "Hostname", "User", "PID"
+        ),
     ));
     for line in lines {
         app.console_append(ConsoleLine::new(LineKind::Output, line));
@@ -794,7 +797,10 @@ fn handle_modules_list(app: &mut App) {
         ("socks5", "SOCKS5 reverse proxy"),
         ("token", "Token manipulation (steal/make/revert/list)"),
         ("lateral", "Lateral movement (wmi/scm/dcom/schtask)"),
-        ("inject", "Process injection (createthread/apc/hijack/stomp)"),
+        (
+            "inject",
+            "Process injection (createthread/apc/hijack/stomp)",
+        ),
         ("exfil", "Exfiltration (file/directory)"),
         ("collect", "Collection (keylog/screenshot)"),
     ];
@@ -861,7 +867,10 @@ fn handle_report_command(app: &mut App, args: &[String]) -> EventResult {
         _ => {
             app.console_append(ConsoleLine::new(
                 LineKind::Error,
-                format!("Unknown report subcommand: '{}'. Use 'report generate <campaign_id>'", args[0]),
+                format!(
+                    "Unknown report subcommand: '{}'. Use 'report generate <campaign_id>'",
+                    args[0]
+                ),
             ));
             EventResult::Continue
         }
@@ -1387,9 +1396,11 @@ mod tests {
         handle_key_event(press(KeyCode::Char('h')), &mut app);
         assert!(app.palette.filtered_indices.len() <= total_items);
         // "shell" should be in filtered results
-        let has_shell = app.palette.filtered_indices.iter().any(|&idx| {
-            app.palette.items[idx].label == "shell"
-        });
+        let has_shell = app
+            .palette
+            .filtered_indices
+            .iter()
+            .any(|&idx| app.palette.items[idx].label == "shell");
         assert!(has_shell);
     }
 
@@ -1456,9 +1467,11 @@ mod tests {
         app.console_history = vec!["whoami".to_string(), "ps".to_string()];
         handle_key_event(ctrl(KeyCode::Char('p')), &mut app);
         // Should have recent task items
-        let has_recent = app.palette.items.iter().any(|item| {
-            item.category == crate::ui::palette::PaletteCategory::RecentTask
-        });
+        let has_recent = app
+            .palette
+            .items
+            .iter()
+            .any(|item| item.category == crate::ui::palette::PaletteCategory::RecentTask);
         assert!(has_recent);
     }
 

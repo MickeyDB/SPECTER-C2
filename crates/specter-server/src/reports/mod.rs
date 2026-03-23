@@ -50,6 +50,7 @@ impl ReportFormat {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "json" => Self::Json,
@@ -302,52 +303,51 @@ impl ReportGenerator {
         let placeholders = make_placeholders(session_ids.len());
 
         // Query task counts with optional time/operator filter
-        let (total_tasks, successful_tasks, failed_tasks, unique_operators) = if session_ids
-            .is_empty()
-        {
-            (0i64, 0i64, 0i64, 0i64)
-        } else {
-            let base_query = format!(
-                "SELECT \
+        let (total_tasks, successful_tasks, failed_tasks, unique_operators) =
+            if session_ids.is_empty() {
+                (0i64, 0i64, 0i64, 0i64)
+            } else {
+                let base_query = format!(
+                    "SELECT \
                     COUNT(*) as total, \
                     SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as success, \
                     SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) as failed, \
                     COUNT(DISTINCT operator_id) as operators \
                  FROM tasks WHERE session_id IN ({placeholders}){}{}",
-                time_filter_sql(config),
-                operator_filter_sql(config),
-            );
+                    time_filter_sql(config),
+                    operator_filter_sql(config),
+                );
 
-            let mut query = sqlx::query(&base_query);
-            for sid in session_ids {
-                query = query.bind(sid);
-            }
-            if let Some(start) = config.time_range_start {
-                query = query.bind(start);
-            }
-            if let Some(end) = config.time_range_end {
-                query = query.bind(end);
-            }
-            if let Some(ref op) = config.operator_filter {
-                query = query.bind(op);
-            }
+                let mut query = sqlx::query(&base_query);
+                for sid in session_ids {
+                    query = query.bind(sid);
+                }
+                if let Some(start) = config.time_range_start {
+                    query = query.bind(start);
+                }
+                if let Some(end) = config.time_range_end {
+                    query = query.bind(end);
+                }
+                if let Some(ref op) = config.operator_filter {
+                    query = query.bind(op);
+                }
 
-            let row = query.fetch_one(&self.pool).await?;
-            (
-                row.get::<i64, _>("total"),
-                row.get::<i64, _>("success"),
-                row.get::<i64, _>("failed"),
-                row.get::<i64, _>("operators"),
-            )
-        };
+                let row = query.fetch_one(&self.pool).await?;
+                (
+                    row.get::<i64, _>("total"),
+                    row.get::<i64, _>("success"),
+                    row.get::<i64, _>("failed"),
+                    row.get::<i64, _>("operators"),
+                )
+            };
 
         let time_start = config
             .time_range_start
-            .map(|ts| format_timestamp(ts))
+            .map(format_timestamp)
             .unwrap_or_else(|| "beginning".to_string());
         let time_end = config
             .time_range_end
-            .map(|ts| format_timestamp(ts))
+            .map(format_timestamp)
             .unwrap_or_else(|| "now".to_string());
 
         Ok(ExecutiveSummary {
@@ -693,10 +693,7 @@ fn render_markdown(data: &ReportData) -> String {
         md.push_str("|------|----------|--------|------|--------|--------|\n");
         for entry in &data.timeline {
             let ts = format_timestamp(entry.timestamp);
-            let result = entry
-                .result_summary
-                .replace('|', "\\|")
-                .replace('\n', " ");
+            let result = entry.result_summary.replace('|', "\\|").replace('\n', " ");
             let result_short = if result.len() > 80 {
                 format!("{}...", &result[..80])
             } else {
@@ -712,7 +709,7 @@ fn render_markdown(data: &ReportData) -> String {
                 result_short,
             ));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     // IOCs
@@ -726,7 +723,7 @@ fn render_markdown(data: &ReportData) -> String {
                 ioc.ioc_type, ioc.value, ioc.context
             ));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     // Findings
@@ -735,7 +732,7 @@ fn render_markdown(data: &ReportData) -> String {
         for finding in &data.findings {
             md.push_str(&format!("- {finding}\n"));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     // Recommendations
@@ -744,7 +741,7 @@ fn render_markdown(data: &ReportData) -> String {
         for rec in &data.recommendations {
             md.push_str(&format!("- {rec}\n"));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     md.push_str("---\n\n*Generated by SPECTER C2 Framework*\n");
@@ -790,12 +787,12 @@ fn format_timestamp(ts: i64) -> String {
         // milliseconds
         Utc.timestamp_millis_opt(ts)
             .single()
-            .unwrap_or_else(|| Utc::now())
+            .unwrap_or_else(Utc::now)
     } else {
         // seconds
         Utc.timestamp_opt(ts, 0)
             .single()
-            .unwrap_or_else(|| Utc::now())
+            .unwrap_or_else(Utc::now)
     };
     dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
@@ -808,20 +805,24 @@ mod tests {
     fn test_ioc_extraction_ipv4() {
         let mut iocs = Vec::new();
         extract_iocs_from_text("Connected to 192.168.1.100 on port 443", "test", &mut iocs);
-        assert!(iocs.iter().any(|i| i.ioc_type == "ip" && i.value == "192.168.1.100"));
+        assert!(iocs
+            .iter()
+            .any(|i| i.ioc_type == "ip" && i.value == "192.168.1.100"));
     }
 
     #[test]
     fn test_ioc_extraction_skips_loopback() {
         let mut iocs = Vec::new();
         extract_iocs_from_text("localhost 127.0.0.1", "test", &mut iocs);
-        assert!(!iocs.iter().any(|i| i.ioc_type == "ip" && i.value == "127.0.0.1"));
+        assert!(!iocs
+            .iter()
+            .any(|i| i.ioc_type == "ip" && i.value == "127.0.0.1"));
     }
 
     #[test]
     fn test_ioc_extraction_sha256() {
         let mut iocs = Vec::new();
-        let hash = "a" .repeat(64);
+        let hash = "a".repeat(64);
         extract_iocs_from_text(&format!("hash: {hash}"), "test", &mut iocs);
         assert!(iocs.iter().any(|i| i.ioc_type == "sha256"));
     }
@@ -837,14 +838,18 @@ mod tests {
     fn test_ioc_extraction_process() {
         let mut iocs = Vec::new();
         extract_iocs_from_text("Running mimikatz.exe", "test", &mut iocs);
-        assert!(iocs.iter().any(|i| i.ioc_type == "process" && i.value == "mimikatz.exe"));
+        assert!(iocs
+            .iter()
+            .any(|i| i.ioc_type == "process" && i.value == "mimikatz.exe"));
     }
 
     #[test]
     fn test_ioc_extraction_service() {
         let mut iocs = Vec::new();
         extract_iocs_from_text("SERVICE_NAME: EvilSvc", "test", &mut iocs);
-        assert!(iocs.iter().any(|i| i.ioc_type == "service" && i.value == "EvilSvc"));
+        assert!(iocs
+            .iter()
+            .any(|i| i.ioc_type == "service" && i.value == "EvilSvc"));
     }
 
     #[test]

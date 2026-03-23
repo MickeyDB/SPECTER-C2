@@ -170,7 +170,7 @@ Implant: `/Users/mdebaets/Documents/SPECTER/implant/`
   - Register service worker in `web/src/main.tsx`
   - Configure Vite PWA plugin (`vite-plugin-pwa`) for service worker generation
 
-- [ ] Run comprehensive integration tests and final verification:
+- [x] Run comprehensive integration tests and final verification:
   - Create `tests/integration/` directory at project root for end-to-end tests:
     - `test_full_flow.sh` — shell script that:
       1. Build all components (`cargo build --workspace && make -C implant && cd web && npm run build`)
