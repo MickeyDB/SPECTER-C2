@@ -6,7 +6,11 @@
       "Bash(du -sh C:/Users/localuser/Documents/SPECTER-C2/*/ C:/Users/localuser/Documents/SPECTER-C2/*.db* C:/Users/localuser/Documents/SPECTER-C2/*.docx C:/Users/localuser/Documents/SPECTER-C2/Cargo.lock)",
       "Bash(du -sh C:/Users/localuser/Documents/SPECTER-C2/.git/*/ C:/Users/localuser/Documents/SPECTER-C2/.git/objects)",
       "Bash(find C:/Users/localuser/Documents/SPECTER-C2/.git/objects -type f ! -path */pack/* ! -path */info/* -printf %sn)",
-      "Bash(du -sh C:/Users/localuser/Documents/SPECTER-C2/.git/*/ C:/Users/localuser/Documents/SPECTER-C2/.git/*)"
+      "Bash(du -sh C:/Users/localuser/Documents/SPECTER-C2/.git/*/ C:/Users/localuser/Documents/SPECTER-C2/.git/*)",
+      "Bash(cargo test:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "WebSearch"
     ]
   }
 }

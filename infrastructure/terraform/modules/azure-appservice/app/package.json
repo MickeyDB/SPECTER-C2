@@ -1,0 +1,16 @@
+{
+  "name": "specter-azure-appservice-redirector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SPECTER C2 Azure App Service WebSocket redirector with traffic filtering",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "http-proxy-middleware": "^2.0.6"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

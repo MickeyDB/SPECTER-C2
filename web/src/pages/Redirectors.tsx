@@ -110,6 +110,7 @@ interface HealthState {
 interface DeployWizardState {
   step: 'provider' | 'domain' | 'profile' | 'deploy'
   provider: string
+  redirectorType: string
   domain: string
   profileId: string
   deploying: boolean
@@ -336,24 +337,62 @@ function DeployWizard({
         {/* Body */}
         <div className="p-4">
           {state.step === 'provider' && (
-            <div className="flex flex-col gap-2">
-              <label className="text-xs font-medium text-specter-muted">Select Provider</label>
-              <div className="grid grid-cols-3 gap-2">
-                {providers.map((p) => (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-medium text-specter-muted">Select Provider</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {providers.map((p) => (
+                      <button
+                        key={p}
+                        onClick={() => {
+                          const defaultType = p === 'Cloudflare' ? 'CDN'
+                            : p === 'AWS' ? 'CDN'
+                            : p === 'Azure' ? ''
+                            : p === 'DigitalOcean' ? 'VPS'
+                            : ''
+                          onUpdate({ provider: p, redirectorType: defaultType })
+                        }}
+                        className={`flex flex-col items-center gap-1.5 rounded border p-3 text-xs transition-colors ${
+                          state.provider === p
+                            ? 'border-specter-accent bg-specter-accent/10 text-specter-accent'
+                            : 'border-specter-border text-specter-muted hover:border-specter-muted'
+                        }`}
+                      >
+                        <ProviderIconElement provider={p} className="h-5 w-5" />
+                        {p}
+                      </button>
+                    ))}
+                </div>
+              </div>
+              {state.provider === 'Azure' && (
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-medium text-specter-muted">Redirector Type</label>
+                  <div className="grid grid-cols-2 gap-2">
                     <button
-                      key={p}
-                      onClick={() => onUpdate({ provider: p })}
-                      className={`flex flex-col items-center gap-1.5 rounded border p-3 text-xs transition-colors ${
-                        state.provider === p
+                      onClick={() => onUpdate({ redirectorType: 'CloudFunction' })}
+                      className={`flex flex-col gap-1 rounded border p-3 text-left text-xs transition-colors ${
+                        state.redirectorType === 'CloudFunction'
                           ? 'border-specter-accent bg-specter-accent/10 text-specter-accent'
                           : 'border-specter-border text-specter-muted hover:border-specter-muted'
                       }`}
                     >
-                      <ProviderIconElement provider={p} className="h-5 w-5" />
-                      {p}
+                      <span className="font-medium">Function App</span>
+                      <span className="text-[10px] opacity-70">Serverless · HTTP only</span>
                     </button>
-                  ))}
-              </div>
+                    <button
+                      onClick={() => onUpdate({ redirectorType: 'VPS' })}
+                      className={`flex flex-col gap-1 rounded border p-3 text-left text-xs transition-colors ${
+                        state.redirectorType === 'VPS'
+                          ? 'border-specter-accent bg-specter-accent/10 text-specter-accent'
+                          : 'border-specter-border text-specter-muted hover:border-specter-muted'
+                      }`}
+                    >
+                      <span className="font-medium">App Service</span>
+                      <span className="text-[10px] opacity-70">Dedicated · WebSocket support</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -455,7 +494,7 @@ function DeployWizard({
             <button
               onClick={onNext}
               disabled={
-                (state.step === 'provider' && !state.provider) ||
+                (state.step === 'provider' && (!state.provider || !state.redirectorType)) ||
                 (state.step === 'profile' && !state.profileId && profiles.length > 0)
               }
               className="flex items-center gap-1 rounded bg-specter-accent px-3 py-1.5 text-xs font-medium text-specter-bg transition-colors hover:bg-specter-accent/90 disabled:opacity-50"
@@ -705,6 +744,7 @@ export function Redirectors() {
 
     try {
       const configYaml = [
+        `type: ${deployWizard.redirectorType}`,
         `provider: ${deployWizard.provider}`,
         `domain: ${deployWizard.domain}`,
         `profile_id: ${deployWizard.profileId}`,
@@ -765,6 +805,7 @@ export function Redirectors() {
               setDeployWizard({
                 step: 'provider',
                 provider: '',
+                redirectorType: '',
                 domain: '',
                 profileId: '',
                 deploying: false,

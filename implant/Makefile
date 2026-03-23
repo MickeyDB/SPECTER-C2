@@ -2,9 +2,9 @@
 # Cross-compilation using MinGW-w64 targeting Windows x86-64 PIC blob
 
 CC      = x86_64-w64-mingw32-gcc
-LD      = ld
-OBJCOPY = objcopy
-PYTHON  = python
+LD      = x86_64-w64-mingw32-ld
+OBJCOPY = x86_64-w64-mingw32-objcopy
+PYTHON  = python3
 
 CFLAGS  = -Wall -Werror -Os -fno-stack-protector -fno-asynchronous-unwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \

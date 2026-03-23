@@ -213,6 +213,7 @@ fn resolve_module_dir(
         (RedirectorType::CloudFunction, RedirectorProvider::Azure) => "azure-function",
         (RedirectorType::VPS, RedirectorProvider::DigitalOcean)
         | (RedirectorType::VPS, RedirectorProvider::AWS) => "vps-nginx",
+        (RedirectorType::VPS, RedirectorProvider::Azure) => "azure-appservice",
         (RedirectorType::DomainFront, RedirectorProvider::CloudFlare) => "cloudflare-cdn",
         (RedirectorType::DomainFront, RedirectorProvider::AWS) => "aws-cloudfront",
         (rt, prov) => {
@@ -422,6 +423,14 @@ mod tests {
             )
             .unwrap(),
             PathBuf::from("/infra/terraform/modules/vps-nginx")
+        );
+        assert_eq!(
+            resolve_module_dir(
+                root,
+                &make_config(RedirectorType::VPS, RedirectorProvider::Azure)
+            )
+            .unwrap(),
+            PathBuf::from("/infra/terraform/modules/azure-appservice")
         );
 
         // Invalid combo
