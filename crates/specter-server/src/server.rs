@@ -187,55 +187,53 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         // Since the TLS layer already validated the client cert, any request
         // reaching this handler is from a cert-authenticated client.
         if let Some(auth) = auth_svc {
-            router = router.route(
-                "/auth/mtls",
-                axum::routing::post({
+            let mtls_handler = {
+                let auth = Arc::clone(&auth);
+                move || {
                     let auth = Arc::clone(&auth);
-                    move || {
-                        let auth = Arc::clone(&auth);
-                        async move {
-                            // mTLS verified the cert — authenticate first operator as admin.
-                            // The cert CN should match an operator username but we can't
-                            // extract it from the TLS layer here. List operators and pick
-                            // the first one (typically "admin" on fresh installs).
-                            let operators = match auth.list_operators().await {
-                                Ok(ops) => ops,
-                                Err(_) => {
-                                    return axum::http::Response::builder()
-                                        .status(500)
-                                        .header("content-type", "application/json")
-                                        .body(axum::body::Body::from(
-                                            r#"{"error":"Failed to list operators"}"#,
-                                        ))
-                                        .unwrap()
-                                }
-                            };
+                    async move {
+                        tracing::info!("mTLS auth endpoint called");
+                        let operators = match auth.list_operators().await {
+                            Ok(ops) => ops,
+                            Err(e) => {
+                                tracing::error!("Failed to list operators: {e}");
+                                return (
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    axum::Json(serde_json::json!({"error": "Failed to list operators"})),
+                                );
+                            }
+                        };
 
-                            let username = operators
-                                .first()
-                                .map(|o| o.username.clone())
-                                .unwrap_or_else(|| "admin".to_string());
+                        let username = operators
+                            .first()
+                            .map(|o| o.username.clone())
+                            .unwrap_or_else(|| "admin".to_string());
 
-                            match auth.authenticate_by_cert(&username).await {
-                                Ok((_operator, token)) => axum::http::Response::builder()
-                                    .status(200)
-                                    .header("content-type", "application/json")
-                                    .body(axum::body::Body::from(format!(
-                                        r#"{{"token":"{token}","username":"{username}"}}"#
-                                    )))
-                                    .unwrap(),
-                                Err(_) => axum::http::Response::builder()
-                                    .status(401)
-                                    .header("content-type", "application/json")
-                                    .body(axum::body::Body::from(
-                                        r#"{"error":"Authentication failed"}"#,
-                                    ))
-                                    .unwrap(),
+                        match auth.authenticate_by_cert(&username).await {
+                            Ok((_operator, token)) => {
+                                tracing::info!("mTLS auth succeeded for '{username}'");
+                                (
+                                    axum::http::StatusCode::OK,
+                                    axum::Json(serde_json::json!({
+                                        "token": token,
+                                        "username": username
+                                    })),
+                                )
+                            }
+                            Err(e) => {
+                                tracing::warn!("mTLS auth failed: {e}");
+                                (
+                                    axum::http::StatusCode::UNAUTHORIZED,
+                                    axum::Json(serde_json::json!({"error": "Authentication failed"})),
+                                )
                             }
                         }
                     }
-                }),
-            );
+                }
+            };
+
+            // Use method_router to handle both OPTIONS (CORS preflight) and POST
+            router = router.route("/auth/mtls", axum::routing::post(mtls_handler));
         }
 
         router
