@@ -20,7 +20,7 @@
 #define CONFIG_VERSION         1
 #define CONFIG_MAX_CHANNELS    4
 #define CONFIG_KEY_INPUT_SIZE  64          /* Bytes of PIC hashed for key */
-#define CONFIG_SCAN_MAX        0x10000     /* 64 KB scan limit          */
+#define CONFIG_SCAN_MAX        0x80000     /* 512 KB scan limit         */
 #define CONFIG_SCAN_START      256         /* Skip first 256 bytes      */
 
 /* ------------------------------------------------------------------ */
