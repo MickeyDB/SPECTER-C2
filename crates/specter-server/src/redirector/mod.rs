@@ -172,9 +172,17 @@ pub struct RedirectorConfig {
     pub health_check_interval: u64,
     #[serde(default)]
     pub auto_rotate_on_block: bool,
+    /// Cloud region for deployment (e.g. "westeurope", "eastus").
+    /// Defaults to "westeurope" if not set.
+    #[serde(default = "default_azure_location")]
+    pub azure_location: String,
     /// Domain fronting configuration. Required when `redirector_type` is `DomainFront`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fronting: Option<DomainFrontingConfig>,
+}
+
+fn default_azure_location() -> String {
+    "westeurope".to_string()
 }
 
 fn default_health_check_interval() -> u64 {

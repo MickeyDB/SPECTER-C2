@@ -242,6 +242,7 @@ fn build_tfvars(config: &RedirectorConfig) -> serde_json::Value {
         "domain": config.domain,
         "backend_url": config.backend_url,
         "profile_id": config.filtering_rules.profile_id,
+        "azure_location": config.azure_location,
     });
 
     let map = vars.as_object_mut().unwrap();
