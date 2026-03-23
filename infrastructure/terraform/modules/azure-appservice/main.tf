@@ -7,6 +7,10 @@ terraform {
   }
 }
 
+provider "azurerm" {
+  features {}
+}
+
 locals {
   rg_name  = var.resource_group_name != "" ? var.resource_group_name : "specter-ws-${var.redirector_id}"
   create_rg = var.resource_group_name == ""
