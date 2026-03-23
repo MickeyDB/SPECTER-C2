@@ -24,11 +24,10 @@ export function LoginPage() {
   const handleMtlsLogin = useCallback(async () => {
     setMtlsStatus('checking')
     const baseUrl = import.meta.env.DEV ? '' : window.location.origin
-    const ok = await attemptMtlsAuth(baseUrl)
-    if (ok) {
-      // mTLS succeeded — server will have set auth cookies/headers
-      // Re-authenticate via gRPC to get operator info
-      const success = await loginWithToken('', '')
+    const result = await attemptMtlsAuth(baseUrl)
+    if (result.success && result.token && result.username) {
+      // mTLS succeeded — use the returned token to authenticate via gRPC
+      const success = await loginWithToken(result.username, result.token)
       if (success) {
         navigate(from, { replace: true })
         return

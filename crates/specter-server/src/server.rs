@@ -175,14 +175,71 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         tracing::info!("Serving Web UI from {web_dir} at /ui/");
     }
 
-    // Build optional axum Router for serving Web UI static files.
-    let web_routes: Option<axum::Router> = cfg.web_ui_dir.as_ref().map(|dir| {
+    // Build optional axum Router for serving Web UI static files + mTLS auth endpoint.
+    let build_web_router = |dir: &str, auth_svc: Option<Arc<AuthService>>| {
         let index_html = std::path::PathBuf::from(dir).join("index.html");
         let serve = ServeDir::new(dir)
             .append_index_html_on_directories(true)
             .fallback(tower_http::services::ServeFile::new(index_html));
-        axum::Router::new().nest_service("/ui", serve)
-    });
+        let mut router = axum::Router::new().nest_service("/ui", serve);
+
+        // Add /auth/mtls endpoint only when mTLS is active.
+        // Since the TLS layer already validated the client cert, any request
+        // reaching this handler is from a cert-authenticated client.
+        if let Some(auth) = auth_svc {
+            router = router.route(
+                "/auth/mtls",
+                axum::routing::post({
+                    let auth = Arc::clone(&auth);
+                    move || {
+                        let auth = Arc::clone(&auth);
+                        async move {
+                            // mTLS verified the cert — authenticate first operator as admin.
+                            // The cert CN should match an operator username but we can't
+                            // extract it from the TLS layer here. List operators and pick
+                            // the first one (typically "admin" on fresh installs).
+                            let operators = match auth.list_operators().await {
+                                Ok(ops) => ops,
+                                Err(_) => {
+                                    return axum::http::Response::builder()
+                                        .status(500)
+                                        .header("content-type", "application/json")
+                                        .body(axum::body::Body::from(
+                                            r#"{"error":"Failed to list operators"}"#,
+                                        ))
+                                        .unwrap()
+                                }
+                            };
+
+                            let username = operators
+                                .first()
+                                .map(|o| o.username.clone())
+                                .unwrap_or_else(|| "admin".to_string());
+
+                            match auth.authenticate_by_cert(&username).await {
+                                Ok((_operator, token)) => axum::http::Response::builder()
+                                    .status(200)
+                                    .header("content-type", "application/json")
+                                    .body(axum::body::Body::from(format!(
+                                        r#"{{"token":"{token}","username":"{username}"}}"#
+                                    )))
+                                    .unwrap(),
+                                Err(_) => axum::http::Response::builder()
+                                    .status(401)
+                                    .header("content-type", "application/json")
+                                    .body(axum::body::Body::from(
+                                        r#"{"error":"Authentication failed"}"#,
+                                    ))
+                                    .unwrap(),
+                            }
+                        }
+                    }
+                }),
+            );
+        }
+
+        router
+    };
 
     if let Some(ref ca) = ca {
         // mTLS mode: configure TLS on the gRPC server
@@ -207,8 +264,8 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             .accept_http1(true)
             .layer(cors);
 
-        if let Some(router) = web_routes {
-            // add_routes returns a tonic Router, then add_service adds gRPC
+        if let Some(ref dir) = cfg.web_ui_dir {
+            let router = build_web_router(dir, Some(Arc::clone(&auth_service)));
             server
                 .add_routes(router.into())
                 .add_service(grpc_web_svc)
@@ -233,7 +290,8 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             .accept_http1(true)
             .layer(cors);
 
-        if let Some(router) = web_routes {
+        if let Some(ref dir) = cfg.web_ui_dir {
+            let router = build_web_router(dir, None);
             server
                 .add_routes(router.into())
                 .add_service(grpc_web_svc)

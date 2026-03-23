@@ -23,15 +23,23 @@ export interface MtlsCertInfo {
  * Returns true if the server accepted the client cert (HTTP 200).
  * Returns false if auth failed or no cert was presented.
  */
-export async function attemptMtlsAuth(baseUrl: string): Promise<boolean> {
+export interface MtlsAuthResult {
+  success: boolean
+  token?: string
+  username?: string
+}
+
+export async function attemptMtlsAuth(baseUrl: string): Promise<MtlsAuthResult> {
   try {
     const res = await fetch(`${baseUrl}/auth/mtls`, {
       method: 'POST',
       credentials: 'include',
     })
-    return res.ok
+    if (!res.ok) return { success: false }
+    const data = await res.json()
+    return { success: true, token: data.token, username: data.username }
   } catch {
-    return false
+    return { success: false }
   }
 }
 

@@ -206,6 +206,68 @@ impl AuthService {
         Ok((operator, token))
     }
 
+    /// Authenticate an operator by certificate CN (no password check).
+    /// Used after mTLS handshake has already validated the client certificate.
+    pub async fn authenticate_by_cert(
+        &self,
+        username: &str,
+    ) -> Result<(Operator, String), AuthError> {
+        let row = sqlx::query(
+            "SELECT id, username, role, created_at, last_login \
+             FROM operators WHERE username = ?",
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let row = row.ok_or(AuthError::InvalidCredentials)?;
+
+        let id: String = row.get("id");
+        let role: String = row.get("role");
+        let created_at: i64 = row.get("created_at");
+
+        // Update last_login
+        let now = Utc::now().timestamp();
+        sqlx::query("UPDATE operators SET last_login = ? WHERE id = ?")
+            .bind(now)
+            .bind(&id)
+            .execute(&self.pool)
+            .await?;
+
+        // Generate and store session token
+        let token = Self::generate_api_token();
+        {
+            let mut tokens = self
+                .tokens
+                .write()
+                .map_err(|_| AuthError::PasswordHash("Token store lock poisoned".to_string()))?;
+            tokens.insert(
+                token.clone(),
+                TokenInfo {
+                    operator_id: id.clone(),
+                    username: username.to_string(),
+                    role: role.clone(),
+                },
+            );
+        }
+
+        let operator = Operator {
+            id,
+            username: username.to_string(),
+            role: str_to_role(&role),
+            created_at: Some(Timestamp {
+                seconds: created_at,
+                nanos: 0,
+            }),
+            last_login: Some(Timestamp {
+                seconds: now,
+                nanos: 0,
+            }),
+        };
+
+        Ok((operator, token))
+    }
+
     /// Validate an API token and return the associated operator context.
     #[allow(dead_code)]
     pub fn validate_token(&self, token: &str) -> Option<OperatorContext> {
