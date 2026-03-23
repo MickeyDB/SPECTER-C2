@@ -46,7 +46,8 @@ pub async fn deploy_terraform(
         RedirectorError::TerraformError(format!("failed to create workspace dir: {e}"))
     })?;
 
-    // Generate tfvars
+    // Generate tfvars — canonicalize the path so it works regardless of
+    // Terraform's current_dir (which is set to the module directory).
     let vars = build_tfvars(config);
     let vars_path = work_dir.join("terraform.tfvars.json");
     let vars_json = serde_json::to_string_pretty(&vars)

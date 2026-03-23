@@ -8,6 +8,7 @@ import {
   Play,
   Square,
   Radio,
+  Trash2,
 } from 'lucide-react'
 import { specterClient } from '@/lib/client'
 import type { Listener } from '@/gen/specter/v1/listeners_pb'
@@ -16,6 +17,7 @@ import {
   CreateListenerRequestSchema,
   StartListenerRequestSchema,
   StopListenerRequestSchema,
+  DeleteListenerRequestSchema,
 } from '@/gen/specter/v1/listeners_pb'
 import { create } from '@bufbuild/protobuf'
 
@@ -312,6 +314,20 @@ export function Listeners() {
     [fetchListeners]
   )
 
+  const handleDelete = useCallback(
+    async (id: string) => {
+      if (!confirm('Delete this listener? This cannot be undone.')) return
+      try {
+        const req = create(DeleteListenerRequestSchema, { id })
+        await specterClient.deleteListener(req)
+        setListeners((prev) => prev.filter((l) => l.id !== id))
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete listener')
+      }
+    },
+    []
+  )
+
   return (
     <div className="flex flex-col gap-6">
       {/* Header */}
@@ -447,7 +463,7 @@ export function Listeners() {
                 </span>
 
                 {/* Actions */}
-                <div className="flex w-24 justify-end">
+                <div className="flex w-24 justify-end gap-1.5">
                   <button
                     onClick={() => handleToggle(listener)}
                     disabled={isToggling}
@@ -465,6 +481,14 @@ export function Listeners() {
                       <Play className="h-3 w-3" />
                     )}
                     {isRunning ? 'Stop' : 'Start'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(listener.id)}
+                    disabled={isRunning}
+                    className="flex items-center rounded border border-specter-border px-1.5 py-1 text-xs text-specter-muted transition-colors hover:border-specter-danger/30 hover:text-specter-danger disabled:opacity-30 disabled:cursor-not-allowed"
+                    title={isRunning ? 'Stop listener before deleting' : 'Delete listener'}
+                  >
+                    <Trash2 className="h-3 w-3" />
                   </button>
                 </div>
               </div>

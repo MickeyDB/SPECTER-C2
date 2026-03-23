@@ -199,11 +199,14 @@ impl RedirectorState {
             (self, target),
             (Self::Provisioning, Self::Active)
                 | (Self::Provisioning, Self::Failed)
+                | (Self::Provisioning, Self::Burning)
                 | (Self::Active, Self::Degraded)
                 | (Self::Active, Self::Burning)
                 | (Self::Degraded, Self::Active)
                 | (Self::Degraded, Self::Burning)
                 | (Self::Degraded, Self::Failed)
+                | (Self::Failed, Self::Burning)
+                | (Self::Failed, Self::Burned)
                 | (Self::Burning, Self::Burned)
                 | (Self::Burning, Self::Failed)
         )
@@ -252,7 +255,9 @@ impl RedirectorOrchestrator {
     pub fn new(pool: SqlitePool, event_bus: Arc<EventBus>) -> Self {
         // Default infra root is relative to the working directory.
         // resolve_module_dir appends terraform/modules/<name> to this path.
-        let infra_root = std::path::PathBuf::from("infrastructure");
+        let infra_root = std::env::current_dir()
+            .unwrap_or_default()
+            .join("infrastructure");
         Self {
             pool,
             event_bus,
@@ -335,14 +340,52 @@ impl RedirectorOrchestrator {
         Ok(config.id.clone())
     }
 
-    /// Destroy a redirector by marking it for destruction. Actual Terraform
-    /// teardown is handled by the deploy module.
+    /// Destroy a redirector: transitions to Burning, runs terraform destroy,
+    /// then transitions to Burned. For redirectors that never deployed (Failed/Provisioning),
+    /// skips Terraform and goes straight to Burned.
     pub async fn destroy(&self, id: &str) -> Result<(), RedirectorError> {
         let current = self.get_state(id).await?;
         if current == RedirectorState::Burned {
             return Ok(());
         }
+
+        // Transition to Burning first
         self.transition_state(id, RedirectorState::Burning).await?;
+
+        // Spawn background Terraform destroy
+        let pool = self.pool.clone();
+        let event_bus = Arc::clone(&self.event_bus);
+        let infra_root = self.infra_root.clone();
+        let id = id.to_string();
+        let needs_terraform = matches!(current, RedirectorState::Active | RedirectorState::Degraded);
+
+        tokio::spawn(async move {
+            if needs_terraform {
+                match deploy::destroy_terraform(&pool, &event_bus, &id, &infra_root).await {
+                    Ok(()) => {
+                        tracing::info!("Redirector '{id}' infrastructure destroyed");
+                    }
+                    Err(e) => {
+                        tracing::error!("Redirector '{id}' terraform destroy failed: {e}");
+                    }
+                }
+            }
+
+            // Transition to Burned regardless (cleanup DB record)
+            let _ = sqlx::query(
+                "UPDATE redirectors SET state = ?1, updated_at = ?2 WHERE id = ?3",
+            )
+            .bind(RedirectorState::Burned.to_string())
+            .bind(Utc::now().timestamp())
+            .bind(&id)
+            .execute(&pool)
+            .await;
+
+            event_bus.publish(SpecterEvent::Generic {
+                message: format!("Redirector '{id}' destroyed"),
+            });
+        });
+
         Ok(())
     }
 

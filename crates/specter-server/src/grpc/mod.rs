@@ -375,6 +375,30 @@ impl SpecterService for SpecterGrpcService {
         }))
     }
 
+    async fn delete_listener(
+        &self,
+        request: Request<DeleteListenerRequest>,
+    ) -> Result<Response<DeleteListenerResponse>, Status> {
+        let ctx = require_permission(&request, "delete_listener")?;
+        let id = request.get_ref().id.clone();
+        self.listener_manager
+            .delete_listener(&id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let _ = self
+            .audit_log
+            .append(
+                &ctx.operator_id,
+                AuditAction::ListenerDelete,
+                &id,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        Ok(Response::new(DeleteListenerResponse {}))
+    }
+
     // ── Operators ────────────────────────────────────────────────────────
 
     async fn authenticate(

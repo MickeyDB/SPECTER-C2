@@ -43,6 +43,7 @@ service SpecterService {
   rpc ListListeners(ListListenersRequest) returns (ListListenersResponse);
   rpc StartListener(StartListenerRequest) returns (StartListenerResponse);
   rpc StopListener(StopListenerRequest) returns (StopListenerResponse);
+  rpc DeleteListener(DeleteListenerRequest) returns (DeleteListenerResponse);
 
   // Operator RPCs
   rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);

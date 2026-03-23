@@ -52,3 +52,9 @@ message StopListenerRequest {
 message StopListenerResponse {
   Listener listener = 1;
 }
+
+message DeleteListenerRequest {
+  string id = 1;
+}
+
+message DeleteListenerResponse {}

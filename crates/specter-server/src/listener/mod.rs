@@ -758,6 +758,22 @@ impl ListenerManager {
             .map_err(|e| format!("DB error: {e}"))
     }
 
+    pub async fn delete_listener(&self, id: &str) -> Result<(), String> {
+        // Stop it first if running
+        if let Some(active) = self.active.lock().await.remove(id) {
+            let _ = active.shutdown_tx.send(());
+        }
+
+        sqlx::query("DELETE FROM listeners WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("DB error: {e}"))?;
+
+        tracing::info!("Listener {id} deleted");
+        Ok(())
+    }
+
     pub async fn list_listeners(&self) -> Result<Vec<Listener>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, name, bind_address, port, protocol, status, created_at FROM listeners",
