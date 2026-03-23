@@ -11,7 +11,9 @@
       "Bash(npx tsc:*)",
       "Bash(npm run:*)",
       "WebSearch",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(grep -rn \"add_routes\\\\|Routes::new\\\\|RoutesBuilder\\\\|impl.*Into.*Routes.*for\" ~/.cargo/registry/src/*/tonic-0.12.3/src/transport/server/)",
+      "Bash(grep -n \"impl.*From.*for Routes\\\\|impl.*Into.*Routes\\\\|pub fn new\" ~/.cargo/registry/src/*/tonic-0.12.3/src/transport/server/service/router.rs)"
     ]
   }
 }

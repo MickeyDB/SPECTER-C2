@@ -175,10 +175,14 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         tracing::info!("Serving Web UI from {web_dir} at /ui/");
     }
 
-    // Build a function that creates the combined gRPC + static-file router.
-    // We use axum::Router as the top-level service so we can add a fallback
-    // for serving the Web UI static files alongside gRPC-Web.
-    let web_dir = cfg.web_ui_dir.clone();
+    // Build optional axum Router for serving Web UI static files.
+    let web_routes: Option<axum::Router> = cfg.web_ui_dir.as_ref().map(|dir| {
+        let index_html = std::path::PathBuf::from(dir).join("index.html");
+        let serve = ServeDir::new(dir)
+            .append_index_html_on_directories(true)
+            .fallback(tower_http::services::ServeFile::new(index_html));
+        axum::Router::new().nest_service("/ui", serve)
+    });
 
     if let Some(ref ca) = ca {
         // mTLS mode: configure TLS on the gRPC server
@@ -198,23 +202,20 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             interceptor,
         ));
 
-        let mut builder = Server::builder()
+        let mut server = Server::builder()
             .tls_config(tls_config)?
             .accept_http1(true)
             .layer(cors);
 
-        if let Some(ref dir) = web_dir {
-            let serve = ServeDir::new(dir)
-                .append_index_html_on_directories(true);
-            let web_routes: axum::Router = axum::Router::new()
-                .nest_service("/ui", serve);
-            builder
-                .add_routes(web_routes.into())
+        if let Some(router) = web_routes {
+            // add_routes returns a tonic Router, then add_service adds gRPC
+            server
+                .add_routes(router.into())
                 .add_service(grpc_web_svc)
                 .serve(grpc_addr)
                 .await?;
         } else {
-            builder
+            server
                 .add_service(grpc_web_svc)
                 .serve(grpc_addr)
                 .await?;
@@ -228,22 +229,18 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             interceptor,
         ));
 
-        let mut builder = Server::builder()
+        let mut server = Server::builder()
             .accept_http1(true)
             .layer(cors);
 
-        if let Some(ref dir) = web_dir {
-            let serve = ServeDir::new(dir)
-                .append_index_html_on_directories(true);
-            let web_routes: axum::Router = axum::Router::new()
-                .nest_service("/ui", serve);
-            builder
-                .add_routes(web_routes.into())
+        if let Some(router) = web_routes {
+            server
+                .add_routes(router.into())
                 .add_service(grpc_web_svc)
                 .serve(grpc_addr)
                 .await?;
         } else {
-            builder
+            server
                 .add_service(grpc_web_svc)
                 .serve(grpc_addr)
                 .await?;
