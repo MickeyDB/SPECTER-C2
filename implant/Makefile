@@ -6,11 +6,18 @@ LD      = x86_64-w64-mingw32-ld
 OBJCOPY = x86_64-w64-mingw32-objcopy
 PYTHON  = python3
 
+# Set DEV=1 to skip anti-analysis checks (for testing on VMs)
+ifdef DEV
+  DEV_FLAGS = -DSPECTER_DEV_BUILD
+else
+  DEV_FLAGS =
+endif
+
 CFLAGS  = -Wall -Werror -Os -fno-stack-protector -funwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \
           -falign-labels=1 -falign-loops=1 -fPIC -nostdlib -nostdinc \
           -ffreestanding -masm=intel -std=c11 -DWIN32_LEAN_AND_MEAN \
-          -mno-stack-arg-probe \
+          -mno-stack-arg-probe $(DEV_FLAGS) \
           -Icore/include
 
 LDFLAGS = -T scripts/linker.ld -nostdlib --no-dynamic-linker --image-base=0 -Map=build/specter.map
