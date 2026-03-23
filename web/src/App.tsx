@@ -10,8 +10,13 @@ import { SessionMap } from '@/pages/SessionMap'
 import { TaskTimeline } from '@/pages/TaskTimeline'
 import { Modules } from '@/pages/Modules'
 import { ProfileEditor } from '@/pages/ProfileEditor'
+import { Listeners } from '@/pages/Listeners'
 import { Redirectors } from '@/pages/Redirectors'
 import { PayloadBuilder } from '@/pages/PayloadBuilder'
+import { Operators } from '@/pages/Operators'
+import { Campaigns } from '@/pages/Campaigns'
+import { Webhooks } from '@/pages/Webhooks'
+import { AzureDeadDrop } from '@/pages/AzureDeadDrop'
 import { Reports } from '@/pages/Reports'
 
 export default function App() {
@@ -35,8 +40,13 @@ export default function App() {
             <Route path="tasks" element={<TaskTimeline />} />
             <Route path="modules" element={<Modules />} />
             <Route path="profiles" element={<ProfileEditor />} />
+            <Route path="listeners" element={<Listeners />} />
             <Route path="builder" element={<PayloadBuilder />} />
             <Route path="redirectors" element={<Redirectors />} />
+            <Route path="operators" element={<Operators />} />
+            <Route path="campaigns" element={<Campaigns />} />
+            <Route path="webhooks" element={<Webhooks />} />
+            <Route path="azure-deaddrop" element={<AzureDeadDrop />} />
             <Route path="reports" element={<Reports />} />
           </Route>
         </Routes>

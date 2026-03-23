@@ -185,7 +185,46 @@ terraform apply \
 
 Creates a Cloudflare Worker that filters and proxies matching traffic.
 
-#### Option C: Manage via Web UI / gRPC
+#### Option C: Azure App Service
+
+**Prerequisites:** `az login` must be active on the teamserver. Terraform inherits Azure credentials from the environment — there is no per-deployment credential UI.
+
+```bash
+# Ensure Azure CLI is logged in before deploying
+az login
+az account set --subscription <subscription-id>
+```
+
+**Via Web UI (Recommended):**
+
+1. Navigate to **Redirectors** → click **Deploy**
+2. Select **Azure** as provider
+3. Select **App Service** (VPS with WebSocket) or **Function App** (serverless HTTP-only)
+4. Enter a name, domain, and backend URL (teamserver address)
+5. Select a traffic profile
+6. Review and deploy
+
+The server runs `terraform apply` against the `infrastructure/terraform/modules/azure-appservice/` module. It deploys:
+- Resource Group, App Service Plan (B1 ~$13/mo), Linux Web App (Node 20 LTS)
+- Custom domain with Azure Managed TLS certificate
+- Node.js proxy filtering traffic by URI pattern + header from the selected profile
+
+**Via CLI:**
+
+```bash
+cd infrastructure/terraform/modules/azure-appservice
+terraform init
+terraform apply \
+  -var="redirector_id=redir-01" \
+  -var="domain=cdn-assets.example.com" \
+  -var="backend_url=https://teamserver:443" \
+  -var="uri_pattern=^/api/v[0-9]+/" \
+  -var="header_name=X-Request-ID" \
+  -var='header_pattern=^[a-f0-9]{32}$' \
+  -var="profile_id=azure-cdn-mimicry"
+```
+
+#### Option D: Manage via Web UI / gRPC
 
 Use the **Redirectors** page in the web UI or the gRPC API (`DeployRedirector`, `ListRedirectors`, `GetRedirectorHealth`, `BurnRedirector`).
 
@@ -236,6 +275,14 @@ This authenticates with the admin credentials, issues an mTLS certificate, and s
 ### 3.2 Create a C2 Profile
 
 Profiles shape how implant traffic appears on the wire. Create one via the **Profile Editor** in the web UI or the `CreateProfile` RPC.
+
+> **Important:** All YAML enum values use `snake_case`, not PascalCase:
+> - Locations: `json_field`, `cookie_value`, `uri_segment`, `query_param`, `multipart_field`, `header_value`
+> - Encodings: `base64`, `base85`, `hex`, `raw`
+> - Distributions: `uniform`, `gaussian`, `pareto`, `empirical`
+> - Compression: `none`, `lz4`, `zstd`
+> - Encryption: `cha_cha20_poly1305`
+> - Timing: use `callback_interval` (not `sleep`), `jitter_percent` (not `jitter`), `jitter_distribution`
 
 **Example profile (`generic-https`):**
 
@@ -541,3 +588,12 @@ Mock implants generate randomized host metadata and return mock task results.
 | YARA warnings on payload | Signatures detected | Enable additional obfuscation options, iterate |
 | WebSocket channel returns empty | — | WebSocket handler is fully functional; check wire format and session key derivation |
 | Tasks not delivered | Session is STALE/DEAD | Check implant sleep interval; session status updates every 5 seconds |
+| `Cargo.lock` version 4 error | Lock file from nightly Rust | Delete `Cargo.lock` and run `cargo generate-lockfile` |
+| `edition2024` required | Rust toolchain too old | Run `rustup update stable` (need ≥1.85) |
+| `CryptoProvider` panic on startup | rustls missing crypto backend | Already fixed — `ring` feature enabled and provider installed in `main.rs` |
+| Browser cert rejected / blank download | Hitting gRPC port without `/ui/` path | Navigate to `https://host:50051/ui/` not just the root |
+| "Redirector orchestrator not configured" | Orchestrator not wired up | Already fixed — orchestrator initialized in `server.rs` |
+| Profile YAML "unknown variant" error | Using PascalCase enum values | Use snake_case: `header_value` not `HeaderValue`, `base64` not `Base64` |
+| Azure redirector deploy fails | Azure CLI not authenticated | Run `az login` on the teamserver before deploying |
+| `--image-base=0` linker error | Using system `ld` instead of MinGW `ld` | Already fixed — Makefile uses `x86_64-w64-mingw32-ld` |
+| `python` not found during implant build | Python 2 not installed | Already fixed — Makefile uses `python3` |
