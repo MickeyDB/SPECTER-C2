@@ -514,10 +514,12 @@ export function PayloadBuilder() {
                       onChange={(e) => {
                         const redir = redirectors.find((r) => r.id === e.target.value)
                         if (redir) {
-                          const proto = redir.domain.includes('://') ? '' : 'https://'
+                          const domain = redir.domain.includes('://') ? redir.domain : `https://${redir.domain}`
+                          // Use the default hostname from the redirector; user can edit the path
+                          const address = domain.endsWith('/') ? domain : domain
                           setChannels((prev) => [
                             ...prev,
-                            { id: Math.max(0, ...prev.map((c) => c.id)) + 1, kind: 'https', address: `${proto}${redir.domain}` },
+                            { id: Math.max(0, ...prev.map((c) => c.id)) + 1, kind: 'https', address },
                           ])
                         }
                         e.target.value = ''

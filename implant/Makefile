@@ -59,7 +59,7 @@ MOD_SRCS   = $(wildcard $(MOD_DIR)/*/$(notdir $(wildcard $(MOD_DIR)/*/*.c)))
 MOD_NAMES  = $(filter-out include,$(patsubst $(MOD_DIR)/%/,%,$(sort $(dir $(wildcard $(MOD_DIR)/*/*.c)))))
 MOD_BINS   = $(patsubst %,$(MOD_BUILD_DIR)/%.bin,$(MOD_NAMES))
 
-.PHONY: all clean size test modules modules-clean
+.PHONY: all clean size test modules modules-clean stubs stubs-clean
 
 all: $(TARGET_BIN) size
 
@@ -106,6 +106,14 @@ clean:
 
 modules-clean:
 	rm -rf $(MOD_BUILD_DIR)
+
+# ---- Stub targets (pre-compiled PE templates) ----
+
+stubs:
+	$(MAKE) -C stubs
+
+stubs-clean:
+	$(MAKE) -C stubs clean
 
 size: $(TARGET_BIN)
 	@echo "--- SPECTER PIC Blob Size ---"

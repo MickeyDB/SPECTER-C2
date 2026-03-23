@@ -96,14 +96,35 @@ pub async fn deploy_terraform(
     // Persist Terraform state as a blob in the DB
     persist_state_to_db(pool, &config.id, &work_dir).await?;
 
-    // Transition to Active
+    // If Terraform outputs include a hostname/domain, update the config so the
+    // UI can show the actual endpoint (e.g., App Service default hostname).
+    let resolved_domain = outputs
+        .get("default_hostname")
+        .or_else(|| outputs.get("domain"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Transition to Active and update domain if resolved
     let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE redirectors SET state = ?1, updated_at = ?2 WHERE id = ?3")
+    if !resolved_domain.is_empty() {
+        sqlx::query(
+            "UPDATE redirectors SET state = ?1, domain = ?2, updated_at = ?3 WHERE id = ?4",
+        )
         .bind(RedirectorState::Active.to_string())
+        .bind(&resolved_domain)
         .bind(now)
         .bind(&config.id)
         .execute(pool)
         .await?;
+    } else {
+        sqlx::query("UPDATE redirectors SET state = ?1, updated_at = ?2 WHERE id = ?3")
+            .bind(RedirectorState::Active.to_string())
+            .bind(now)
+            .bind(&config.id)
+            .execute(pool)
+            .await?;
+    }
 
     event_bus.publish(SpecterEvent::Generic {
         message: format!(
