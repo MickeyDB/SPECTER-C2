@@ -6,12 +6,14 @@ End-to-end guide for deploying SPECTER C2 in a production engagement: from build
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Rust stable | 2021 edition | Teamserver and TUI client |
-| Node.js | 18+ | Web UI build |
-| MinGW-w64 | Latest | Implant cross-compilation (`x86_64-w64-mingw32-gcc`) |
-| `protoc` + `buf` | Latest | Proto regeneration (only if changing .proto files) |
+| Rust stable | ≥1.85 | Teamserver and TUI client (edition 2024 deps require 1.85+) |
+| Node.js | ≥20 | Web UI build (Vite 8, Tailwind 4 require Node 20+) |
+| MinGW-w64 | Latest | Implant cross-compilation (`x86_64-w64-mingw32-gcc`, `x86_64-w64-mingw32-ld`, `x86_64-w64-mingw32-objcopy`) |
+| `protoc` | Latest | Proto compilation (`apt install protobuf-compiler`) |
+| `python3` | 3.x | Implant post-build script (`scripts/extract_shellcode.py`) |
 | Terraform | 1.0+ | Redirector deployment (optional) |
-| OpenSSL | Any | Key generation |
+| Azure CLI | Latest | Required for Azure redirectors (`az login` before deploy) |
+| OpenSSL | Any | PKCS12 generation for browser cert import |
 
 ## Overview
 
@@ -91,6 +93,8 @@ export SPECTER_CA_KEY="$(openssl rand -hex 32)"
 | `--log-level` | `info` | Log level: trace, debug, info, warn, error |
 | `--dev-mode` | `false` | Skip auth (testing only) |
 | `--web-ui-dir` | — | Serve web UI at `/ui/` from this directory |
+| `--init-cert` | — | Generate operator mTLS cert bundle and exit (see below) |
+| `--cert-out` | `.` | Output directory for `--init-cert` files |
 
 On first startup, the server:
 1. Creates the SQLite database and runs migrations
@@ -100,6 +104,49 @@ On first startup, the server:
 5. Generates an Ed25519 module signing keypair (logged to console)
 
 **Save the printed admin credentials immediately — they won't be shown again.**
+
+### 2.1b Generate Operator Certificates (mTLS)
+
+The teamserver uses mTLS by default. Browsers and TUI clients need operator certificates to connect.
+
+**Generate cert bundle:**
+
+```bash
+# Stop the server first, then generate cert from the same database
+./specter-server --init-cert admin --cert-out ~/certs --db-path /var/lib/specter/specter.db
+```
+
+This creates:
+- `operator.pem` — operator certificate
+- `operator-key.pem` — private key
+- `ca.pem` — CA certificate
+
+**Create PKCS12 for browser import:**
+
+```bash
+cd ~/certs
+openssl pkcs12 -export -out operator.p12 \
+  -inkey operator-key.pem -in operator.pem -certfile ca.pem
+```
+
+**Import into browser:**
+
+| OS | Method |
+|----|--------|
+| macOS | Double-click `operator.p12` → imports into Keychain → Chrome/Safari pick it up automatically |
+| Windows | Double-click `operator.p12` → Certificate Import Wizard → Chrome/Edge pick it up automatically |
+| Linux | `certutil -d sql:$HOME/.pki/nssdb -A -t "P,," -n "specter-ca" -i ca.pem && pk12util -d sql:$HOME/.pki/nssdb -i operator.p12` |
+| Firefox (any OS) | Settings → Privacy & Security → Certificates → View Certificates → Import `operator.p12` |
+
+**For TUI client**, use the PEM files directly:
+```bash
+./specter-client --cert ~/certs/operator.pem --key ~/certs/operator-key.pem --ca-cert ~/certs/ca.pem
+```
+
+**Web UI auth flow:**
+- Navigate to `https://teamserver:50051/ui/`
+- Browser presents the client cert during TLS handshake
+- Click "Authenticate with Certificate" for automatic login, or use username + token for password-based auth
 
 ### 2.2 Deploy Redirectors (Optional)
 

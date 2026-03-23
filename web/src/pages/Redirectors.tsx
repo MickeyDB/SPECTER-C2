@@ -112,7 +112,10 @@ interface DeployWizardState {
   provider: string
   redirectorType: string
   domain: string
+  name: string
   profileId: string
+  backendUrl: string
+  decoyResponse: string
   deploying: boolean
   result: { success: boolean; message: string } | null
 }
@@ -398,14 +401,37 @@ function DeployWizard({
 
           {state.step === 'domain' && (
             <div className="flex flex-col gap-3">
-              <label className="text-xs font-medium text-specter-muted">Domain</label>
-              <input
-                type="text"
-                value={state.domain}
-                onChange={(e) => onUpdate({ domain: e.target.value })}
-                placeholder="redirector.example.com"
-                className="rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
-              />
+              <div>
+                <label className="mb-1 block text-xs font-medium text-specter-muted">Name</label>
+                <input
+                  type="text"
+                  value={state.name}
+                  onChange={(e) => onUpdate({ name: e.target.value })}
+                  placeholder="azure-redir-01"
+                  className="w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-specter-muted">Domain</label>
+                <input
+                  type="text"
+                  value={state.domain}
+                  onChange={(e) => onUpdate({ domain: e.target.value })}
+                  placeholder="redirector.example.com"
+                  className="w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-specter-muted">Backend URL (teamserver)</label>
+                <input
+                  type="text"
+                  value={state.backendUrl}
+                  onChange={(e) => onUpdate({ backendUrl: e.target.value })}
+                  placeholder={window.location.origin}
+                  className="w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
+                />
+                <p className="mt-1 text-[10px] text-specter-muted">Leave blank to use current origin</p>
+              </div>
             </div>
           )}
 
@@ -443,12 +469,24 @@ function DeployWizard({
               <div className="rounded border border-specter-border bg-specter-surface p-3">
                 <div className="flex flex-col gap-2 text-xs">
                   <div className="flex justify-between">
+                    <span className="text-specter-muted">Name:</span>
+                    <span className="text-specter-text">{state.name || '(auto)'}</span>
+                  </div>
+                  <div className="flex justify-between">
                     <span className="text-specter-muted">Provider:</span>
                     <span className="text-specter-text">{state.provider}</span>
                   </div>
                   <div className="flex justify-between">
+                    <span className="text-specter-muted">Type:</span>
+                    <span className="text-specter-text">{state.redirectorType}</span>
+                  </div>
+                  <div className="flex justify-between">
                     <span className="text-specter-muted">Domain:</span>
                     <span className="text-specter-text">{state.domain || '(auto-assign)'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-specter-muted">Backend:</span>
+                    <span className="text-specter-text">{state.backendUrl || window.location.origin}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-specter-muted">Profile:</span>
@@ -743,11 +781,22 @@ export function Redirectors() {
     setDeployWizard((prev) => (prev ? { ...prev, deploying: true, result: null } : null))
 
     try {
+      const id = crypto.randomUUID()
+      const name = deployWizard.name || `${deployWizard.provider.toLowerCase()}-${Date.now()}`
+      const backendUrl = deployWizard.backendUrl || window.location.origin
       const configYaml = [
+        `id: "${id}"`,
+        `name: "${name}"`,
         `type: ${deployWizard.redirectorType}`,
         `provider: ${deployWizard.provider}`,
-        `domain: ${deployWizard.domain}`,
-        `profile_id: ${deployWizard.profileId}`,
+        `domain: "${deployWizard.domain}"`,
+        `tls_cert_mode: ProviderManaged`,
+        `backend_url: "${backendUrl}"`,
+        `filtering_rules:`,
+        `  profile_id: "${deployWizard.profileId}"`,
+        `  decoy_response: "${deployWizard.decoyResponse || '<!DOCTYPE html><html><head><title>404</title></head><body><h1>Not Found</h1></body></html>'}"`,
+        `health_check_interval: 60`,
+        `auto_rotate_on_block: false`,
       ].join('\n')
 
       const req = create(DeployRedirectorRequestSchema, { configYaml })
@@ -807,7 +856,10 @@ export function Redirectors() {
                 provider: '',
                 redirectorType: '',
                 domain: '',
+                name: '',
                 profileId: '',
+                backendUrl: '',
+                decoyResponse: '',
                 deploying: false,
                 result: null,
               })
