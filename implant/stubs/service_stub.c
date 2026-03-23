@@ -84,8 +84,6 @@ typedef struct _SERVICE_TABLE_ENTRYW {
 /*  Embedded data section                                              */
 /* ------------------------------------------------------------------ */
 
-#pragma section(".data", read, write)
-
 /* Config region */
 __attribute__((section(".data"), used))
 static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONFIG_MAX_CAPACITY] = {

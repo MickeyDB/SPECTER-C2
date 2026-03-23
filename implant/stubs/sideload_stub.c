@@ -22,8 +22,6 @@
 /*  the regions in place.                                              */
 /* ------------------------------------------------------------------ */
 
-#pragma section(".data", read, write)
-
 /**
  * Config region:
  *   [16 bytes: 0x43 marker]
