@@ -1,0 +1,10 @@
+target/
+node_modules/
+web/dist/
+implant/build/
+.git/
+.github/
+*.md
+!CLAUDE.md
+Auto Run Docs/
+infrastructure/

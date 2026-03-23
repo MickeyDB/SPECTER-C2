@@ -120,7 +120,7 @@ Implant: `/Users/mdebaets/Documents/SPECTER/implant/`
       - IGNORE: continue normally (for testing in VMs during development)
     - Integration: run anti-analysis checks once during `implant_entry()` init sequence, before establishing comms
 
-- [ ] Set up CI/CD pipeline and Docker packaging:
+- [x] Set up CI/CD pipeline and Docker packaging:
   - Create `.github/workflows/ci.yml` — GitHub Actions CI pipeline:
     - **Trigger**: on push to main/develop, on pull requests
     - **Jobs**:

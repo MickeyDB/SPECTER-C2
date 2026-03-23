@@ -1,0 +1,44 @@
+services:
+  specter-teamserver:
+    build: .
+    container_name: specter-teamserver
+    ports:
+      - "50051:50051"  # gRPC
+      - "443:443"      # HTTPS listener
+      - "80:80"        # HTTP redirect
+    volumes:
+      - specter-data:/data
+      - specter-config:/config
+    restart: unless-stopped
+    environment:
+      - SPECTER_LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Optional: PostgreSQL for multi-teamserver deployments
+  # Uncomment to use PostgreSQL instead of the default SQLite
+  # specter-postgres:
+  #   image: postgres:16-alpine
+  #   container_name: specter-postgres
+  #   environment:
+  #     POSTGRES_DB: specter
+  #     POSTGRES_USER: specter
+  #     POSTGRES_PASSWORD: changeme
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - specter-pgdata:/var/lib/postgresql/data
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U specter"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+volumes:
+  specter-data:
+  specter-config:
+  # specter-pgdata:

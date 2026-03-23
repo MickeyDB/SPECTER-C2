@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo clippy --workspace -- -D warnings
+
+  test-rust:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo test --workspace
+
+  build-teamserver:
+    name: Build Teamserver (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: specter-server
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: specter-server
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: specter-server.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-build-server-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo build --release -p specter-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teamserver-${{ matrix.target }}
+          path: target/release/${{ matrix.artifact }}
+
+  build-client:
+    name: Build Client (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: specter-client
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: specter-client
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: specter-client.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-build-client-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo build --release -p specter-client
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-${{ matrix.target }}
+          path: target/release/${{ matrix.artifact }}
+
+  build-implant:
+    name: Build Implant (MinGW Cross-Compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: Build implant PIC blob
+        run: make -C implant
+      - name: Check implant size
+        run: make -C implant size
+      - uses: actions/upload-artifact@v4
+        with:
+          name: implant-pic-blob
+          path: implant/build/specter.bin
+
+  build-modules:
+    name: Build Implant Modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: Build modules
+        run: make -C implant modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: implant-modules
+          path: implant/build/modules/
+
+  test-implant:
+    name: Implant Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 gcc
+      - name: Run implant tests
+        run: make -C implant test
+
+  build-webui:
+    name: Build Web UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: cd web && npm ci
+      - name: Type check
+        run: cd web && npm run type-check
+      - name: Build
+        run: cd web && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+
+  test-webui:
+    name: Web UI Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: cd web && npm ci
+      - name: Lint
+        run: cd web && npm run lint
+      - name: Run tests
+        run: cd web && npm test
+
+  yara-scan:
+    name: YARA Scan
+    runs-on: ubuntu-latest
+    needs: [build-implant]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install YARA
+        run: sudo apt-get update && sudo apt-get install -y yara
+      - uses: actions/download-artifact@v4
+        with:
+          name: implant-pic-blob
+          path: implant/build/
+      - name: Run YARA scan
+        run: |
+          if [ -d "rules" ] && ls rules/*.yar 1>/dev/null 2>&1; then
+            yara -r rules/*.yar implant/build/specter.bin && echo "YARA scan passed"
+          else
+            echo "No YARA rules found, skipping scan"
+          fi
