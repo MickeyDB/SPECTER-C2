@@ -235,32 +235,32 @@ fn resolve_module_dir(
 /// Each Terraform module has its own expected variable names, so we map the
 /// generic `RedirectorConfig` fields to the provider-specific variables.
 fn build_tfvars(config: &RedirectorConfig) -> serde_json::Value {
-    match (&config.redirector_type, &config.provider) {
-        // Azure App Service redirector expects: target_url, app_name, resource_group_name, location
-        (RedirectorType::VPS, RedirectorProvider::Azure) => {
-            // Derive a valid app name from the redirector name (lowercase, alphanumeric + hyphens)
-            let app_name = config
-                .name
-                .to_lowercase()
-                .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
-                .collect::<String>();
-            serde_json::json!({
-                "target_url": config.backend_url,
-                "app_name": app_name,
-                "resource_group_name": format!("rg-specter-{}", config.id.chars().take(8).collect::<String>()),
-            })
-        }
-        // Default: pass generic vars used by most modules
-        _ => serde_json::json!({
-            "redirector_id": config.id,
-            "domain": config.domain,
-            "alternative_domains": config.alternative_domains,
-            "backend_url": config.backend_url,
-            "profile_id": config.filtering_rules.profile_id,
-            "decoy_response": config.filtering_rules.decoy_response,
-        }),
+    // All modules share the same core variables matching the module's variables.tf.
+    // Optional fields are only included when non-empty so Terraform uses its defaults.
+    let mut vars = serde_json::json!({
+        "redirector_id": config.id,
+        "domain": config.domain,
+        "backend_url": config.backend_url,
+        "profile_id": config.filtering_rules.profile_id,
+    });
+
+    let map = vars.as_object_mut().unwrap();
+
+    if !config.alternative_domains.is_empty() {
+        map.insert(
+            "alternative_domains".into(),
+            serde_json::json!(config.alternative_domains),
+        );
     }
+
+    if !config.filtering_rules.decoy_response.is_empty() {
+        map.insert(
+            "decoy_response".into(),
+            serde_json::json!(config.filtering_rules.decoy_response),
+        );
+    }
+
+    vars
 }
 
 /// Execute a terraform command, returning an error if it fails.
