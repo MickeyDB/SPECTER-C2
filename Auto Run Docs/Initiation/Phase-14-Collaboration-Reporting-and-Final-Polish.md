@@ -90,7 +90,7 @@ Implant: `/Users/mdebaets/Documents/SPECTER/implant/`
       - Report history: list of previously generated reports
   - TUI command: `report generate [campaign_id] [--format md|json]` → generates and displays/saves report
 
-- [ ] Implement anti-analysis countermeasures in the implant:
+- [x] Implement anti-analysis countermeasures in the implant:
   - Create `implant/core/src/evasion/antianalysis.c` and `implant/core/include/antianalysis.h`:
     - **VM detection**:
       - CPUID check: query hypervisor brand string (leaf 0x40000000) — detect VMware, Hyper-V, KVM, VirtualBox, QEMU
