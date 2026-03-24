@@ -1,5 +1,16 @@
 /* SPECTER Implant Linker Script
- * Produces a single .text section PIC blob with no CRT startup.
+ * Produces a single flat PIC blob with implant_entry at offset 0.
+ *
+ * Section ordering uses PE subsection sorting ($ suffix):
+ *   .text$A  — entry point (offset 0, guaranteed first)
+ *   .text$B  — all other code
+ *   .text$C  — read-only data (strings, constants)
+ *   .text$D  — initialized data (globals)
+ *   .text$E  — uninitialized data (BSS)
+ *   .text$F  — exception handling tables (.pdata/.xdata)
+ *
+ * After the extern→static refactor, there should be ZERO .refptr
+ * sections. They are discarded as a safety net.
  */
 
 ENTRY(implant_entry)
@@ -10,15 +21,26 @@ SECTIONS
 
     .text :
     {
-        *(.text.entry)       /* Entry point first */
-        *(.text*)            /* All code */
-        *(.rdata*)           /* Read-only data (strings, constants) */
-        *(.data*)            /* Initialized data */
-        *(.bss*)             /* Uninitialized data */
+        /* A: Entry point — must be at offset 0 */
+        *(.text.entry)
+        *(.text$A)
 
-        /* .pdata (RUNTIME_FUNCTION array) and .xdata (UNWIND_INFO)
-           are kept in the PIC blob so the implant can register them
-           with RtlAddFunctionTable for proper stack unwinding. */
+        /* B: All other code */
+        *(.text$B)
+        *(.text .text.*)
+
+        /* C: Read-only data */
+        *(.rdata .rdata.* .text$C)
+
+        /* D: Initialized data */
+        . = ALIGN(16);
+        *(.data .data.* .text$D)
+
+        /* E: Uninitialized data (BSS) */
+        . = ALIGN(16);
+        *(.bss .bss.* .text$E COMMON)
+
+        /* F: Exception handling tables for RtlAddFunctionTable */
         . = ALIGN(8);
         __pdata_start = .;
         *(.pdata)
@@ -32,6 +54,7 @@ SECTIONS
 
     /DISCARD/ :
     {
+        *(.rdata$.refptr.*)  /* MinGW pseudo-GOT — must not exist after refactor */
         *(.reloc)
         *(.rsrc)
         *(.debug*)
@@ -42,5 +65,8 @@ SECTIONS
         *(.ctors)
         *(.dtors)
         *(.CRT*)
+        *(.idata*)
+        *(.didat*)
+        *(.tls*)
     }
 }

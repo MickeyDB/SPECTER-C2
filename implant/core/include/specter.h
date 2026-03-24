@@ -294,7 +294,4 @@ typedef struct _IMPLANT_CONTEXT {
     BOOL           running;         /* Implant main loop flag             */
 } IMPLANT_CONTEXT;
 
-/* Global implant context — defined in globals.c */
-extern IMPLANT_CONTEXT g_ctx;
-
 #endif /* SPECTER_H */

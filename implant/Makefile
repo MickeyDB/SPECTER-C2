@@ -15,12 +15,14 @@ endif
 
 CFLAGS  = -Wall -Werror -Os -fno-stack-protector -funwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \
-          -falign-labels=1 -falign-loops=1 -nostdlib -nostdinc \
+          -falign-labels=1 -falign-loops=1 -fno-common -nostdlib -nostdinc \
           -ffreestanding -masm=intel -std=c11 -DWIN32_LEAN_AND_MEAN \
           -mno-stack-arg-probe $(DEV_FLAGS) \
           -Icore/include
 
-LDFLAGS = -T scripts/linker.ld -nostdlib --no-dynamic-linker --image-base=0 -Map=build/specter.map
+LDFLAGS = -T scripts/linker.ld -nostdlib --no-dynamic-linker --image-base=0 \
+          --disable-auto-import --disable-runtime-pseudo-reloc \
+          -Map=build/specter.map
 
 SRC_DIR   = core/src
 EVA_DIR   = core/src/evasion
@@ -29,22 +31,15 @@ COMMS_DIR = core/src/comms
 ASM_DIR   = core/asm
 BUILD_DIR = build
 
-# Source files
-C_SRCS  = $(wildcard $(SRC_DIR)/*.c)
-EVA_SRCS = $(wildcard $(EVA_DIR)/*.c)
-BUS_SRCS = $(wildcard $(BUS_DIR)/*.c)
-COMMS_SRCS = $(wildcard $(COMMS_DIR)/*.c)
-ASM_SRCS = $(wildcard $(ASM_DIR)/*.S)
+# Unity build: compile all C sources as a single translation unit to
+# eliminate MinGW .refptr pseudo-GOT entries (which break PIC loading).
+# The assembly stub is compiled separately.
+UNITY_SRC = $(SRC_DIR)/unity.c
+ASM_SRCS  = $(wildcard $(ASM_DIR)/*.S)
 
-# Object files — entry.o MUST be first so implant_entry is at offset 0
-# in the PIC blob (the stub jumps to offset 0).
-ENTRY_OBJ = $(BUILD_DIR)/entry.o
-C_OBJS   = $(filter-out $(ENTRY_OBJ),$(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SRCS)))
-EVA_OBJS = $(patsubst $(EVA_DIR)/%.c,$(BUILD_DIR)/evasion_%.o,$(EVA_SRCS))
-BUS_OBJS = $(patsubst $(BUS_DIR)/%.c,$(BUILD_DIR)/bus_%.o,$(BUS_SRCS))
-COMMS_OBJS = $(patsubst $(COMMS_DIR)/%.c,$(BUILD_DIR)/comms_%.o,$(COMMS_SRCS))
-ASM_OBJS = $(patsubst $(ASM_DIR)/%.S,$(BUILD_DIR)/%.o,$(ASM_SRCS))
-OBJS     = $(ENTRY_OBJ) $(C_OBJS) $(EVA_OBJS) $(BUS_OBJS) $(COMMS_OBJS) $(ASM_OBJS)
+UNITY_OBJ = $(BUILD_DIR)/unity.o
+ASM_OBJS  = $(patsubst $(ASM_DIR)/%.S,$(BUILD_DIR)/%.o,$(ASM_SRCS))
+OBJS      = $(UNITY_OBJ) $(ASM_OBJS)
 
 # Output
 TARGET_ELF = $(BUILD_DIR)/specter.elf
@@ -79,18 +74,11 @@ modules: $(MOD_BUILD_DIR) $(MOD_BINS)
 $(MOD_BUILD_DIR):
 	mkdir -p $(MOD_BUILD_DIR)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+# Unity build: single C compilation unit
+$(UNITY_OBJ): $(UNITY_SRC) $(wildcard $(SRC_DIR)/*.c $(EVA_DIR)/*.c $(BUS_DIR)/*.c $(COMMS_DIR)/*.c)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/evasion_%.o: $(EVA_DIR)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/bus_%.o: $(BUS_DIR)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/comms_%.o: $(COMMS_DIR)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
+# Assembly stubs compiled separately
 $(BUILD_DIR)/%.o: $(ASM_DIR)/%.S
 	$(CC) $(CFLAGS) -c $< -o $@
 

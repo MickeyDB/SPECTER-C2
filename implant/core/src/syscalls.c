@@ -11,12 +11,14 @@
 #include "syscalls.h"
 
 /* ------------------------------------------------------------------ */
-/*  Global syscall table instance                                       */
+/*  Static syscall table instance (no extern — avoids .refptr entries)  */
 /* ------------------------------------------------------------------ */
 
-SYSCALL_TABLE g_syscall_table;
+static SYSCALL_TABLE g_syscall_table;
 
-/* Alias for backward compatibility — g_ctx.syscall_table points here */
+SYSCALL_TABLE *sc_get_table(void) {
+    return &g_syscall_table;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Required Nt* hashes to populate during init                        */
