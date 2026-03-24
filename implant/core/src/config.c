@@ -251,6 +251,7 @@ NTSTATUS cfg_update(IMPLANT_CONTEXT *ctx, const BYTE *data, DWORD len) {
 #define CFG_TLV_KILL_DATE           0x86
 #define CFG_TLV_PROFILE_BLOB        0x87
 #define CFG_TLV_EVASION_FLAGS       0x88
+#define CFG_TLV_IMPLANT_PUBKEY      0x89
 
 static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) {
     DWORD pos = 0;
@@ -274,6 +275,11 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
         case CFG_TLV_IMPLANT_PRIVKEY:
             if (vlen == 32)
                 spec_memcpy(cfg->implant_privkey, val, 32);
+            break;
+
+        case CFG_TLV_IMPLANT_PUBKEY:
+            if (vlen == 32)
+                spec_memcpy(cfg->implant_pubkey, val, 32);
             break;
 
         case CFG_TLV_CHANNEL_KIND: {

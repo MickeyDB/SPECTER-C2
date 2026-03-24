@@ -57,6 +57,7 @@ mod config_field {
     pub const KILL_DATE: u8 = 0x86;
     pub const PROFILE_BLOB: u8 = 0x87;
     pub const EVASION_FLAGS: u8 = 0x88;
+    pub const IMPLANT_PUBKEY: u8 = 0x89;
 }
 
 /// Generate a complete implant config blob.
@@ -149,6 +150,13 @@ pub fn generate_config_with_evasion(
         &mut plaintext,
         config_field::IMPLANT_PRIVKEY_ENCRYPTED,
         implant_secret.as_bytes(),
+    );
+
+    // Implant public key (implant needs this for checkin identification)
+    tlv_bytes(
+        &mut plaintext,
+        config_field::IMPLANT_PUBKEY,
+        implant_pubkey.as_bytes(),
     );
 
     // Channels
