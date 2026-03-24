@@ -154,6 +154,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         Arc::clone(&webhook_manager),
         Arc::clone(&campaign_manager),
         Arc::clone(&payload_builder),
+        pool.clone(),
         Arc::clone(&presence_manager),
         Arc::clone(&chat_service),
         Arc::clone(&report_generator),

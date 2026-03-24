@@ -119,7 +119,7 @@ async fn process_ws_beacon(data: &[u8], state: &HttpState) -> Option<Vec<u8>> {
     let tag = &data[tag_start..tag_end];
 
     // Derive session key using the same approach as the beacon handler
-    let (session_key, _session_id) = super::derive_session_key(state, implant_id_prefix)
+    let (session_key, _session_id, implant_pubkey) = super::derive_session_key(state, implant_id_prefix)
         .await
         .ok()?;
 
@@ -151,7 +151,7 @@ async fn process_ws_beacon(data: &[u8], state: &HttpState) -> Option<Vec<u8>> {
         }
         None => state
             .session_manager
-            .register_or_update(
+            .register_or_update_with_pubkey(
                 &checkin_req.hostname,
                 &checkin_req.username,
                 checkin_req.pid,
@@ -160,6 +160,7 @@ async fn process_ws_beacon(data: &[u8], state: &HttpState) -> Option<Vec<u8>> {
                 &checkin_req.process_name,
                 &checkin_req.internal_ip,
                 &checkin_req.external_ip,
+                &implant_pubkey,
             )
             .await
             .ok()?,

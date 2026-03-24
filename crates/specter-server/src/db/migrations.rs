@@ -305,5 +305,22 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS builds (
+            id TEXT PRIMARY KEY,
+            implant_pubkey BLOB NOT NULL,
+            implant_pubkey_prefix BLOB NOT NULL,
+            format TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            operator_id TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_builds_prefix ON builds(implant_pubkey_prefix)")
+        .execute(pool)
+        .await?;
+
     Ok(())
 }

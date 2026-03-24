@@ -18,7 +18,7 @@ async fn setup() -> (Arc<SessionManager>, Arc<TaskDispatcher>, axum::Router) {
     let pool = db::init_db(":memory:").await.unwrap();
     let bus = Arc::new(EventBus::new(64));
     let session_mgr = Arc::new(SessionManager::new(pool.clone(), bus.clone()));
-    let task_disp = Arc::new(TaskDispatcher::new(pool, bus));
+    let task_disp = Arc::new(TaskDispatcher::new(pool.clone(), bus));
 
     let secret = StaticSecret::random_from_rng(rand::thread_rng());
     let pubkey = PublicKey::from(&secret);
@@ -31,6 +31,7 @@ async fn setup() -> (Arc<SessionManager>, Arc<TaskDispatcher>, axum::Router) {
         server_pubkey: Arc::new(pubkey),
         listener_profile: None,
         profile_session_key: None,
+        pool: pool.clone(),
     };
     let router = build_router(state);
     (session_mgr, task_disp, router)

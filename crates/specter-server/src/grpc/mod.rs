@@ -25,6 +25,7 @@ use crate::redirector::RedirectorOrchestrator;
 use crate::reports::ReportGenerator;
 use crate::session::SessionManager;
 use crate::task::TaskDispatcher;
+use sqlx::SqlitePool;
 
 pub struct SpecterGrpcService {
     session_manager: Arc<SessionManager>,
@@ -41,6 +42,7 @@ pub struct SpecterGrpcService {
     azure_listener_manager: Option<Arc<AzureListenerManager>>,
     redirector_orchestrator: Option<Arc<RedirectorOrchestrator>>,
     payload_builder: Arc<crate::builder::PayloadBuilder>,
+    pool: SqlitePool,
     presence_manager: Arc<PresenceManager>,
     chat_service: Arc<ChatService>,
     report_generator: Arc<ReportGenerator>,
@@ -60,6 +62,7 @@ impl SpecterGrpcService {
         webhook_manager: Arc<WebhookManager>,
         campaign_manager: Arc<CampaignManager>,
         payload_builder: Arc<crate::builder::PayloadBuilder>,
+        pool: SqlitePool,
         presence_manager: Arc<PresenceManager>,
         chat_service: Arc<ChatService>,
         report_generator: Arc<ReportGenerator>,
@@ -79,6 +82,7 @@ impl SpecterGrpcService {
             azure_listener_manager: None,
             redirector_orchestrator: None,
             payload_builder,
+            pool,
             presence_manager,
             chat_service,
             report_generator,
@@ -1582,6 +1586,20 @@ impl SpecterService for SpecterGrpcService {
                 &serde_json::json!({"format": req.format, "build_id": build_id}),
             )
             .await;
+
+        // Store implant pubkey in builds table for session lookup on first beacon
+        sqlx::query(
+            "INSERT INTO builds (id, implant_pubkey, implant_pubkey_prefix, format, created_at, operator_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        )
+        .bind(&build_id)
+        .bind(&implant_pubkey[..])
+        .bind(&implant_pubkey[..12])
+        .bind(&req.format)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(&ctx.operator_id)
+        .execute(&self.pool)
+        .await
+        .ok(); // Don't fail the build if DB insert fails
 
         Ok(Response::new(GeneratePayloadResponse {
             success: true,
