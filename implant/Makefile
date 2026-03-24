@@ -15,7 +15,7 @@ endif
 
 CFLAGS  = -Wall -Werror -Os -fno-stack-protector -funwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \
-          -falign-labels=1 -falign-loops=1 -fPIC -nostdlib -nostdinc \
+          -falign-labels=1 -falign-loops=1 -nostdlib -nostdinc \
           -ffreestanding -masm=intel -std=c11 -DWIN32_LEAN_AND_MEAN \
           -mno-stack-arg-probe $(DEV_FLAGS) \
           -Icore/include

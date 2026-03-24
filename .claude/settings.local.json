@@ -21,7 +21,10 @@
       "Bash(grep -r \"specterClient\\\\.\" /c/Users/localuser/Documents/SPECTER-C2/web/src/pages/*.tsx)",
       "Bash(grep -r \"DeleteListener\" /c/Users/localuser/Documents/SPECTER-C2/web/src/gen/specter/v1/*.ts)",
       "Bash(python3 compute_hashes.py)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(grep -oP \"\"text\"\":\"\".*?\"\" C:UsersLOCALU~1AppDataLocalTempclaudeC--Users-localuser-Documents-SPECTER-C2fee3014d-7023-4253-805d-72e814ad32e3tasksaff162a4f05a2295e.output)",
+      "Bash(python3 -c \"import sys; [print\\(l.replace\\(''''\\\\n'''',''''\\\\n''''\\).replace\\(''''\\\\'''',''''\\\\''''\\)\\) for l in sys.stdin]\")",
+      "Bash(python3:*)"
     ]
   }
 }
