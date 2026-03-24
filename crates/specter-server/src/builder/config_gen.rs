@@ -201,8 +201,15 @@ pub fn generate_config_with_evasion(
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
+    // AAD = magic + version (first 8 bytes of CONFIG_BLOB_HEADER).
+    // The implant passes these as additional authenticated data during decryption.
+    let mut aad = [0u8; 8];
+    aad[..4].copy_from_slice(&0x53504543u32.to_le_bytes()); // CONFIG_MAGIC
+    aad[4..8].copy_from_slice(&1u32.to_le_bytes());          // CONFIG_VERSION
+
+    use chacha20poly1305::aead::Payload;
     let ciphertext_with_tag = cipher
-        .encrypt(nonce, plaintext.as_slice())
+        .encrypt(nonce, Payload { msg: &plaintext, aad: &aad })
         .map_err(|e| BuilderError::Config(format!("config encryption failed: {e}")))?;
 
     // ChaCha20-Poly1305 appends 16-byte tag to ciphertext.
@@ -358,11 +365,13 @@ transform:
         ct_with_tag.extend_from_slice(ciphertext);
         ct_with_tag.extend_from_slice(tag);
 
-        // Decrypt
+        // Decrypt with AAD = magic + version (first 8 bytes of header)
         let nonce = Nonce::from_slice(nonce_bytes);
         let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+        use chacha20poly1305::aead::Payload;
+        let aad = &blob[0..8]; // magic + version
         let plaintext = cipher
-            .decrypt(nonce, ct_with_tag.as_slice())
+            .decrypt(nonce, Payload { msg: ct_with_tag.as_slice(), aad })
             .expect("decryption should succeed");
 
         // Verify TLV structure: walk entries
