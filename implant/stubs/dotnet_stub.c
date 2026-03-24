@@ -92,9 +92,11 @@ void WinMainCRTStartup(void) {
     stub_memcpy(cdst + sizeof(DWORD), cfg_blob, cfg_len);
     g_stub_exit_code = 209;
 
-    fn_implant_entry entry = (fn_implant_entry)exec;
-    entry(NULL);
-    g_stub_exit_code = 99; /* PIC returned */
+    /* Skip PIC execution for diagnostic — just verify embedding works */
+    g_stub_exit_code = 209;
+    /* fn_implant_entry entry = (fn_implant_entry)exec;
+    entry(NULL); */
+    /* g_stub_exit_code = 99; */
 
 done:;
     DWORD code = g_stub_exit_code;
