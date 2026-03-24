@@ -66,6 +66,9 @@
 #define HASH_GETUSERNAMEA       0x4C0087C6  /* "GetUserNameA"       */
 #define HASH_RTLGETVERSION      0x491E967D  /* "RtlGetVersion"      */
 
+/* Dev build diagnostics */
+#define HASH_OUTPUTDEBUGSTRINGA 0xF9EA2815  /* "OutputDebugStringA" */
+
 /* advapi32.dll hash (may also be defined in sleep.h) */
 #ifndef HASH_ADVAPI32_DLL
 #define HASH_ADVAPI32_DLL       0x67208A49  /* "advapi32.dll"       */
