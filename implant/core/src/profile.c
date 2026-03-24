@@ -10,6 +10,7 @@
 #include "specter.h"
 #include "ntdefs.h"
 #include "profile.h"
+#include "util.h"
 
 /* ------------------------------------------------------------------ */
 /*  PRNG (shared with sleep.c pattern — LCG for jitter/random)         */
@@ -41,12 +42,7 @@ static WORD load16_le(const BYTE *p) {
     return (WORD)p[0] | ((WORD)p[1] << 8);
 }
 
-static QWORD load64_le(const BYTE *p) {
-    QWORD v = 0;
-    for (int i = 7; i >= 0; i--)
-        v = (v << 8) | p[i];
-    return v;
-}
+/* load64_le provided by util.h */
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers — string copy with bounds                          */
@@ -101,8 +97,7 @@ static DWORD uint_to_dec(DWORD val, char *buf, DWORD buf_size) {
 /*  Base64 encode/decode (used for embed point encoding)                */
 /* ------------------------------------------------------------------ */
 
-static const char b64_table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/* b64 table provided by util.h as util_b64_table */
 
 static DWORD b64_encode(const BYTE *in, DWORD in_len, char *out, DWORD out_size) {
     DWORD needed = ((in_len + 2) / 3) * 4;
@@ -112,31 +107,30 @@ static DWORD b64_encode(const BYTE *in, DWORD in_len, char *out, DWORD out_size)
     DWORD i = 0;
     while (i + 2 < in_len) {
         DWORD v = ((DWORD)in[i] << 16) | ((DWORD)in[i+1] << 8) | in[i+2];
-        out[oi++] = b64_table[(v >> 18) & 0x3F];
-        out[oi++] = b64_table[(v >> 12) & 0x3F];
-        out[oi++] = b64_table[(v >>  6) & 0x3F];
-        out[oi++] = b64_table[v & 0x3F];
+        out[oi++] = util_b64_table[(v >> 18) & 0x3F];
+        out[oi++] = util_b64_table[(v >> 12) & 0x3F];
+        out[oi++] = util_b64_table[(v >>  6) & 0x3F];
+        out[oi++] = util_b64_table[v & 0x3F];
         i += 3;
     }
     if (i < in_len) {
         DWORD v = (DWORD)in[i] << 16;
         if (i + 1 < in_len) v |= (DWORD)in[i+1] << 8;
-        out[oi++] = b64_table[(v >> 18) & 0x3F];
-        out[oi++] = b64_table[(v >> 12) & 0x3F];
-        out[oi++] = (i + 1 < in_len) ? b64_table[(v >> 6) & 0x3F] : '=';
+        out[oi++] = util_b64_table[(v >> 18) & 0x3F];
+        out[oi++] = util_b64_table[(v >> 12) & 0x3F];
+        out[oi++] = (i + 1 < in_len) ? util_b64_table[(v >> 6) & 0x3F] : '=';
         out[oi++] = '=';
     }
     out[oi] = '\0';
     return oi;
 }
 
-static BYTE b64_decode_char(char c) {
-    if (c >= 'A' && c <= 'Z') return (BYTE)(c - 'A');
-    if (c >= 'a' && c <= 'z') return (BYTE)(c - 'a' + 26);
-    if (c >= '0' && c <= '9') return (BYTE)(c - '0' + 52);
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    return 0xFF;
+/* profile_b64_decode_char: wrapper around util_b64_decode_char.
+   Profile code uses 0xFF for invalid; util version returns -1.
+   Callers compare against 0xFF, so map accordingly. */
+static inline BYTE profile_b64_decode_char(char c) {
+    int v = util_b64_decode_char(c);
+    return (v < 0) ? 0xFF : (BYTE)v;
 }
 
 static DWORD b64_decode(const char *in, DWORD in_len, BYTE *out, DWORD out_size) {
@@ -150,10 +144,10 @@ static DWORD b64_decode(const char *in, DWORD in_len, BYTE *out, DWORD out_size)
 
     DWORD oi = 0;
     for (DWORD i = 0; i + 3 < in_len; i += 4) {
-        BYTE a = b64_decode_char(in[i]);
-        BYTE b = b64_decode_char(in[i+1]);
-        BYTE c = b64_decode_char(in[i+2]);
-        BYTE d = b64_decode_char(in[i+3]);
+        BYTE a = profile_b64_decode_char(in[i]);
+        BYTE b = profile_b64_decode_char(in[i+1]);
+        BYTE c = profile_b64_decode_char(in[i+2]);
+        BYTE d = profile_b64_decode_char(in[i+3]);
         if (a == 0xFF || b == 0xFF) return 0;
 
         DWORD v = ((DWORD)a << 18) | ((DWORD)b << 12);

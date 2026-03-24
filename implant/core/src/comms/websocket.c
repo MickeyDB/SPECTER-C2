@@ -15,6 +15,7 @@
 #include "config.h"
 #include "comms.h"
 #include "comms_ws.h"
+#include "util.h"
 
 /* ------------------------------------------------------------------ */
 /*  Static state                                                       */
@@ -233,8 +234,7 @@ void ws_sha1_final(WS_SHA1_CTX *ctx, BYTE digest[WS_SHA1_DIGEST_SIZE]) {
 /*  Base64 encoding/decoding (standard alphabet, with padding)         */
 /* ------------------------------------------------------------------ */
 
-static const char b64_table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/* util_b64_table and util_b64_decode_char provided by util.h */
 
 DWORD ws_base64_encode(const BYTE *data, DWORD data_len,
                        char *output, DWORD output_len) {
@@ -254,16 +254,16 @@ DWORD ws_base64_encode(const BYTE *data, DWORD data_len,
         BYTE b1 = (remaining > 1) ? data[i + 1] : 0;
         BYTE b2 = (remaining > 2) ? data[i + 2] : 0;
 
-        output[out_pos++] = b64_table[(b0 >> 2) & 0x3F];
-        output[out_pos++] = b64_table[((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)];
+        output[out_pos++] = util_b64_table[(b0 >> 2) & 0x3F];
+        output[out_pos++] = util_b64_table[((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0F)];
 
         if (remaining > 1)
-            output[out_pos++] = b64_table[((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)];
+            output[out_pos++] = util_b64_table[((b1 & 0x0F) << 2) | ((b2 >> 6) & 0x03)];
         else
             output[out_pos++] = '=';
 
         if (remaining > 2)
-            output[out_pos++] = b64_table[b2 & 0x3F];
+            output[out_pos++] = util_b64_table[b2 & 0x3F];
         else
             output[out_pos++] = '=';
 
@@ -274,14 +274,7 @@ DWORD ws_base64_encode(const BYTE *data, DWORD data_len,
     return out_pos;
 }
 
-static int b64_decode_char(char c) {
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    return -1; /* padding or invalid */
-}
+/* b64_decode_char provided by util.h as util_b64_decode_char */
 
 DWORD ws_base64_decode(const char *input, DWORD input_len,
                        BYTE *output, DWORD output_len) {
@@ -297,10 +290,10 @@ DWORD ws_base64_decode(const char *input, DWORD input_len,
     DWORD i = 0;
 
     while (i + 3 < input_len) {
-        int a = b64_decode_char(input[i]);
-        int b = b64_decode_char(input[i + 1]);
-        int c_val = b64_decode_char(input[i + 2]);
-        int d = b64_decode_char(input[i + 3]);
+        int a = util_b64_decode_char(input[i]);
+        int b = util_b64_decode_char(input[i + 1]);
+        int c_val = util_b64_decode_char(input[i + 2]);
+        int d = util_b64_decode_char(input[i + 3]);
 
         if (a < 0 || b < 0) break;
 

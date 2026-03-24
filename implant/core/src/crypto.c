@@ -17,31 +17,7 @@
 #include "specter.h"
 #include "crypto.h"
 #include "peb.h"
-
-/* ================================================================== */
-/*  Utility: little-endian load/store                                  */
-/* ================================================================== */
-
-static DWORD load32_le(const BYTE *p) {
-    return (DWORD)p[0]       | ((DWORD)p[1] << 8) |
-           ((DWORD)p[2] << 16) | ((DWORD)p[3] << 24);
-}
-
-static void store32_le(BYTE *p, DWORD v) {
-    p[0] = (BYTE)(v);
-    p[1] = (BYTE)(v >> 8);
-    p[2] = (BYTE)(v >> 16);
-    p[3] = (BYTE)(v >> 24);
-}
-
-static QWORD load64_le(const BYTE *p) {
-    return (QWORD)load32_le(p) | ((QWORD)load32_le(p + 4) << 32);
-}
-
-static void store64_le(BYTE *p, QWORD v) {
-    store32_le(p, (DWORD)v);
-    store32_le(p + 4, (DWORD)(v >> 32));
-}
+#include "util.h"
 
 static DWORD rotl32(DWORD v, int n) {
     return (v << n) | (v >> (32 - n));
