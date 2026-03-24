@@ -54,7 +54,7 @@ $(BUILD_DIR)/dotnet_stub.exe: dotnet_stub.c stub_common.h
 	$(CC) $(CFLAGS) \
 	    -Wl,-e,WinMainCRTStartup \
 	    $(LDFLAGS_COMMON) \
-	    -Wl,--subsystem,windows \
+	    -Wl,--subsystem,console \
 	    -o $@ dotnet_stub.c
 	$(STRIP) --strip-all $@
 
