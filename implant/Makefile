@@ -22,6 +22,7 @@ CFLAGS  = -Wall -Werror -Os -fno-stack-protector -funwind-tables \
 
 LDFLAGS = -T scripts/linker.ld -nostdlib --no-dynamic-linker --image-base=0 \
           --disable-auto-import --disable-runtime-pseudo-reloc \
+          --sort-section=name \
           -Map=build/specter.map
 
 SRC_DIR   = core/src
