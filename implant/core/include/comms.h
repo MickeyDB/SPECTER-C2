@@ -268,6 +268,7 @@ typedef struct _COMMS_API {
     fn_FreeContextBuffer          pFreeContextBuffer;
     fn_ApplyControlToken          pApplyControlToken;
     BOOL resolved;
+    BOOL tls_available;             /* SChannel SSPI exports resolved   */
 } COMMS_API;
 
 /* ------------------------------------------------------------------ */

@@ -144,11 +144,17 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
     api->pFreeContextBuffer          = (fn_FreeContextBuffer)find_export_by_hash(sec, HASH_FREECTXBUFFER);
     api->pApplyControlToken          = (fn_ApplyControlToken)find_export_by_hash(sec, HASH_APPLYCTRLTOKEN);
 
-    if (!api->pAcquireCredentialsHandleA || !api->pInitializeSecurityContextA ||
-        !api->pDeleteSecurityContext || !api->pFreeCredentialsHandle ||
-        !api->pEncryptMessage || !api->pDecryptMessage ||
-        !api->pQueryContextAttributesA || !api->pFreeContextBuffer)
-        return STATUS_PROCEDURE_NOT_FOUND;
+    /* TLS (SChannel) exports are optional — HTTP channels don't need them.
+       Flag as resolved even if SSPI functions are missing; TLS init will
+       check and fail gracefully if a TLS channel is requested. */
+    api->tls_available = (api->pAcquireCredentialsHandleA &&
+                          api->pInitializeSecurityContextA &&
+                          api->pDeleteSecurityContext &&
+                          api->pFreeCredentialsHandle &&
+                          api->pEncryptMessage &&
+                          api->pDecryptMessage &&
+                          api->pQueryContextAttributesA &&
+                          api->pFreeContextBuffer);
 
     api->resolved = TRUE;
     return STATUS_SUCCESS;
