@@ -36,7 +36,7 @@ $(BUILD_DIR)/sideload_stub.dll: sideload_stub.c stub_common.h
 	    -Wl,-e,DllMain \
 	    $(LDFLAGS_COMMON) \
 	    -o $@ sideload_stub.c
-	$(STRIP) --strip-all $@
+	$(STRIP) --strip-debug $@
 
 # ---- Windows service EXE stub ----
 # Entry: ServiceEntry
@@ -46,7 +46,7 @@ $(BUILD_DIR)/service_stub.exe: service_stub.c stub_common.h
 	    $(LDFLAGS_COMMON) \
 	    -Wl,--subsystem,console \
 	    -o $@ service_stub.c
-	$(STRIP) --strip-all $@
+	$(STRIP) --strip-debug $@
 
 # ---- Native EXE stub (dotnet format slot) ----
 # Entry: WinMainCRTStartup
@@ -56,7 +56,7 @@ $(BUILD_DIR)/dotnet_stub.exe: dotnet_stub.c stub_common.h
 	    $(LDFLAGS_COMMON) \
 	    -Wl,--subsystem,console \
 	    -o $@ dotnet_stub.c
-	$(STRIP) --strip-all $@
+	$(STRIP) --strip-debug $@
 
 verify-hashes:
 	@echo "=== DJB2 Hash Verification ==="

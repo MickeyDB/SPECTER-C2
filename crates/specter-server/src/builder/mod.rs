@@ -412,17 +412,17 @@ impl PayloadBuilder {
                 ));
             }
 
-            // Data starts after marker(12) + pic_size(4) + entry_offset(4)
-            let data_offset = size_offset + 8;
-            let available = payload.len().saturating_sub(data_offset);
-            if pic_blob.len() > available || pic_blob.len() > PIC_MAX_CAPACITY {
+            if pic_blob.len() > PIC_MAX_CAPACITY {
                 return Err(BuilderError::Config(format!(
-                    "PIC blob ({} bytes) exceeds stub capacity ({} bytes available, {} max)",
+                    "PIC blob ({} bytes) exceeds max capacity ({} bytes)",
                     pic_blob.len(),
-                    available,
                     PIC_MAX_CAPACITY,
                 )));
             }
+
+            // Data region starts after marker(12) + pic_size(4) + entry_offset(4)
+            let data_offset = size_offset + 8;
+            let available = payload.len().saturating_sub(data_offset);
 
             // Write PIC blob size (u32 LE)
             payload[size_offset..size_offset + 4]
@@ -431,6 +431,17 @@ impl PayloadBuilder {
             // Write entry offset (u32 LE)
             payload[size_offset + 4..size_offset + 8]
                 .copy_from_slice(&entry_offset.to_le_bytes());
+
+            if pic_blob.len() > available {
+                // PE file's data section was truncated (zero-init optimization).
+                // Extend the payload to make room.
+                let needed = data_offset + pic_blob.len();
+                payload.resize(needed, 0);
+                tracing::info!(
+                    "Extended PE from {} to {} bytes to fit PIC blob ({} bytes)",
+                    available + data_offset, needed, pic_blob.len()
+                );
+            }
 
             // Copy PIC blob data
             payload[data_offset..data_offset + pic_blob.len()]
@@ -706,6 +717,36 @@ transform:
 
         // Overall size unchanged (in-place patching)
         assert_eq!(result.len(), 4096);
+    }
+
+    #[test]
+    fn test_embed_pic_blob_extends_pe_when_data_truncated() {
+        // Simulate real scenario: stub PE is 270KB but PIC blob is 254KB.
+        // The marker is near end of file, so there's not enough in-file space.
+        // embed_pic_blob should extend the payload.
+        let mut template = vec![0x00u8; 1024]; // Small PE (simulates truncated .data)
+        // Place PIC marker near the end (offset 900)
+        template[900..912].copy_from_slice(b"SPECPICBLOB\x00");
+        template[912..916].copy_from_slice(&0u32.to_le_bytes());
+        template[916..920].copy_from_slice(&0u32.to_le_bytes());
+        // Available after header: 1024 - 920 = 104 bytes (much less than PIC blob)
+
+        let pic_blob = vec![0xCC; 8192]; // 8KB PIC blob
+        let result = PayloadBuilder::embed_pic_blob(template, &pic_blob, 0).unwrap();
+
+        // File should have been extended
+        assert!(result.len() >= 920 + 8192, "PE should be extended to fit PIC blob, got {}", result.len());
+
+        // PIC size should be written
+        let pic_size = u32::from_le_bytes([result[912], result[913], result[914], result[915]]);
+        assert_eq!(pic_size, 8192);
+
+        // Entry offset should be 0
+        let entry_off = u32::from_le_bytes([result[916], result[917], result[918], result[919]]);
+        assert_eq!(entry_off, 0);
+
+        // PIC data should be at offset 920
+        assert_eq!(&result[920..920 + 8192], &pic_blob[..]);
     }
 
     #[test]
