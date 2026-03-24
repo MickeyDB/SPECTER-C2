@@ -106,6 +106,9 @@ static CONFIG_BLOB_HEADER *cfg_find_blob(PVOID pic_base) {
     return NULL;
 }
 
+/* Forward declaration — defined below cfg_init */
+static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len);
+
 /* ================================================================== */
 /*  cfg_init                                                           */
 /* ================================================================== */
@@ -176,8 +179,7 @@ IMPLANT_CONFIG *cfg_get(IMPLANT_CONTEXT *ctx) {
     return (IMPLANT_CONFIG *)ctx->config;
 }
 
-/* Forward declaration for TLV parser used in cfg_update */
-static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len);
+/* cfg_patch_tlv forward-declared above cfg_init */
 
 /* ================================================================== */
 /*  cfg_update — signed config update from teamserver                  */
