@@ -216,7 +216,7 @@ NTSTATUS memguard_encrypt(EVASION_CONTEXT *ctx) {
 
     /* Get stack base from TEB */
     PVOID teb = NULL;
-    __asm__ __volatile__("movq %%gs:0x30, %0" : "=r"(teb));
+    __asm__ __volatile__("mov %0, gs:[0x30]" : "=r"(teb));
     if (teb) {
         /* TEB.StackBase is at offset 0x08, TEB.StackLimit at 0x10 */
         PVOID stack_base  = *(PVOID *)((BYTE *)teb + 0x08);
@@ -310,7 +310,7 @@ NTSTATUS memguard_decrypt(EVASION_CONTEXT *ctx) {
     if (mg->stack.size > 0) {
         /* Get stack limit from TEB */
         PVOID teb = NULL;
-        __asm__ __volatile__("movq %%gs:0x30, %0" : "=r"(teb));
+        __asm__ __volatile__("mov %0, gs:[0x30]" : "=r"(teb));
         if (teb) {
             PVOID stack_limit = *(PVOID *)((BYTE *)teb + 0x10);
             DWORD stack_counter = heap_counter;

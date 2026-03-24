@@ -201,7 +201,7 @@ static DWORD gather_username(char *buf, DWORD buf_len) {
  */
 static DWORD gather_pid(void) {
     PVOID teb;
-    __asm__ volatile ("mov %%gs:0x30, %0" : "=r" (teb));
+    __asm__ volatile ("mov %0, gs:[0x30]" : "=r" (teb));
     return (DWORD)(QWORD)(*(PVOID *)((PBYTE)teb + 0x40));
 }
 
