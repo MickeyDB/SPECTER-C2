@@ -455,19 +455,29 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
     let nonce = Nonce::from_slice(nonce_bytes);
 
     let plaintext = match cipher.decrypt(nonce, ct_with_tag.as_slice()) {
-        Ok(pt) => pt,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Ok(pt) => {
+            tracing::info!("beacon_handler: decrypted {} bytes", pt.len());
+            pt
+        },
+        Err(e) => {
+            tracing::warn!("beacon_handler: AEAD decrypt failed: {e}");
+            return StatusCode::UNAUTHORIZED.into_response();
+        },
     };
 
     // Try binary TLV first (implant sends TLV), fall back to JSON (mock implant, profile path)
     let (checkin_req, is_binary) = if let Some(req) = parse_binary_checkin(&plaintext) {
+        tracing::info!("beacon_handler: parsed TLV checkin — host={}, user={}, pid={}",
+            req.hostname, req.username, req.pid);
         (req, true)
     } else if let Ok(req) = serde_json::from_slice::<CheckinRequest>(&plaintext) {
+        tracing::info!("beacon_handler: parsed JSON checkin");
         (req, false)
     } else {
         tracing::warn!(
-            "beacon: failed to parse checkin payload ({} bytes)",
-            plaintext.len()
+            "beacon_handler: failed to parse checkin payload ({} bytes, first 32: {:02x?})",
+            plaintext.len(),
+            &plaintext[..plaintext.len().min(32)]
         );
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -482,6 +492,8 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
         }
         None => {
             // New session from builds table — register with full pubkey
+            tracing::info!("beacon_handler: registering new session for pubkey {:02x}{:02x}{:02x}{:02x}...",
+                implant_pubkey[0], implant_pubkey[1], implant_pubkey[2], implant_pubkey[3]);
             match state
                 .session_manager
                 .register_or_update_with_pubkey(
