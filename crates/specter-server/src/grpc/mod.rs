@@ -1464,9 +1464,24 @@ impl SpecterService for SpecterGrpcService {
         // Resolve output format
         let output_format = crate::builder::OutputFormat::from_str(&req.format);
 
-        // Server keypair for this build
-        let server_secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
-        let server_pubkey = x25519_dalek::PublicKey::from(&server_secret);
+        // Look up the per-listener X25519 public key from the database.
+        // The listener_id field selects which listener's keypair to embed in the payload.
+        if req.listener_id.is_empty() {
+            return Err(Status::invalid_argument(
+                "listener_id is required to select the listener keypair for payload generation",
+            ));
+        }
+        let server_pubkey_bytes = self
+            .listener_manager
+            .get_listener_pubkey(&req.listener_id)
+            .await
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "Listener '{}' not found or has no X25519 keypair",
+                    req.listener_id
+                ))
+            })?;
+        let server_pubkey = x25519_dalek::PublicKey::from(server_pubkey_bytes);
 
         // Obfuscation settings
         let obf_settings = if let Some(ref o) = req.obfuscation {

@@ -693,8 +693,6 @@ pub struct ListenerManager {
     #[allow(dead_code)]
     event_bus: Arc<EventBus>,
     active: Mutex<HashMap<String, ActiveListener>>,
-    server_secret: Arc<StaticSecret>,
-    server_pubkey: Arc<PublicKey>,
 }
 
 impl ListenerManager {
@@ -704,22 +702,80 @@ impl ListenerManager {
         task_dispatcher: Arc<TaskDispatcher>,
         event_bus: Arc<EventBus>,
     ) -> Self {
-        let secret = StaticSecret::random_from_rng(rand::thread_rng());
-        let pubkey = PublicKey::from(&secret);
         Self {
             pool,
             session_manager,
             task_dispatcher,
             event_bus,
             active: Mutex::new(HashMap::new()),
-            server_secret: Arc::new(secret),
-            server_pubkey: Arc::new(pubkey),
         }
     }
 
-    /// Return the server's X25519 public key bytes (for config generation).
-    pub fn server_pubkey_bytes(&self) -> [u8; 32] {
-        *self.server_pubkey.as_bytes()
+    /// Return the X25519 public key bytes for a specific listener.
+    pub async fn get_listener_pubkey(&self, listener_id: &str) -> Option<[u8; 32]> {
+        let row: Option<(Vec<u8>,)> = sqlx::query_as(
+            "SELECT x25519_pubkey FROM listeners WHERE id = ?1 AND x25519_pubkey IS NOT NULL",
+        )
+        .bind(listener_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()?;
+
+        let (pubkey_blob,) = row?;
+        if pubkey_blob.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&pubkey_blob);
+            Some(arr)
+        } else {
+            None
+        }
+    }
+
+    /// Return the X25519 secret key for a specific listener (used internally for HttpState).
+    async fn get_listener_secret(&self, listener_id: &str) -> Option<(StaticSecret, PublicKey)> {
+        let row: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT x25519_privkey, x25519_pubkey FROM listeners WHERE id = ?1 \
+             AND x25519_privkey IS NOT NULL AND x25519_pubkey IS NOT NULL",
+        )
+        .bind(listener_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()?;
+
+        let (privkey_blob, pubkey_blob) = row?;
+        if privkey_blob.len() == 32 && pubkey_blob.len() == 32 {
+            let mut priv_arr = [0u8; 32];
+            priv_arr.copy_from_slice(&privkey_blob);
+            let mut pub_arr = [0u8; 32];
+            pub_arr.copy_from_slice(&pubkey_blob);
+            let secret = StaticSecret::from(priv_arr);
+            let pubkey = PublicKey::from(pub_arr);
+            Some((secret, pubkey))
+        } else {
+            None
+        }
+    }
+
+    /// Return all listener pubkeys (for startup logging).
+    pub async fn all_listener_pubkeys(&self) -> Vec<(String, [u8; 32])> {
+        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+            "SELECT id, x25519_pubkey FROM listeners WHERE x25519_pubkey IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        rows.into_iter()
+            .filter_map(|(id, blob)| {
+                if blob.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&blob);
+                    Some((id, arr))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub async fn create_listener(
@@ -732,9 +788,15 @@ impl ListenerManager {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().timestamp();
 
+        // Generate a per-listener X25519 keypair
+        let secret = StaticSecret::random_from_rng(rand::thread_rng());
+        let pubkey = PublicKey::from(&secret);
+        let privkey_bytes = secret.to_bytes();
+        let pubkey_bytes = pubkey.to_bytes();
+
         sqlx::query(
-            "INSERT INTO listeners (id, name, bind_address, port, protocol, status, created_at) \
-             VALUES (?, ?, ?, ?, ?, 'STOPPED', ?)",
+            "INSERT INTO listeners (id, name, bind_address, port, protocol, status, created_at, x25519_privkey, x25519_pubkey) \
+             VALUES (?, ?, ?, ?, ?, 'STOPPED', ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
@@ -742,6 +804,8 @@ impl ListenerManager {
         .bind(port as i64)
         .bind(protocol)
         .bind(now)
+        .bind(privkey_bytes.as_slice())
+        .bind(pubkey_bytes.as_slice())
         .execute(&self.pool)
         .await?;
 
@@ -754,6 +818,12 @@ impl ListenerManager {
             .await
             .map_err(|e| format!("DB error: {e}"))?;
 
+        // Load the per-listener X25519 keypair from the database
+        let (secret, pubkey) = self
+            .get_listener_secret(id)
+            .await
+            .ok_or_else(|| format!("No X25519 keypair found for listener {id}"))?;
+
         let addr = format!("{}:{}", listener.bind_address, listener.port);
         let tcp = TcpListener::bind(&addr)
             .await
@@ -763,8 +833,8 @@ impl ListenerManager {
             session_manager: Arc::clone(&self.session_manager),
             task_dispatcher: Arc::clone(&self.task_dispatcher),
             module_repository: None,
-            server_secret: Arc::clone(&self.server_secret),
-            server_pubkey: Arc::clone(&self.server_pubkey),
+            server_secret: Arc::new(secret),
+            server_pubkey: Arc::new(pubkey),
             listener_profile: None,
             profile_session_key: None,
             pool: self.pool.clone(),

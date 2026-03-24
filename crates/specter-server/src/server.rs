@@ -89,9 +89,18 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
     // 5. Background session status updater (every 5 s, assumes 10 s default check-in interval)
     session_manager.start_status_updater(5, 10);
 
-    // Log server X25519 public key (needed for implant config generation)
-    let server_pubkey = listener_manager.server_pubkey_bytes();
-    tracing::info!("Server X25519 public key: {}", hex::encode(server_pubkey));
+    // Log per-listener X25519 public keys
+    let listener_pubkeys = listener_manager.all_listener_pubkeys().await;
+    if listener_pubkeys.is_empty() {
+        tracing::info!("Per-listener X25519 keys enabled (no listeners with keypairs yet)");
+    } else {
+        for (lid, pubkey) in &listener_pubkeys {
+            tracing::info!(
+                "Listener {lid} X25519 public key: {}",
+                hex::encode(pubkey)
+            );
+        }
+    }
 
     // Log Ed25519 module signing public key (must be embedded in implant config)
     let signing_pubkey = module_repository.signing_pubkey_bytes();

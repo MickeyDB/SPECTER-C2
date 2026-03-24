@@ -68,6 +68,24 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Add X25519 keypair columns to listeners table (idempotent migration)
+    // These store per-listener key material so each listener has its own keypair.
+    let has_x25519_col: bool = sqlx::query_scalar::<_, i32>(
+        "SELECT COUNT(*) FROM pragma_table_info('listeners') WHERE name = 'x25519_privkey'"
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+
+    if !has_x25519_col {
+        sqlx::query("ALTER TABLE listeners ADD COLUMN x25519_privkey BLOB")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE listeners ADD COLUMN x25519_pubkey BLOB")
+            .execute(pool)
+            .await?;
+    }
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS audit_log (
             id TEXT PRIMARY KEY,

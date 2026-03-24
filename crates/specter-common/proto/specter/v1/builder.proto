@@ -27,6 +27,8 @@ message GeneratePayloadRequest {
   string stager_url = 9;
   // Evasion features (module overloading, .pdata, NtContinue).
   EvasionConfig evasion = 10;
+  // Listener ID — selects the per-listener X25519 keypair to embed.
+  string listener_id = 11;
 }
 
 message ChannelEndpoint {

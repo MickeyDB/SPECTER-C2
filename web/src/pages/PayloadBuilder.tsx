@@ -214,6 +214,8 @@ export function PayloadBuilder() {
   // Form state
   const [selectedFormat, setSelectedFormat] = useState('raw')
   const [selectedProfile, setSelectedProfile] = useState('')
+  const [selectedListener, setSelectedListener] = useState('')
+  const [listeners, setListeners] = useState<{ id: string; name: string; port: number; protocol: string }[]>([])
   const [channels, setChannels] = useState<ChannelEntry[]>([
     { id: 1, kind: 'https', address: '' },
   ])
@@ -247,10 +249,11 @@ export function PayloadBuilder() {
     try {
       setLoading(true)
       setError(null)
-      const [fmtRes, profRes, redirRes] = await Promise.allSettled([
+      const [fmtRes, profRes, redirRes, listRes] = await Promise.allSettled([
         specterClient.listFormats({}),
         specterClient.listProfiles({}),
         specterClient.listRedirectors({}),
+        specterClient.listListeners({}),
       ])
       if (fmtRes.status === 'fulfilled') setFormats(fmtRes.value.formats)
       if (profRes.status === 'fulfilled') {
@@ -261,6 +264,15 @@ export function PayloadBuilder() {
       }
       if (redirRes.status === 'fulfilled') {
         setRedirectors(redirRes.value.redirectors.filter((r) => r.state === 'Active'))
+      }
+      if (listRes.status === 'fulfilled') {
+        const items = listRes.value.listeners.map((l: any) => ({
+          id: l.id, name: l.name, port: l.port, protocol: l.protocol,
+        }))
+        setListeners(items)
+        if (items.length > 0 && !selectedListener) {
+          setSelectedListener(items[0].id)
+        }
       }
       if (fmtRes.status === 'rejected' && profRes.status === 'rejected') {
         setError('Unable to connect to teamserver')
@@ -306,6 +318,10 @@ export function PayloadBuilder() {
       setError('Select a C2 profile')
       return
     }
+    if (!selectedListener) {
+      setError('Select a listener to bind the payload to')
+      return
+    }
 
     setBuilding(true)
     setError(null)
@@ -346,6 +362,7 @@ export function PayloadBuilder() {
         proxyTarget,
         serviceName,
         stagerUrl,
+        listenerId: selectedListener,
         evasion: {
           moduleOverloading,
           pdataRegistration,
@@ -502,6 +519,31 @@ export function PayloadBuilder() {
                   ))}
                 </select>
               )}
+            </section>
+
+            {/* Listener */}
+            <section className="rounded-lg border border-specter-border bg-specter-surface p-4">
+              <h2 className="mb-3 text-xs font-medium text-specter-text">Listener</h2>
+              {listeners.length === 0 ? (
+                <p className="text-xs text-specter-muted">
+                  No listeners available. Create one in the Listeners page first.
+                </p>
+              ) : (
+                <select
+                  value={selectedListener}
+                  onChange={(e) => setSelectedListener(e.target.value)}
+                  className="w-full rounded border border-specter-border bg-specter-bg px-3 py-2 text-xs text-specter-text focus:border-specter-accent focus:outline-none"
+                >
+                  {listeners.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name} — {l.protocol}://0.0.0.0:{l.port}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <p className="mt-1.5 text-[10px] text-specter-muted">
+                Payload will be cryptographically bound to this listener's keypair.
+              </p>
             </section>
 
             {/* Callback Channels */}
