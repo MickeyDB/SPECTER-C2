@@ -169,10 +169,9 @@ void implant_entry(PVOID param) {
     /* ---- Step 7: Initialize communications engine ---- */
     status = comms_init(&g_ctx);
     if (!NT_SUCCESS(status)) {
-        /* Sub-codes: 160=no k32, 161=no LoadLib, 162=no ws2_32,
-           163=ws2 export missing, 164=no secur32 */
+        /* Sub-codes: 0x160-0x16F=API resolve, 0x170-0x17F=connection */
         DWORD sub = (DWORD)(status & 0xFFF);
-        if (sub >= 0x160 && sub <= 0x16F)
+        if (sub >= 0x160 && sub <= 0x17F)
             DEV_FAIL(sub);
         DEV_FAIL(16);
     }
