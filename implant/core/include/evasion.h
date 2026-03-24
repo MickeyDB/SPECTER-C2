@@ -29,13 +29,13 @@ typedef struct _RUNTIME_FUNCTION {
 /*  DJB2 hashes for target DLLs used in frame library                  */
 /* ------------------------------------------------------------------ */
 
-#define HASH_USER32_DLL     0x5E5AB823  /* "user32.dll"   */
-#define HASH_RPCRT4_DLL     0xBB09A486  /* "rpcrt4.dll"   */
-#define HASH_COMBASE_DLL    0xBC8E54C5  /* "combase.dll"  */
+#define HASH_USER32_DLL     0x5A6BD3F3  /* "user32.dll"   */
+#define HASH_RPCRT4_DLL     0xB016A5AE  /* "rpcrt4.dll"   */
+#define HASH_COMBASE_DLL    0x87594A69  /* "combase.dll"  */
 
 /* DJB2 hashes for well-known frame termination functions */
-#define HASH_RTLUSERTHREADSTART     0xA2E74681  /* "RtlUserThreadStart"     */
-#define HASH_BASETHREADINITTHUNK    0xD83D6AA1  /* "BaseThreadInitThunk"    */
+#define HASH_RTLUSERTHREADSTART     0xB42DDFBC  /* "RtlUserThreadStart"     */
+#define HASH_BASETHREADINITTHUNK    0xAE7046F6  /* "BaseThreadInitThunk"    */
 
 /* DJB2 hashes for ETW/AMSI suppression targets */
 #define HASH_ETWEVENTWRITE          0x941F3482  /* "EtwEventWrite"          */

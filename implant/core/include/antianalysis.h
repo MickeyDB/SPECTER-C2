@@ -91,29 +91,29 @@ typedef struct _ANTIANALYSIS_CONFIG {
 /*  DJB2 hashes for resolved APIs                                      */
 /* ------------------------------------------------------------------ */
 
-#define HASH_IPHLPAPI_DLL       0x738E2C41  /* "iphlpapi.dll"            */
-#define HASH_GETADAPTERSINFO    0x50A2E01B  /* "GetAdaptersInfo"         */
-#define HASH_GETSYSFIRMWARETABLE 0x6A4D3B52 /* "GetSystemFirmwareTable"  */
-#define HASH_SHGETFOLDERPATH    0x7B5E4C63  /* "SHGetFolderPathA"        */
-#define HASH_SHELL32_DLL        0x8C6F5D74  /* "shell32.dll"             */
-#define HASH_FINDFIRSTFILE      0x9D708E85  /* "FindFirstFileA"          */
-#define HASH_FINDCLOSE          0xAE819F96  /* "FindClose"               */
+#define HASH_IPHLPAPI_DLL       0x2234EBA6  /* "iphlpapi.dll"            */
+#define HASH_GETADAPTERSINFO    0x44000025  /* "GetAdaptersInfo"         */
+#define HASH_GETSYSFIRMWARETABLE 0xC4063F0F /* "GetSystemFirmwareTable"  */
+#define HASH_SHGETFOLDERPATH    0xA6D046EA  /* "SHGetFolderPathA"        */
+#define HASH_SHELL32_DLL        0x0D6501AC  /* "shell32.dll"             */
+#define HASH_FINDFIRSTFILE      0x99C29F4F  /* "FindFirstFileA"          */
+#define HASH_FINDCLOSE          0x46B8755C  /* "FindClose"               */
 
 /* DJB2 hashes for VM-related process names */
-#define HASH_VMTOOLSD_EXE       0xA5CD30B1  /* "vmtoolsd.exe"            */
-#define HASH_VMWARETRAY_EXE     0x9BF81DA4  /* "vmwaretray.exe"          */
-#define HASH_VBOXSERVICE_EXE    0xC4E21F67  /* "VBoxService.exe"         */
-#define HASH_VBOXTRAY_EXE       0xD8A31B5E  /* "VBoxTray.exe"            */
-#define HASH_QEMU_GA_EXE        0xE1F405C2  /* "qemu-ga.exe"             */
+#define HASH_VMTOOLSD_EXE       0x059276ED  /* "vmtoolsd.exe"            */
+#define HASH_VMWARETRAY_EXE     0x72B65687  /* "vmwaretray.exe"          */
+#define HASH_VBOXSERVICE_EXE    0xAE542105  /* "VBoxService.exe"         */
+#define HASH_VBOXTRAY_EXE       0x91678CB4  /* "VBoxTray.exe"            */
+#define HASH_QEMU_GA_EXE        0x73C9BA62  /* "qemu-ga.exe"             */
 
 /* DJB2 hashes for analysis tool process names */
-#define HASH_WIRESHARK_EXE      0xB2C41F90  /* "Wireshark.exe"           */
-#define HASH_PROCMON_EXE        0xC3D52EA1  /* "Procmon.exe"             */
-#define HASH_X64DBG_EXE         0xD4E63FB2  /* "x64dbg.exe"              */
-#define HASH_X32DBG_EXE         0xE5F740C3  /* "x32dbg.exe"              */
-#define HASH_IDA64_EXE          0xF60851D4  /* "ida64.exe"               */
-#define HASH_OLLYDBG_EXE        0x071962E5  /* "ollydbg.exe"             */
-#define HASH_PROCESSHACKER_EXE  0x182A73F6  /* "ProcessHacker.exe"       */
+#define HASH_WIRESHARK_EXE      0xEC7B9665  /* "Wireshark.exe"           */
+#define HASH_PROCMON_EXE        0xC17201D3  /* "Procmon.exe"             */
+#define HASH_X64DBG_EXE         0xA7FD1684  /* "x64dbg.exe"              */
+#define HASH_X32DBG_EXE         0x720419BF  /* "x32dbg.exe"              */
+#define HASH_IDA64_EXE          0xAF6D942D  /* "ida64.exe"               */
+#define HASH_OLLYDBG_EXE        0x406AFFA2  /* "ollydbg.exe"             */
+#define HASH_PROCESSHACKER_EXE  0x57C08342  /* "ProcessHacker.exe"       */
 
 /* ------------------------------------------------------------------ */
 /*  Known VM MAC address OUI prefixes (first 3 bytes)                  */

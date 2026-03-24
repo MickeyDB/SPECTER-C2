@@ -66,10 +66,10 @@
 #define SMB_MODE_SERVER             1   /* Create and listen on pipe     */
 
 /* DJB2 hashes for Nt pipe functions */
-#define HASH_NTREADFILE             0x39EA4E27  /* "NtReadFile"              */
-#define HASH_NTWRITEFILE            0x2E475AB7  /* "NtWriteFile"             */
-#define HASH_NTCREATENAMEDPIPEFILE  0xBF0D4289  /* "NtCreateNamedPipeFile"   */
-#define HASH_NTFSCONTROLFILE        0xCBD6E982  /* "NtFsControlFile"         */
+#define HASH_NTREADFILE             0x3835E743  /* "NtReadFile"              */
+#define HASH_NTWRITEFILE            0x11C97B12  /* "NtWriteFile"             */
+#define HASH_NTCREATENAMEDPIPEFILE  0x904C50CE  /* "NtCreateNamedPipeFile"   */
+#define HASH_NTFSCONTROLFILE        0xF914FBE1  /* "NtFsControlFile"         */
 
 /* ------------------------------------------------------------------ */
 /*  SMB peer connection tracking                                       */

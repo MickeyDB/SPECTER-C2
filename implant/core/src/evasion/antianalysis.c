@@ -15,7 +15,7 @@
 /* HASH_USER32_DLL defined in evasion.h — avoid including full header to
    prevent redefinition conflicts; reuse same value. */
 #ifndef HASH_USER32_DLL
-#define HASH_USER32_DLL     0x5E5AB823  /* "user32.dll" (from evasion.h) */
+#define HASH_USER32_DLL     0x5A6BD3F3  /* "user32.dll" (from evasion.h) */
 #endif
 
 /* ------------------------------------------------------------------ */

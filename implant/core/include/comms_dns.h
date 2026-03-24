@@ -54,8 +54,8 @@
 #define IPPROTO_UDP             17
 
 /* DJB2 hashes for sendto/recvfrom */
-#define HASH_SENDTO             0x855DE8D0  /* "sendto"                  */
-#define HASH_RECVFROM           0xE5428615  /* "recvfrom"                */
+#define HASH_SENDTO             0x1B81FA72  /* "sendto"                  */
+#define HASH_RECVFROM           0xFF3DF269  /* "recvfrom"                */
 
 /* DoH mode flag */
 #define DNS_MODE_UDP            0

@@ -39,27 +39,27 @@
 #define COMMS_HTTP_POST         1
 
 /* DJB2 hashes for PEB-resolved DLLs and functions */
-#define HASH_WS2_32_DLL         0xA3D39C64  /* "ws2_32.dll"        */
-#define HASH_WSASTARTUP         0x4C964F46  /* "WSAStartup"        */
-#define HASH_SOCKET             0xDF666E0F  /* "socket"             */
-#define HASH_CONNECT            0xE5CAF2A1  /* "connect"            */
-#define HASH_SEND               0x7C8BC2CF  /* "send"               */
-#define HASH_RECV               0x7C8B5E2F  /* "recv"               */
-#define HASH_CLOSESOCKET        0x9A4D1C66  /* "closesocket"        */
-#define HASH_GETADDRINFO        0x4B15E84F  /* "getaddrinfo"        */
-#define HASH_FREEADDRINFO       0xAD20CF4C  /* "freeaddrinfo"       */
+#define HASH_WS2_32_DLL         0x9AD10B0F  /* "ws2_32.dll"        */
+#define HASH_WSASTARTUP         0x998B3F03  /* "WSAStartup"        */
+#define HASH_SOCKET             0x1C31032E  /* "socket"             */
+#define HASH_CONNECT            0xD3764DCF  /* "connect"            */
+#define HASH_SEND               0x7C9DDB4F  /* "send"               */
+#define HASH_RECV               0x7C9D4D95  /* "recv"               */
+#define HASH_CLOSESOCKET        0x494CB104  /* "closesocket"        */
+#define HASH_GETADDRINFO        0x7C84CDCC  /* "getaddrinfo"        */
+#define HASH_FREEADDRINFO       0x526629CE  /* "freeaddrinfo"       */
 
-#define HASH_SECUR32_DLL        0xBF8193B0  /* "secur32.dll"        */
-#define HASH_SSPICLI_DLL        0x2A269297  /* "sspicli.dll"        */
-#define HASH_ACQUIRECREDHANDLE  0x79AB789B  /* "AcquireCredentialsHandleA" */
-#define HASH_INITSECCTX         0x04E05DD1  /* "InitializeSecurityContextA" */
-#define HASH_DELETESECCTX       0xF71D1E3B  /* "DeleteSecurityContext" */
-#define HASH_FREECREDHANDLE     0xDE2C564B  /* "FreeCredentialsHandle" */
-#define HASH_ENCRYPTMSG         0xEB8A9B04  /* "EncryptMessage"     */
-#define HASH_DECRYPTMSG         0x21886FA4  /* "DecryptMessage"     */
-#define HASH_QUERYSECCTXATTR    0xA5A1B38D  /* "QueryContextAttributesA" */
-#define HASH_FREECTXBUFFER      0x2F2BC7A2  /* "FreeContextBuffer"  */
-#define HASH_APPLYCTRLTOKEN     0x9D2C7D37  /* "ApplyControlToken"  */
+#define HASH_SECUR32_DLL        0x347A54B6  /* "secur32.dll"        */
+#define HASH_SSPICLI_DLL        0x4A79C746  /* "sspicli.dll"        */
+#define HASH_ACQUIRECREDHANDLE  0x1F26440A  /* "AcquireCredentialsHandleA" */
+#define HASH_INITSECCTX         0x3E84CAB5  /* "InitializeSecurityContextA" */
+#define HASH_DELETESECCTX       0x93D53795  /* "DeleteSecurityContext" */
+#define HASH_FREECREDHANDLE     0xDFA34A41  /* "FreeCredentialsHandle" */
+#define HASH_ENCRYPTMSG         0x80C3BFAF  /* "EncryptMessage"     */
+#define HASH_DECRYPTMSG         0x7B2C3085  /* "DecryptMessage"     */
+#define HASH_QUERYSECCTXATTR    0x0C4BF108  /* "QueryContextAttributesA" */
+#define HASH_FREECTXBUFFER      0xC59177A6  /* "FreeContextBuffer"  */
+#define HASH_APPLYCTRLTOKEN     0x45BBC00D  /* "ApplyControlToken"  */
 
 /* Winsock constants */
 #define AF_INET                 2
