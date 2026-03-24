@@ -77,8 +77,8 @@ static void memguard_generate_key(MEMGUARD_STATE *mg) {
 
 #ifndef TEST_BUILD
 /* VEH handler registration via AddVectoredExceptionHandler */
-#define HASH_ADDVECTOREDEXCEPTIONHANDLER    0x6C1B349A
-#define HASH_REMOVEVECTOREDEXCEPTIONHANDLER 0x22697BD3
+#define HASH_ADDVECTOREDEXCEPTIONHANDLER    0xAA100957
+#define HASH_REMOVEVECTOREDEXCEPTIONHANDLER 0xFED69FFC
 
 typedef PVOID (__attribute__((ms_abi)) *fn_AddVectoredExceptionHandler)(
     ULONG First, PVOID Handler);
