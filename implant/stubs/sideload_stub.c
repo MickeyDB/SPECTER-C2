@@ -55,10 +55,12 @@ static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONF
  *   [pic_size bytes: PIC blob data]
  */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
+static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
     /* PIC marker: "SPECPICBLOB\0" */
     'S','P','E','C','P','I','C','B','L','O','B','\0',
     /* PIC size placeholder: 0 */
+    0x00, 0x00, 0x00, 0x00,
+    /* Entry offset placeholder: 0 */
     0x00, 0x00, 0x00, 0x00,
     /* Remaining bytes zero-initialized (PIC blob space) */
 };
