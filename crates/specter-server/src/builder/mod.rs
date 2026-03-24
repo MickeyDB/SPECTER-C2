@@ -171,29 +171,12 @@ impl PayloadBuilder {
             }
         }
 
-        // Load entry point offset from specter.map (grep for implant_entry address)
-        let map_path = self.template_dir.join("specter.map");
-        if map_path.exists() {
-            if let Ok(map_content) = std::fs::read_to_string(&map_path) {
-                for line in map_content.lines() {
-                    if line.contains("implant_entry") && !line.contains(".refptr") {
-                        // Line format: "                0x0000000000001020                implant_entry"
-                        if let Some(addr_str) = line.trim().split_whitespace().next() {
-                            if let Some(hex) = addr_str.strip_prefix("0x") {
-                                if let Ok(addr) = u64::from_str_radix(hex, 16) {
-                                    self.pic_entry_offset = addr as u32;
-                                    tracing::info!(
-                                        "PIC entry offset: 0x{:X} (from specter.map)",
-                                        self.pic_entry_offset
-                                    );
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        // PIC blob entry is always at offset 0.
+        // The linker script places .text$A (implant_entry) first in .text,
+        // and objcopy -O binary -j .text extracts from the start of .text.
+        // The VMA in specter.map (e.g. 0x1020) is the PE virtual address,
+        // NOT the blob offset.
+        self.pic_entry_offset = 0;
 
         Ok(())
     }
@@ -704,7 +687,7 @@ transform:
         // PIC data space starts at 120
 
         let pic_blob = vec![0xCC; 256];
-        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob, 0x1020).unwrap();
+        let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob, 0).unwrap();
 
         // Size field should now contain 256
         let embedded_size = u32::from_le_bytes([
@@ -712,11 +695,11 @@ transform:
         ]);
         assert_eq!(embedded_size, 256);
 
-        // Entry offset should be 0x1020
+        // Entry offset should be 0 (blob offset, not PE VMA)
         let embedded_entry = u32::from_le_bytes([
             result[116], result[117], result[118], result[119],
         ]);
-        assert_eq!(embedded_entry, 0x1020);
+        assert_eq!(embedded_entry, 0);
 
         // PIC data should be at offset 120
         assert_eq!(&result[120..120 + 256], &pic_blob[..]);

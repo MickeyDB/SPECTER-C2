@@ -38,11 +38,9 @@ BUILD_DIR = build
 UNITY_SRC = $(SRC_DIR)/unity.c
 ASM_SRCS  = $(wildcard $(ASM_DIR)/*.S)
 
-# Entry trampoline MUST be first object in link order so offset 0 = jmp implant_entry
-ENTRY_OBJ = $(BUILD_DIR)/entry_trampoline.o
 UNITY_OBJ = $(BUILD_DIR)/unity.o
-ASM_OBJS  = $(patsubst $(ASM_DIR)/%.S,$(BUILD_DIR)/%.o,$(filter-out $(ASM_DIR)/entry_trampoline.S,$(ASM_SRCS)))
-OBJS      = $(ENTRY_OBJ) $(UNITY_OBJ) $(ASM_OBJS)
+ASM_OBJS  = $(patsubst $(ASM_DIR)/%.S,$(BUILD_DIR)/%.o,$(ASM_SRCS))
+OBJS      = $(UNITY_OBJ) $(ASM_OBJS)
 
 # Output
 TARGET_ELF = $(BUILD_DIR)/specter.elf

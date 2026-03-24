@@ -13,7 +13,7 @@
  * sections. They are discarded as a safety net.
  */
 
-ENTRY(_start)
+ENTRY(implant_entry)
 
 SECTIONS
 {
