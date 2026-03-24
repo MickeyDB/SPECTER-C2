@@ -45,18 +45,18 @@ __attribute__((ms_abi))
 void WinMainCRTStartup(void) {
     stub_execute_payload();
 
-    /* If the PIC blob returns, exit cleanly via ExitProcess.
-       Resolve ExitProcess from kernel32 to avoid an infinite loop
-       if the CRT is not linked. */
+    /* Exit with diagnostic code. 0 = PIC ran and returned, 100+ = stub failure */
+    DWORD code = g_stub_exit_code;
+    if (code == 0) code = 99; /* 99 = PIC entry returned normally */
+
     PVOID k32 = stub_find_module(HASH_KERNEL32_DLL);
     if (k32) {
-        /* DJB2("ExitProcess") -- pre-computed */
         #define HASH_EXITPROCESS 0x024773DE
         typedef void (__attribute__((ms_abi)) *fn_ExitProcess)(DWORD uExitCode);
         fn_ExitProcess pExit =
             (fn_ExitProcess)stub_find_export(k32, HASH_EXITPROCESS);
         if (pExit)
-            pExit(0);
+            pExit(code);
     }
 
     /* Fallback: infinite loop (should never reach here) */

