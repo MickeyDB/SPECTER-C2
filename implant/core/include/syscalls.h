@@ -50,14 +50,14 @@ typedef struct _SYSCALL_TABLE {
 #define HASH_NTWAITFORSINGLEOBJECT      0x5B5856DC
 #define HASH_NTQUEUEAPCTHREAD           0x9D4046B8
 #define HASH_NTOPENSECTION              0x4E8F13AE
-#define HASH_NTRESUMETHREAD             0x8C5D4E2A
-#define HASH_NTTERMINATETHREAD          0xFE883FB3
-#define HASH_NTREADFILE                 0x39EA4E27
-#define HASH_NTWRITEFILE                0x2E475AB7
-#define HASH_NTCREATENAMEDPIPEFILE      0xBF0D4289
-#define HASH_NTFSCONTROLFILE            0xCBD6E982
+#define HASH_NTRESUMETHREAD             0xFD933190
+#define HASH_NTTERMINATETHREAD          0xBB0BAA28
+#define HASH_NTREADFILE                 0x3835E743
+#define HASH_NTWRITEFILE                0x11C97B12
+#define HASH_NTCREATENAMEDPIPEFILE      0x904C50CE
+#define HASH_NTFSCONTROLFILE            0xF914FBE1
 #define HASH_NTTESTALERT                0xB67D903F
-#define HASH_NTCREATESECTION            0xC441B530
+#define HASH_NTCREATESECTION            0xC444A130
 #define HASH_NTCONTINUE                 0x8197216C
 
 /* ------------------------------------------------------------------ */

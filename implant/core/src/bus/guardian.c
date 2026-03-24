@@ -34,8 +34,8 @@ static GUARDIAN_CONTEXT g_guardian_ctx;
 /* ------------------------------------------------------------------ */
 
 #ifndef TEST_BUILD
-#define HASH_ADDVECTOREDEXCEPTIONHANDLER    0x6C1B349A
-#define HASH_REMOVEVECTOREDEXCEPTIONHANDLER 0x22697BD3
+#define HASH_ADDVECTOREDEXCEPTIONHANDLER    0xAA100957
+#define HASH_REMOVEVECTOREDEXCEPTIONHANDLER 0xFED69FFC
 
 typedef PVOID (__attribute__((ms_abi)) *fn_AddVectoredExceptionHandler)(
     ULONG First, PVOID Handler);

