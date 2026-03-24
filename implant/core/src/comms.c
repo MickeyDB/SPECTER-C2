@@ -1383,10 +1383,10 @@ NTSTATUS comms_retry_failed(IMPLANT_CONTEXT *ctx) {
 
 NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     if (!ctx || !ctx->config)
-        return STATUS_INVALID_PARAMETER;
+        return (NTSTATUS)0xC0000166; /* 166 = null ctx/config */
 
     IMPLANT_CONFIG *cfg = cfg_get(ctx);
-    if (!cfg) return STATUS_UNSUCCESSFUL;
+    if (!cfg) return (NTSTATUS)0xC0000167; /* 167 = cfg_get returned null */
 
     /* Zero out comms context */
     spec_memset(&g_comms_ctx, 0, sizeof(COMMS_CONTEXT));
@@ -1408,6 +1408,10 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     /* Resolve all needed APIs */
     NTSTATUS status = comms_resolve_apis(&g_comms_ctx.api);
     if (!NT_SUCCESS(status)) return status;
+
+    /* Validate config has channels */
+    if (cfg->channel_count == 0)
+        return (NTSTATUS)0xC0000165; /* 165 = no channels configured */
 
     /* Link context */
     ctx->comms_ctx = &g_comms_ctx;
