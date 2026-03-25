@@ -287,8 +287,10 @@ jobs:
         run: |
           SIZE=$(stat -f%z implant/build/specter.bin 2>/dev/null || stat -c%s implant/build/specter.bin)
           echo "Implant size: $SIZE bytes"
-          if [ "$SIZE" -gt 262144 ]; then
-            echo "WARNING: Implant exceeds 256KB target ($SIZE bytes)"
+          if [ "$SIZE" -gt 524288 ]; then
+            echo "WARNING: Implant exceeds 512KB limit ($SIZE bytes)"
+          elif [ "$SIZE" -gt 262144 ]; then
+            echo "NOTE: Implant exceeds 256KB target ($SIZE bytes) — within 512KB limit"
           else
             echo "OK: Implant within 256KB target"
           fi

@@ -433,14 +433,14 @@ impl PayloadBuilder {
     /// The builder writes pic_size, entry_offset, and copies pic_data.
     ///
     /// The stubs allocate a large `.data` region after the marker
-    /// (PIC_MAX_CAPACITY = 256KB) which the builder fills with PIC data.
+    /// (PIC_MAX_CAPACITY = 512KB) which the builder fills with PIC data.
     fn embed_pic_blob(
         mut payload: Vec<u8>,
         pic_blob: &[u8],
         entry_offset: u32,
     ) -> Result<Vec<u8>, BuilderError> {
         const PIC_MARKER: &[u8; 12] = b"SPECPICBLOB\x00";
-        const PIC_MAX_CAPACITY: usize = 256 * 1024;
+        const PIC_MAX_CAPACITY: usize = 512 * 1024;
 
         if pic_blob.is_empty() {
             return Ok(payload);

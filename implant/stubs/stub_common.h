@@ -322,7 +322,7 @@ static inline fn_VirtualAlloc stub_resolve_virtualalloc(void) {
 #define CONFIG_MARKER_LEN   16
 #define CONFIG_MAX_CAPACITY 4096
 #define PIC_MARKER_LEN      12
-#define PIC_MAX_CAPACITY    (256 * 1024)  /* 256 KB max PIC blob */
+#define PIC_MAX_CAPACITY    (512 * 1024)  /* 512 KB max PIC blob */
 
 /* Config marker: 16 bytes of 0x43 */
 static const BYTE CONFIG_MARKER[CONFIG_MARKER_LEN] = {
