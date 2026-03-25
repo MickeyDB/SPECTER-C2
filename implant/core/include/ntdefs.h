@@ -280,6 +280,8 @@ typedef enum _SECTION_INHERIT {
 
 #define STATUS_GUARD_PAGE_VIOLATION  ((NTSTATUS)0x80000001)
 
+#ifndef _EXCEPTION_RECORD_DEFINED
+#define _EXCEPTION_RECORD_DEFINED
 typedef struct _EXCEPTION_RECORD {
     NTSTATUS ExceptionCode;
     DWORD    ExceptionFlags;
@@ -296,6 +298,7 @@ typedef struct _EXCEPTION_POINTERS {
     PEXCEPTION_RECORD ExceptionRecord;
     CONTEXT64        *ContextRecord;
 } EXCEPTION_POINTERS, *PEXCEPTION_POINTERS;
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  CONTEXT64 — defined in sleep.h (canonical definition).             */

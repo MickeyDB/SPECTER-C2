@@ -375,6 +375,8 @@ const MODULE_PACKAGE_HDR *loader_parse_header(const BYTE *package,
 /*  Exception structures for VEH                                       */
 /* ------------------------------------------------------------------ */
 
+#ifndef _EXCEPTION_RECORD_DEFINED
+#define _EXCEPTION_RECORD_DEFINED
 typedef struct _EXCEPTION_RECORD {
     DWORD ExceptionCode;
     DWORD ExceptionFlags;
@@ -388,6 +390,7 @@ typedef struct _EXCEPTION_POINTERS {
     PEXCEPTION_RECORD ExceptionRecord;
     PVOID             ContextRecord;     /* CONTEXT64* */
 } EXCEPTION_POINTERS, *PEXCEPTION_POINTERS;
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  GUARDIAN_SLOT — per-module guardian state                           */

@@ -329,7 +329,7 @@ static DWORD gather_integrity_level(char *buf, DWORD buf_len) {
 
     /* Open current process token with TOKEN_QUERY (0x0008) */
     HANDLE token = NULL;
-    NTSTATUS status = pOpenToken((HANDLE)(LONG_PTR)-1, 0x0008, &token);
+    NTSTATUS status = pOpenToken((HANDLE)(ULONG_PTR)-1, 0x0008, &token);
     if (status != 0 || !token) return 0;
 
     /* Query TokenIntegrityLevel (class 25) */
