@@ -52,7 +52,10 @@
       "Bash(grep \"\\\\.text$A\")",
       "Bash(objdump -h /c/Users/localuser/Documents/SPECTER-C2/implant/build/unity_test.elf)",
       "WebFetch(domain:print3m.github.io)",
-      "Bash(ls C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.exe C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.dll)"
+      "Bash(ls C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.exe C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.dll)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"import yara; print\\(''yara-python OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''scripts/scan-public-rules.py''\\).read\\(\\)\\); print\\(''Script syntax OK''\\)\")"
     ]
   }
 }

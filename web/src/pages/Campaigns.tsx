@@ -162,31 +162,31 @@ function CampaignCard({
       </button>
 
       {/* Summary Stats */}
-      <div className="flex items-center gap-4 border-t border-specter-border px-4 py-2.5">
-        <div className="flex items-center gap-1.5 text-xs">
-          <Users className="h-3 w-3 text-specter-muted" />
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-specter-border px-4 py-2.5 overflow-hidden">
+        <div className="flex items-center gap-1.5 text-xs shrink-0">
+          <Users className="h-3 w-3 text-specter-muted shrink-0" />
           <span className="text-specter-muted">
             {campaign.operators.length} operator(s)
           </span>
         </div>
-        <div className="flex items-center gap-1.5 text-xs">
-          <Monitor className="h-3 w-3 text-specter-muted" />
+        <div className="flex items-center gap-1.5 text-xs shrink-0">
+          <Monitor className="h-3 w-3 text-specter-muted shrink-0" />
           <span className="text-specter-muted">
             {campaign.sessionIds.length} session(s)
           </span>
         </div>
         {campaign.listenerId && (
-          <div className="flex items-center gap-1.5 text-xs">
-            <Radio className="h-3 w-3 text-specter-muted" />
-            <span className="text-specter-muted truncate max-w-[120px]" title={campaign.listenerId}>
+          <div className="flex items-center gap-1.5 text-xs min-w-0">
+            <Radio className="h-3 w-3 text-specter-muted shrink-0" />
+            <span className="text-specter-muted truncate" title={campaign.listenerId}>
               {campaign.listenerId.slice(0, 8)}...
             </span>
           </div>
         )}
         {campaign.createdAt && (
-          <div className="flex items-center gap-1.5 text-xs ml-auto">
-            <Calendar className="h-3 w-3 text-specter-muted" />
-            <span className="text-specter-muted">
+          <div className="flex items-center gap-1.5 text-xs ml-auto shrink-0">
+            <Calendar className="h-3 w-3 text-specter-muted shrink-0" />
+            <span className="text-specter-muted whitespace-nowrap">
               {formatDate(new Date(Number(campaign.createdAt.seconds) * 1000))}
             </span>
           </div>
@@ -931,7 +931,7 @@ export function Campaigns() {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filteredCampaigns.map((c) => (
             <CampaignCard
               key={c.id}

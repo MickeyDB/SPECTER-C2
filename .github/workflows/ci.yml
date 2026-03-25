@@ -252,6 +252,27 @@ jobs:
               print('No YARA detections - clean build')
           "
 
+  yara-scan-public:
+    name: YARA Scan (Public Rules)
+    runs-on: ubuntu-latest
+    needs: [build-implant]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install YARA Python bindings
+        run: pip install yara-python
+      - uses: actions/download-artifact@v4
+        with:
+          name: implant-pic-blob
+          path: implant/build/
+      - name: Download public YARA rules
+        run: |
+          git clone --depth 1 https://github.com/Neo23x0/signature-base.git /tmp/signature-base
+          git clone --depth 1 https://github.com/Yara-Rules/rules.git /tmp/yara-rules
+          git clone --depth 1 https://github.com/elastic/protections-artifacts.git /tmp/elastic-rules
+          git clone --depth 1 https://github.com/reversinglabs/reversinglabs-yara-rules.git /tmp/rl-rules
+      - name: Scan against public rules
+        run: python3 scripts/scan-public-rules.py implant/build/specter.bin
+
   implant-verify:
     name: Implant Verification
     runs-on: ubuntu-latest

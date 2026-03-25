@@ -61,3 +61,6 @@ if not matches:
 
 sys.exit(1 if has_critical else 0)
 "
+
+echo ""
+echo "For public rule scanning: ./scripts/scan-local.sh $BLOB"
