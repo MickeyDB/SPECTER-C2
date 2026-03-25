@@ -66,6 +66,17 @@
 #define HASH_GETUSERNAMEA       0x4C0087C6  /* "GetUserNameA"       */
 #define HASH_RTLGETVERSION      0x491E967D  /* "RtlGetVersion"      */
 
+/* DJB2 hashes for process/token/network info gathering */
+#define HASH_NTOPENPROCESSTOKEN       0xE5E830D9  /* "NtOpenProcessToken"       */
+#define HASH_NTQUERYINFORMATIONTOKEN  0xDE2096C4  /* "NtQueryInformationToken"  */
+#define HASH_GETHOSTNAME              0x64365624  /* "gethostname"              */
+#define HASH_GETHOSTBYNAME            0x30D95D7F  /* "gethostbyname"            */
+
+/* NtClose hash for token cleanup (same as syscalls.h, duplicated to avoid include) */
+#ifndef HASH_NTCLOSE
+#define HASH_NTCLOSE                  0x2D18BB7D  /* "NtClose"                  */
+#endif
+
 /* Dev build diagnostics */
 #define HASH_OUTPUTDEBUGSTRINGA 0xF9EA2815  /* "OutputDebugStringA" */
 

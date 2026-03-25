@@ -23,10 +23,14 @@ typedef struct _SYSCALL_ENTRY {
     DWORD hash;          /* DJB2 hash of the Nt* function name */
 } SYSCALL_ENTRY;
 
+#define MAX_GADGETS 32
+
 typedef struct _SYSCALL_TABLE {
     SYSCALL_ENTRY entries[SYSCALL_TABLE_CAPACITY];
     DWORD         count;
     PVOID         clean_ntdll;  /* Mapped clean ntdll base */
+    PVOID         gadget_pool[MAX_GADGETS]; /* Diverse syscall;ret gadgets */
+    DWORD         gadget_count;             /* Number of gadgets found      */
 } SYSCALL_TABLE;
 
 /* ------------------------------------------------------------------ */
@@ -60,6 +64,20 @@ typedef struct _SYSCALL_TABLE {
 #define HASH_NTCREATESECTION            0xC444A130
 #define HASH_NTCONTINUE                 0x8197216C
 
+/* Registry syscalls */
+#define HASH_NTOPENKEY                  0x7A8D7E62
+#define HASH_NTQUERYVALUEKEY            0x91CB9703
+#define HASH_NTSETVALUEKEY              0x14E04FD9
+#define HASH_NTDELETEVALUEKEY           0x924AB680
+#define HASH_NTCREATEKEY                0x98E49AE4
+
+/* Token syscalls */
+#define HASH_NTOPENPROCESSTOKEN         0xE5E830D9
+#define HASH_NTDUPLICATETOKEN           0x20EFED23
+
+/* Directory query */
+#define HASH_NTQUERYDIRECTORYFILE       0xDCA20BF2
+
 /* ------------------------------------------------------------------ */
 /*  Syscall engine API                                                  */
 /* ------------------------------------------------------------------ */
@@ -80,10 +98,16 @@ NTSTATUS sc_init(SYSCALL_TABLE *table);
 DWORD sc_resolve_ssn(PVOID clean_ntdll, DWORD func_hash);
 
 /**
- * Find a `syscall; ret` (0F 05 C3) gadget in ntdll's .text section.
+ * Find a single `syscall; ret` (0F 05 C3) gadget in ntdll's .text section.
  * Returns NULL if not found.
  */
 PVOID sc_find_gadget(PVOID clean_ntdll);
+
+/**
+ * Find multiple `syscall; ret` (0F 05 C3) gadgets in ntdll's .text section.
+ * Stores unique addresses in pool[], returns count found.
+ */
+DWORD sc_find_gadgets(PVOID ntdll_base, PVOID *pool, DWORD max_gadgets);
 
 /**
  * Look up a SYSCALL_ENTRY by function hash from the cached table.
@@ -181,5 +205,45 @@ NTSTATUS spec_NtCreateSection(PHANDLE section, ULONG access,
     ULONG page_protect, ULONG alloc_attributes, HANDLE file);
 
 NTSTATUS spec_NtContinue(PVOID context, BOOL raise_alert);
+
+NTSTATUS spec_NtResumeThread(HANDLE thread, PULONG prev_suspend_count);
+
+NTSTATUS spec_NtReadFile(HANDLE file, HANDLE event, PVOID apc_routine,
+    PVOID apc_context, PIO_STATUS_BLOCK iosb, PVOID buffer,
+    ULONG length, PLARGE_INTEGER offset, PULONG key);
+
+NTSTATUS spec_NtWriteFile(HANDLE file, HANDLE event, PVOID apc_routine,
+    PVOID apc_context, PIO_STATUS_BLOCK iosb, PVOID buffer,
+    ULONG length, PLARGE_INTEGER offset, PULONG key);
+
+NTSTATUS spec_NtOpenKey(PHANDLE key_handle, ULONG access,
+    POBJECT_ATTRIBUTES oa);
+
+NTSTATUS spec_NtCreateKey(PHANDLE key_handle, ULONG access,
+    POBJECT_ATTRIBUTES oa, ULONG title_index, PUNICODE_STRING class_name,
+    ULONG create_options, PULONG disposition);
+
+NTSTATUS spec_NtQueryValueKey(HANDLE key_handle,
+    PUNICODE_STRING value_name, DWORD info_class,
+    PVOID info, ULONG length, PULONG result_length);
+
+NTSTATUS spec_NtSetValueKey(HANDLE key_handle,
+    PUNICODE_STRING value_name, ULONG title_index,
+    ULONG type, PVOID data, ULONG data_size);
+
+NTSTATUS spec_NtDeleteValueKey(HANDLE key_handle,
+    PUNICODE_STRING value_name);
+
+NTSTATUS spec_NtOpenProcessToken(HANDLE process, ULONG access,
+    PHANDLE token);
+
+NTSTATUS spec_NtDuplicateToken(HANDLE existing, ULONG access,
+    POBJECT_ATTRIBUTES oa, BOOL effective_only,
+    DWORD token_type, PHANDLE new_token);
+
+NTSTATUS spec_NtQueryDirectoryFile(HANDLE file, HANDLE event,
+    PVOID apc_routine, PVOID apc_context, PIO_STATUS_BLOCK iosb,
+    PVOID file_info, ULONG length, DWORD info_class,
+    BOOL return_single, PUNICODE_STRING file_name, BOOL restart);
 
 #endif /* SYSCALLS_H */

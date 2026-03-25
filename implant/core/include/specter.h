@@ -280,6 +280,41 @@ typedef struct _SYSCALL_ENTRY   SYSCALL_ENTRY;
 typedef struct _SYSCALL_TABLE   SYSCALL_TABLE;
 
 /* ------------------------------------------------------------------ */
+/*  Task execution types                                                */
+/* ------------------------------------------------------------------ */
+
+#include "task.h"
+
+/* Legacy task type aliases — kept for backward compatibility with
+   existing code that uses the old names. New numbering avoids
+   collision with the built-in task types (1-4) and CMD (5). */
+#define TASK_CMD_EXEC       TASK_TYPE_CMD
+#define TASK_SHELLCODE      20  /* TODO: migrate to module bus          */
+#define TASK_UPLOAD         21  /* TODO: migrate to module bus          */
+#define TASK_DOWNLOAD       22  /* TODO: migrate to module bus          */
+
+/* Maximum pending tasks and results per checkin cycle */
+#define MAX_PENDING_TASKS   16
+#define MAX_TASK_RESULTS    16
+
+/* Maximum output buffer for command execution (64 KB) */
+#define TASK_OUTPUT_MAX     (64 * 1024)
+
+typedef struct _TASK {
+    char    task_id[64];        /* UUID from teamserver                */
+    DWORD   task_type;          /* TASK_CMD_EXEC, TASK_SHELLCODE, etc. */
+    BYTE   *data;               /* Task-specific data (command, etc.)  */
+    DWORD   data_len;           /* Length of data                      */
+} TASK;
+
+typedef struct _TASK_RESULT {
+    char    task_id[64];        /* UUID matching the original task     */
+    DWORD   status;             /* 0 = COMPLETE, 1 = FAILED            */
+    BYTE   *data;               /* Result data (command output, etc.)  */
+    DWORD   data_len;           /* Length of result data                */
+} TASK_RESULT;
+
+/* ------------------------------------------------------------------ */
 /*  IMPLANT_CONTEXT — top-level global state                            */
 /* ------------------------------------------------------------------ */
 
@@ -292,6 +327,14 @@ typedef struct _IMPLANT_CONTEXT {
     PVOID          evasion_ctx;     /* TODO: evasion context (Phase 04+)  */
     PVOID          module_bus;      /* TODO: module bus (Phase 05+)       */
     BOOL           running;         /* Implant main loop flag             */
+
+    /* Task queue — filled by parse_checkin_response */
+    TASK           pending_tasks[MAX_PENDING_TASKS];
+    DWORD          pending_task_count;
+
+    /* Task results — filled by execute_task, sent in next checkin */
+    TASK_RESULT    task_results[MAX_TASK_RESULTS];
+    DWORD          task_result_count;
 } IMPLANT_CONTEXT;
 
 #endif /* SPECTER_H */

@@ -135,7 +135,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: implant-pic-blob
-          path: implant/build/specter.bin
+          path: |
+            implant/build/specter.bin
+            implant/build/specter.map
 
   build-modules:
     name: Build Implant Modules
@@ -205,16 +207,94 @@ jobs:
     needs: [build-implant]
     steps:
       - uses: actions/checkout@v4
-      - name: Install YARA
-        run: sudo apt-get update && sudo apt-get install -y yara
+      - name: Install YARA Python bindings
+        run: pip install yara-python
       - uses: actions/download-artifact@v4
         with:
           name: implant-pic-blob
           path: implant/build/
-      - name: Run YARA scan
+      - name: YARA scan implant
         run: |
-          if [ -d "rules" ] && ls rules/*.yar 1>/dev/null 2>&1; then
-            yara -r rules/*.yar implant/build/specter.bin && echo "YARA scan passed"
+          python3 -c "
+          import yara, sys, glob, os
+
+          rule_files = glob.glob('rules/*.yar') + glob.glob('rules/*.yara')
+          if not rule_files:
+              print('No YARA rules found, skipping scan')
+              sys.exit(0)
+
+          blob = 'implant/build/specter.bin'
+          if not os.path.isfile(blob):
+              print(f'ERROR: {blob} not found')
+              sys.exit(1)
+
+          # Compile all rule files
+          filepaths = {f'ns{i}': path for i, path in enumerate(rule_files)}
+          rules = yara.compile(filepaths=filepaths)
+          matches = rules.match(blob)
+
+          if matches:
+              print('YARA DETECTIONS:')
+              for m in matches:
+                  sev = m.meta.get('severity', 'unknown')
+                  desc = m.meta.get('description', '')
+                  print(f'  [{sev.upper()}] {m.rule}: {desc}')
+
+              # Fail only on critical severity
+              if any(m.meta.get('severity') == 'critical' for m in matches):
+                  print()
+                  print('FATAL: Critical detections found — payload must not ship')
+                  sys.exit(1)
+              else:
+                  print()
+                  print('WARNING: Non-critical detections found (review before engagement)')
+          else:
+              print('No YARA detections - clean build')
+          "
+
+  implant-verify:
+    name: Implant Verification
+    runs-on: ubuntu-latest
+    needs: [build-implant]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: implant-pic-blob
+          path: implant/build/
+      - name: Check implant size
+        run: |
+          SIZE=$(stat -f%z implant/build/specter.bin 2>/dev/null || stat -c%s implant/build/specter.bin)
+          echo "Implant size: $SIZE bytes"
+          if [ "$SIZE" -gt 262144 ]; then
+            echo "WARNING: Implant exceeds 256KB target ($SIZE bytes)"
           else
-            echo "No YARA rules found, skipping scan"
+            echo "OK: Implant within 256KB target"
+          fi
+      - name: Check syscall gadget diversity
+        run: |
+          python3 -c "
+          data = open('implant/build/specter.bin', 'rb').read()
+          count = 0
+          for i in range(len(data) - 2):
+              if data[i:i+3] == b'\x0f\x05\xc3':
+                  count += 1
+          print(f'Syscall gadgets (0F 05 C3) in blob: {count}')
+          if count > 0:
+              print('WARNING: syscall;ret gadgets found in PIC blob (expected only in ntdll)')
+          else:
+              print('OK: No syscall;ret gadgets in blob')
+          "
+      - name: Check for .refptr entries
+        run: |
+          if [ -f implant/build/specter.map ]; then
+            REFPTR_COUNT=$(grep -c "refptr" implant/build/specter.map || true)
+            if [ "$REFPTR_COUNT" -gt 0 ]; then
+              echo "WARNING: $REFPTR_COUNT .refptr entries found — PIC may crash"
+              grep "refptr" implant/build/specter.map
+            else
+              echo "OK: No .refptr entries — PIC is clean"
+            fi
+          else
+            echo "SKIP: No linker map file found (specter.map)"
           fi

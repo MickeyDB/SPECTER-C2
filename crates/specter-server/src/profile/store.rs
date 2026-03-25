@@ -139,6 +139,21 @@ impl ProfileStore {
         }))
     }
 
+    /// Delete a profile by ID.
+    pub async fn delete_profile(&self, id: &str) -> Result<(), ProfileError> {
+        let result = sqlx::query("DELETE FROM profiles WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ProfileError::Validation(format!("database error: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            return Err(ProfileError::Validation(format!("profile not found: {id}")));
+        }
+
+        Ok(())
+    }
+
     /// Compile a profile by ID and return the binary blob.
     /// Re-parses and re-compiles from stored YAML.
     pub async fn compile_profile_by_id(&self, id: &str) -> Result<Vec<u8>, ProfileError> {

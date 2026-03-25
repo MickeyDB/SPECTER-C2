@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file specter/v1/profiles.proto.
  */
 export const file_specter_v1_profiles: GenFile = /*@__PURE__*/
-  fileDesc("ChlzcGVjdGVyL3YxL3Byb2ZpbGVzLnByb3RvEgpzcGVjdGVyLnYxIrIBCgtQcm9maWxlSW5mbxIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJEhQKDHlhbWxfY29udGVudBgEIAEoCRIuCgpjcmVhdGVkX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgp1cGRhdGVkX2F0GAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJDChREb21haW5Gcm9udGluZ0NvbmZpZxIUCgxmcm9udF9kb21haW4YASABKAkSFQoNYWN0dWFsX2RvbWFpbhgCIAEoCSJPChRDcmVhdGVQcm9maWxlUmVxdWVzdBIMCgRuYW1lGAEgASgJEhMKC2Rlc2NyaXB0aW9uGAIgASgJEhQKDHlhbWxfY29udGVudBgDIAEoCSJBChVDcmVhdGVQcm9maWxlUmVzcG9uc2USKAoHcHJvZmlsZRgBIAEoCzIXLnNwZWN0ZXIudjEuUHJvZmlsZUluZm8iFQoTTGlzdFByb2ZpbGVzUmVxdWVzdCJBChRMaXN0UHJvZmlsZXNSZXNwb25zZRIpCghwcm9maWxlcxgBIAMoCzIXLnNwZWN0ZXIudjEuUHJvZmlsZUluZm8iHwoRR2V0UHJvZmlsZVJlcXVlc3QSCgoCaWQYASABKAkiPgoSR2V0UHJvZmlsZVJlc3BvbnNlEigKB3Byb2ZpbGUYASABKAsyFy5zcGVjdGVyLnYxLlByb2ZpbGVJbmZvIiMKFUNvbXBpbGVQcm9maWxlUmVxdWVzdBIKCgJpZBgBIAEoCSIvChZDb21waWxlUHJvZmlsZVJlc3BvbnNlEhUKDWNvbXBpbGVkX2Jsb2IYASABKAxiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("ChlzcGVjdGVyL3YxL3Byb2ZpbGVzLnByb3RvEgpzcGVjdGVyLnYxIrIBCgtQcm9maWxlSW5mbxIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJEhQKDHlhbWxfY29udGVudBgEIAEoCRIuCgpjcmVhdGVkX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgp1cGRhdGVkX2F0GAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJDChREb21haW5Gcm9udGluZ0NvbmZpZxIUCgxmcm9udF9kb21haW4YASABKAkSFQoNYWN0dWFsX2RvbWFpbhgCIAEoCSJPChRDcmVhdGVQcm9maWxlUmVxdWVzdBIMCgRuYW1lGAEgASgJEhMKC2Rlc2NyaXB0aW9uGAIgASgJEhQKDHlhbWxfY29udGVudBgDIAEoCSJBChVDcmVhdGVQcm9maWxlUmVzcG9uc2USKAoHcHJvZmlsZRgBIAEoCzIXLnNwZWN0ZXIudjEuUHJvZmlsZUluZm8iFQoTTGlzdFByb2ZpbGVzUmVxdWVzdCJBChRMaXN0UHJvZmlsZXNSZXNwb25zZRIpCghwcm9maWxlcxgBIAMoCzIXLnNwZWN0ZXIudjEuUHJvZmlsZUluZm8iHwoRR2V0UHJvZmlsZVJlcXVlc3QSCgoCaWQYASABKAkiPgoSR2V0UHJvZmlsZVJlc3BvbnNlEigKB3Byb2ZpbGUYASABKAsyFy5zcGVjdGVyLnYxLlByb2ZpbGVJbmZvIiIKFERlbGV0ZVByb2ZpbGVSZXF1ZXN0EgoKAmlkGAEgASgJIhcKFURlbGV0ZVByb2ZpbGVSZXNwb25zZSIjChVDb21waWxlUHJvZmlsZVJlcXVlc3QSCgoCaWQYASABKAkiLwoWQ29tcGlsZVByb2ZpbGVSZXNwb25zZRIVCg1jb21waWxlZF9ibG9iGAEgASgMYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message specter.v1.ProfileInfo
@@ -196,6 +196,36 @@ export const GetProfileResponseSchema: GenMessage<GetProfileResponse> = /*@__PUR
   messageDesc(file_specter_v1_profiles, 7);
 
 /**
+ * @generated from message specter.v1.DeleteProfileRequest
+ */
+export type DeleteProfileRequest = Message<"specter.v1.DeleteProfileRequest"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message specter.v1.DeleteProfileRequest.
+ * Use `create(DeleteProfileRequestSchema)` to create a new message.
+ */
+export const DeleteProfileRequestSchema: GenMessage<DeleteProfileRequest> = /*@__PURE__*/
+  messageDesc(file_specter_v1_profiles, 8);
+
+/**
+ * @generated from message specter.v1.DeleteProfileResponse
+ */
+export type DeleteProfileResponse = Message<"specter.v1.DeleteProfileResponse"> & {
+};
+
+/**
+ * Describes the message specter.v1.DeleteProfileResponse.
+ * Use `create(DeleteProfileResponseSchema)` to create a new message.
+ */
+export const DeleteProfileResponseSchema: GenMessage<DeleteProfileResponse> = /*@__PURE__*/
+  messageDesc(file_specter_v1_profiles, 9);
+
+/**
  * @generated from message specter.v1.CompileProfileRequest
  */
 export type CompileProfileRequest = Message<"specter.v1.CompileProfileRequest"> & {
@@ -210,7 +240,7 @@ export type CompileProfileRequest = Message<"specter.v1.CompileProfileRequest"> 
  * Use `create(CompileProfileRequestSchema)` to create a new message.
  */
 export const CompileProfileRequestSchema: GenMessage<CompileProfileRequest> = /*@__PURE__*/
-  messageDesc(file_specter_v1_profiles, 8);
+  messageDesc(file_specter_v1_profiles, 10);
 
 /**
  * @generated from message specter.v1.CompileProfileResponse
@@ -227,5 +257,5 @@ export type CompileProfileResponse = Message<"specter.v1.CompileProfileResponse"
  * Use `create(CompileProfileResponseSchema)` to create a new message.
  */
 export const CompileProfileResponseSchema: GenMessage<CompileProfileResponse> = /*@__PURE__*/
-  messageDesc(file_specter_v1_profiles, 9);
+  messageDesc(file_specter_v1_profiles, 11);
 

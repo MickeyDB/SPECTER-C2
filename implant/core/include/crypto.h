@@ -220,8 +220,10 @@ void fe_invert(fe25519 out, const fe25519 z);
 /* ------------------------------------------------------------------ */
 
 /**
- * Decrypt a string encrypted by encrypt_strings.py (XOR-based).
- * encrypted: input bytes, len: byte count, output: decrypted buffer.
+ * Decrypt a string encrypted by encrypt_strings.py (32-byte XOR key).
+ * Layout: [key: 32 bytes][encrypted data...]
+ * encrypted: input blob (key + ciphertext), len: total byte count,
+ * output: decrypted buffer (must hold at least len - 32 + 1 bytes).
  */
 void spec_decrypt_string(const BYTE *encrypted, DWORD len, BYTE *output);
 

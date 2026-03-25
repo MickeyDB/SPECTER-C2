@@ -48,6 +48,12 @@ message GetProfileResponse {
   ProfileInfo profile = 1;
 }
 
+message DeleteProfileRequest {
+  string id = 1;
+}
+
+message DeleteProfileResponse {}
+
 message CompileProfileRequest {
   string id = 1;
 }

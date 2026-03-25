@@ -53,6 +53,7 @@ service SpecterService {
   rpc CreateProfile(CreateProfileRequest) returns (CreateProfileResponse);
   rpc ListProfiles(ListProfilesRequest) returns (ListProfilesResponse);
   rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
+  rpc DeleteProfile(DeleteProfileRequest) returns (DeleteProfileResponse);
   rpc CompileProfile(CompileProfileRequest) returns (CompileProfileResponse);
 
   // Certificate RPCs

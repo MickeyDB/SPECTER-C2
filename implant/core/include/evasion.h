@@ -124,6 +124,7 @@ typedef struct _MEMGUARD_STATE {
     BOOL    initialized;             /* Guard initialized flag           */
     BOOL    encrypted;               /* Currently encrypted flag         */
     DWORD   prng_state;              /* PRNG for key generation          */
+    volatile DWORD guard_violations; /* Count of guard page violations   */
 } MEMGUARD_STATE;
 
 typedef struct _EVASION_CONTEXT {
@@ -269,6 +270,11 @@ NTSTATUS memguard_decrypt(EVASION_CONTEXT *ctx);
  */
 NTSTATUS memguard_setup_return_spoof(EVASION_CONTEXT *ctx);
 
+/**
+ * Tear down memory guard: remove VEH handler, clear guard pages.
+ */
+void memguard_cleanup(EVASION_CONTEXT *ctx);
+
 /* ------------------------------------------------------------------ */
 /*  Module overloading API                                             */
 /* ------------------------------------------------------------------ */
@@ -280,6 +286,14 @@ NTSTATUS memguard_setup_return_spoof(EVASION_CONTEXT *ctx);
  */
 NTSTATUS evasion_module_overload(EVASION_CONTEXT *ctx, PVOID *mapped_base,
                                   PSIZE_T mapped_size);
+
+/**
+ * Finalize module overloading by flipping the mapped region from
+ * RW (used during PIC copy) to RX (execute-read, no write).
+ * Must be called after copying the PIC blob into the overloaded section.
+ */
+NTSTATUS evasion_module_overload_finalize(EVASION_CONTEXT *ctx, PVOID base,
+                                           SIZE_T size);
 
 /* ------------------------------------------------------------------ */
 /*  .pdata registration API                                            */

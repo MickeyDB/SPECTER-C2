@@ -151,14 +151,102 @@ typedef union _LARGE_INTEGER {
 
 #define FILE_READ_DATA          0x0001
 #define FILE_READ_ATTRIBUTES    0x0080
+#define FILE_WRITE_DATA_NTDEFS  0x0002
+#define FILE_APPEND_DATA        0x0004
 #define SYNCHRONIZE             0x00100000
+#define DELETE_ACCESS            0x00010000
 #define GENERIC_READ            0x80000000
+#define GENERIC_WRITE           0x40000000
 
 #define FILE_SHARE_READ         0x00000001
 #define FILE_SHARE_WRITE        0x00000002
+#define FILE_SHARE_DELETE       0x00000004
 
 #define FILE_OPEN               0x00000001
+#define FILE_CREATE_NTDEFS      0x00000002
+#define FILE_OPEN_IF_NTDEFS     0x00000003
+#define FILE_OVERWRITE_IF       0x00000005
 #define FILE_SYNCHRONOUS_IO_NONALERT 0x00000020
+#define FILE_DELETE_ON_CLOSE    0x00001000
+#define FILE_DIRECTORY_FILE     0x00000001
+#define FILE_NON_DIRECTORY_FILE_NTDEFS 0x00000040
+
+/* File attribute constants */
+#define FILE_ATTRIBUTE_NORMAL   0x00000080
+#define FILE_ATTRIBUTE_DIRECTORY 0x00000010
+
+/* File list directory access */
+#define FILE_LIST_DIRECTORY     0x0001
+
+/* ------------------------------------------------------------------ */
+/*  Registry key access rights                                         */
+/* ------------------------------------------------------------------ */
+
+#define KEY_QUERY_VALUE          0x0001
+#define KEY_SET_VALUE            0x0002
+#define KEY_CREATE_SUB_KEY       0x0004
+#define KEY_ENUMERATE_SUB_KEYS   0x0008
+#define KEY_READ                 0x20019
+#define KEY_WRITE                0x20006
+#define KEY_ALL_ACCESS           0xF003F
+
+/* Registry value information classes */
+#define KeyValuePartialInformation      2
+
+typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
+    ULONG TitleIndex;
+    ULONG Type;
+    ULONG DataLength;
+    BYTE  Data[1];    /* Variable length */
+} KEY_VALUE_PARTIAL_INFORMATION;
+
+/* ------------------------------------------------------------------ */
+/*  Token access rights and types                                      */
+/* ------------------------------------------------------------------ */
+
+#define TOKEN_DUPLICATE         0x0002
+#define TOKEN_QUERY             0x0008
+#define TOKEN_IMPERSONATE       0x0004
+#define TOKEN_ASSIGN_PRIMARY    0x0001
+
+/* Token types */
+#define TokenPrimary            1
+#define TokenImpersonation      2
+
+/* Thread information classes */
+#define ThreadImpersonationToken 5
+
+/* Process access rights */
+#define PROCESS_QUERY_INFORMATION       0x0400
+#define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
+
+/* ------------------------------------------------------------------ */
+/*  Directory file query structures                                    */
+/* ------------------------------------------------------------------ */
+
+/* FILE_INFORMATION_CLASS values */
+#define FileBothDirectoryInformation     3
+
+typedef struct _FILE_BOTH_DIR_INFORMATION {
+    ULONG           NextEntryOffset;
+    ULONG           FileIndex;
+    LARGE_INTEGER   CreationTime;
+    LARGE_INTEGER   LastAccessTime;
+    LARGE_INTEGER   LastWriteTime;
+    LARGE_INTEGER   ChangeTime;
+    LARGE_INTEGER   EndOfFile;
+    LARGE_INTEGER   AllocationSize;
+    ULONG           FileAttributes;
+    ULONG           FileNameLength;
+    ULONG           EaSize;
+    BYTE            ShortNameLength;
+    BYTE            Reserved;
+    WCHAR           ShortName[12];
+    WCHAR           FileName[1];    /* Variable length */
+} FILE_BOTH_DIR_INFORMATION;
+
+/* STATUS codes for directory enumeration */
+#define STATUS_NO_MORE_FILES    ((NTSTATUS)0x80000006)
 
 /* ------------------------------------------------------------------ */
 /*  Process information classes                                        */
@@ -180,6 +268,34 @@ typedef enum _SECTION_INHERIT {
     ViewShare = 1,
     ViewUnmap = 2,
 } SECTION_INHERIT;
+
+/* ------------------------------------------------------------------ */
+/*  Exception handling structures (for VEH)                            */
+/* ------------------------------------------------------------------ */
+
+#define EXCEPTION_MAXIMUM_PARAMETERS 15
+
+#define EXCEPTION_CONTINUE_EXECUTION ((LONG)-1)
+#define EXCEPTION_CONTINUE_SEARCH    ((LONG)0)
+
+#define STATUS_GUARD_PAGE_VIOLATION  ((NTSTATUS)0x80000001)
+
+typedef struct _EXCEPTION_RECORD {
+    NTSTATUS ExceptionCode;
+    DWORD    ExceptionFlags;
+    struct _EXCEPTION_RECORD *ExceptionRecord;
+    PVOID    ExceptionAddress;
+    DWORD    NumberParameters;
+    ULONG_PTR ExceptionInformation[EXCEPTION_MAXIMUM_PARAMETERS];
+} EXCEPTION_RECORD, *PEXCEPTION_RECORD;
+
+/* Forward-declare CONTEXT64 — full definition in sleep.h */
+typedef struct _CONTEXT64 CONTEXT64;
+
+typedef struct _EXCEPTION_POINTERS {
+    PEXCEPTION_RECORD ExceptionRecord;
+    CONTEXT64        *ContextRecord;
+} EXCEPTION_POINTERS, *PEXCEPTION_POINTERS;
 
 /* ------------------------------------------------------------------ */
 /*  CONTEXT64 — defined in sleep.h (canonical definition).             */

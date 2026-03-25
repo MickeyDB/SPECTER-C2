@@ -440,7 +440,7 @@ impl RedirectorOrchestrator {
     /// List all redirectors with their current state.
     pub async fn list(&self) -> Result<Vec<(RedirectorConfig, RedirectorState)>, RedirectorError> {
         let rows =
-            sqlx::query("SELECT config_yaml, state FROM redirectors ORDER BY created_at DESC")
+            sqlx::query("SELECT config_yaml, state, domain FROM redirectors ORDER BY created_at DESC")
                 .fetch_all(&self.pool)
                 .await?;
 
@@ -448,10 +448,20 @@ impl RedirectorOrchestrator {
         for row in rows {
             let config_yaml: String = row.get("config_yaml");
             let state_str: String = row.get("state");
+            let db_domain: String = row.get("domain");
 
-            let config: RedirectorConfig = serde_yaml::from_str(&config_yaml)
+            let mut config: RedirectorConfig = serde_yaml::from_str(&config_yaml)
                 .map_err(|e| RedirectorError::InvalidConfig(e.to_string()))?;
             let state: RedirectorState = state_str.parse()?;
+
+            // The domain column may have been updated by terraform deploy
+            // (e.g. with the Azure App Service default hostname) while the
+            // config_yaml still holds the original (possibly empty) value.
+            // Prefer the DB column when it is non-empty.
+            if !db_domain.is_empty() {
+                config.domain = db_domain;
+            }
+
             results.push((config, state));
         }
 

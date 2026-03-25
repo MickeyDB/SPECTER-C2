@@ -343,6 +343,19 @@ void modmgr_shutdown(MODULE_MANAGER *mgr) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Module manager accessor                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Get the global module manager pointer.
+ * Used by the task execution engine to route module tasks through
+ * the bus without needing extern access to the static global.
+ */
+MODULE_MANAGER *modmgr_get(void) {
+    return &g_modmgr;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Test support                                                       */
 /* ------------------------------------------------------------------ */
 

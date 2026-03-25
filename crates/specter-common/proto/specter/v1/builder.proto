@@ -29,6 +29,10 @@ message GeneratePayloadRequest {
   EvasionConfig evasion = 10;
   // Listener ID — selects the per-listener X25519 keypair to embed.
   string listener_id = 11;
+  // Enable runtime debug mode (DebugView traces, simple sleep).
+  bool debug_mode = 12;
+  // Skip VM/sandbox anti-analysis checks at runtime.
+  bool skip_anti_analysis = 13;
 }
 
 message ChannelEndpoint {

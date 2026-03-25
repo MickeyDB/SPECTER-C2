@@ -13,6 +13,7 @@ import {
   AlertCircle,
   CheckCircle,
   X,
+  Trash2,
 } from 'lucide-react'
 import { specterClient } from '@/lib/client'
 import type { ProfileInfo } from '@/gen/specter/v1/profiles_pb'
@@ -257,11 +258,13 @@ function ProfileList({
   selectedId,
   onSelect,
   onCreate,
+  onDelete,
 }: {
   profiles: ProfileInfo[]
   selectedId: string | null
   onSelect: (id: string) => void
   onCreate: () => void
+  onDelete: (id: string) => void
 }) {
   return (
     <div className="flex flex-col border-r border-specter-border">
@@ -282,24 +285,38 @@ function ProfileList({
           </div>
         ) : (
           profiles.map((p) => (
-            <button
+            <div
               key={p.id}
-              onClick={() => onSelect(p.id)}
-              className={`flex w-full items-center gap-2 border-b border-specter-border px-3 py-2.5 text-left transition-colors ${
+              className={`flex w-full items-center gap-2 border-b border-specter-border px-3 py-2.5 transition-colors ${
                 selectedId === p.id
                   ? 'bg-specter-surface text-specter-text'
                   : 'text-specter-muted hover:bg-specter-surface/50'
               }`}
             >
-              <FileText className="h-3.5 w-3.5 shrink-0" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-medium">{p.name}</div>
-                <div className="truncate text-[10px] text-specter-muted">
-                  {p.description || 'No description'}
+              <button
+                onClick={() => onSelect(p.id)}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              >
+                <FileText className="h-3.5 w-3.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium">{p.name}</div>
+                  <div className="truncate text-[10px] text-specter-muted">
+                    {p.description || 'No description'}
+                  </div>
                 </div>
-              </div>
-              <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
-            </button>
+                <ChevronRight className="h-3 w-3 shrink-0 opacity-50" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete(p.id)
+                }}
+                className="shrink-0 rounded p-1 text-specter-muted transition-colors hover:bg-specter-danger/10 hover:text-specter-danger"
+                title="Delete profile"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            </div>
           ))
         )}
       </div>
@@ -467,6 +484,8 @@ export function ProfileEditor() {
   const [saveResult, setSaveResult] = useState<{ success: boolean; message: string } | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
   const [isNew, setIsNew] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const validationErrors = useMemo(() => validateYaml(editorContent), [editorContent])
 
@@ -548,6 +567,35 @@ export function ProfileEditor() {
     }
   }, [profileName, profileDesc, editorContent, validationErrors, fetchProfiles])
 
+  const handleDeleteRequest = useCallback(
+    (id: string) => {
+      const profile = profiles.find((p) => p.id === id)
+      setDeleteConfirm({ id, name: profile?.name || id })
+    },
+    [profiles]
+  )
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deleteConfirm) return
+    setDeleting(true)
+    try {
+      await specterClient.deleteProfile({ id: deleteConfirm.id })
+      if (selectedId === deleteConfirm.id) {
+        setSelectedId(null)
+        setEditorContent(DEFAULT_PROFILE_YAML)
+        setProfileName('new-profile')
+        setProfileDesc('')
+        setIsNew(false)
+      }
+      setDeleteConfirm(null)
+      await fetchProfiles()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete profile')
+    } finally {
+      setDeleting(false)
+    }
+  }, [deleteConfirm, selectedId, fetchProfiles])
+
   return (
     <div className="flex h-full flex-col gap-4">
       {/* Header */}
@@ -589,6 +637,7 @@ export function ProfileEditor() {
             selectedId={selectedId}
             onSelect={handleSelectProfile}
             onCreate={handleNewProfile}
+            onDelete={handleDeleteRequest}
           />
         </div>
 
@@ -695,6 +744,41 @@ export function ProfileEditor() {
           </div>
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-sm rounded-lg border border-specter-border bg-specter-bg shadow-xl">
+            <div className="flex items-center justify-between border-b border-specter-border px-4 py-3">
+              <h2 className="text-sm font-medium text-specter-text">Delete Profile</h2>
+              <button onClick={() => setDeleteConfirm(null)} className="text-specter-muted hover:text-specter-text">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-4">
+              <p className="text-xs text-specter-muted">
+                Are you sure you want to delete the profile &ldquo;{deleteConfirm.name}&rdquo;? This action cannot be undone.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-specter-border px-4 py-3">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="rounded border border-specter-border px-3 py-1.5 text-xs text-specter-muted transition-colors hover:text-specter-text"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={deleting}
+                className="flex items-center gap-1.5 rounded bg-specter-danger px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-specter-danger/90 disabled:opacity-50"
+              >
+                {deleting && <Loader className="h-3 w-3 animate-spin" />}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

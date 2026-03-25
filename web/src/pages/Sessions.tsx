@@ -99,6 +99,7 @@ interface Column {
 }
 
 const columns: Column[] = [
+  { key: 'actions', label: '', width: 'w-16', sortable: false },
   { key: 'status', label: 'Status', width: 'w-20', sortable: true },
   { key: 'hostname', label: 'Hostname', width: 'w-40', sortable: true },
   { key: 'username', label: 'Username', width: 'w-36', sortable: true },
@@ -108,7 +109,6 @@ const columns: Column[] = [
   { key: 'externalIp', label: 'IP', width: 'w-32', sortable: true },
   { key: 'lastCheckin', label: 'Last Check-in', width: 'w-28', sortable: true },
   { key: 'firstSeen', label: 'First Seen', width: 'w-28', sortable: true },
-  { key: 'actions', label: '', width: 'w-16', sortable: false },
 ]
 
 // ── Component ──────────────────────────────────────────────────────────
@@ -347,6 +347,17 @@ function SessionTableBody({
                 transform: `translateY(${virtualRow.start}px)`,
               }}
             >
+              {/* Actions (Interact) */}
+              <div className="w-16 shrink-0 px-2">
+                <button
+                  onClick={() => onInteract(session.id)}
+                  title="Interact"
+                  className="rounded p-1 text-specter-muted transition-colors hover:bg-specter-accent/20 hover:text-specter-accent"
+                >
+                  <Terminal className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
               {/* Status */}
               <div className="w-20 shrink-0 px-2">
                 <div className="flex items-center gap-2">
@@ -406,17 +417,6 @@ function SessionTableBody({
               {/* First Seen */}
               <div className="w-28 shrink-0 px-2 text-xs text-specter-muted">
                 {formatTimestamp(session.firstSeen)}
-              </div>
-
-              {/* Actions */}
-              <div className="w-16 shrink-0 px-2">
-                <button
-                  onClick={() => onInteract(session.id)}
-                  title="Interact"
-                  className="rounded p-1 text-specter-muted transition-colors hover:bg-specter-accent/20 hover:text-specter-accent"
-                >
-                  <Terminal className="h-3.5 w-3.5" />
-                </button>
               </div>
             </div>
           )

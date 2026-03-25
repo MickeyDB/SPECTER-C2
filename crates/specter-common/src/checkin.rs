@@ -12,9 +12,9 @@ pub mod tlv_tags {
     pub const USERNAME: u16 = 0x0011;
     pub const PID: u16 = 0x0012;
     pub const OS_VERSION: u16 = 0x0013;
-    pub const INTEGRITY_LEVEL: u16 = 0x0014;
-    pub const PROCESS_NAME: u16 = 0x0015;
-    pub const INTERNAL_IP: u16 = 0x0016;
+    pub const PROCESS_NAME: u16 = 0x0008;
+    pub const INTEGRITY_LEVEL: u16 = 0x0009;
+    pub const INTERNAL_IP: u16 = 0x000B;
     pub const TASK_RESULT: u16 = 0x0020;
     pub const RESULT_TASK_ID: u16 = 0x0021;
     pub const RESULT_STATUS: u16 = 0x0022;

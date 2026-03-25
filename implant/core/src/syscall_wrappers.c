@@ -232,3 +232,124 @@ NTSTATUS spec_NtContinue(PVOID context, BOOL raise_alert) {
     return evasion_syscall(get_evasion_ctx(), HASH_NTCONTINUE,
         context, raise_alert);
 }
+
+/* ------------------------------------------------------------------ */
+/*  NtResumeThread                                                     */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtResumeThread(HANDLE thread, PULONG prev_suspend_count) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTRESUMETHREAD,
+        thread, prev_suspend_count);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtReadFile                                                         */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtReadFile(HANDLE file, HANDLE event, PVOID apc_routine,
+    PVOID apc_context, PIO_STATUS_BLOCK iosb, PVOID buffer,
+    ULONG length, PLARGE_INTEGER offset, PULONG key) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTREADFILE,
+        file, event, apc_routine, apc_context, iosb,
+        buffer, length, offset, key);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtWriteFile                                                        */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtWriteFile(HANDLE file, HANDLE event, PVOID apc_routine,
+    PVOID apc_context, PIO_STATUS_BLOCK iosb, PVOID buffer,
+    ULONG length, PLARGE_INTEGER offset, PULONG key) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTWRITEFILE,
+        file, event, apc_routine, apc_context, iosb,
+        buffer, length, offset, key);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtOpenKey                                                          */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtOpenKey(PHANDLE key_handle, ULONG access,
+    POBJECT_ATTRIBUTES oa) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTOPENKEY,
+        key_handle, access, oa);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtCreateKey                                                        */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtCreateKey(PHANDLE key_handle, ULONG access,
+    POBJECT_ATTRIBUTES oa, ULONG title_index, PUNICODE_STRING class_name,
+    ULONG create_options, PULONG disposition) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTCREATEKEY,
+        key_handle, access, oa, title_index, class_name,
+        create_options, disposition);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtQueryValueKey                                                    */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtQueryValueKey(HANDLE key_handle,
+    PUNICODE_STRING value_name, DWORD info_class,
+    PVOID info, ULONG length, PULONG result_length) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTQUERYVALUEKEY,
+        key_handle, value_name, info_class, info, length, result_length);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtSetValueKey                                                      */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtSetValueKey(HANDLE key_handle,
+    PUNICODE_STRING value_name, ULONG title_index,
+    ULONG type, PVOID data, ULONG data_size) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTSETVALUEKEY,
+        key_handle, value_name, title_index, type, data, data_size);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtDeleteValueKey                                                   */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtDeleteValueKey(HANDLE key_handle,
+    PUNICODE_STRING value_name) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTDELETEVALUEKEY,
+        key_handle, value_name);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtOpenProcessToken                                                 */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtOpenProcessToken(HANDLE process, ULONG access,
+    PHANDLE token) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTOPENPROCESSTOKEN,
+        process, access, token);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtDuplicateToken                                                   */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtDuplicateToken(HANDLE existing, ULONG access,
+    POBJECT_ATTRIBUTES oa, BOOL effective_only,
+    DWORD token_type, PHANDLE new_token) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTDUPLICATETOKEN,
+        existing, access, oa, effective_only, token_type, new_token);
+}
+
+/* ------------------------------------------------------------------ */
+/*  NtQueryDirectoryFile                                               */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS spec_NtQueryDirectoryFile(HANDLE file, HANDLE event,
+    PVOID apc_routine, PVOID apc_context, PIO_STATUS_BLOCK iosb,
+    PVOID file_info, ULONG length, DWORD info_class,
+    BOOL return_single, PUNICODE_STRING file_name, BOOL restart) {
+    return evasion_syscall(get_evasion_ctx(), HASH_NTQUERYDIRECTORYFILE,
+        file, event, apc_routine, apc_context, iosb,
+        file_info, length, info_class, return_single, file_name, restart);
+}

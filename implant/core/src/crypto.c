@@ -932,14 +932,20 @@ BOOL spec_x25519_generate_keypair(BYTE private_out[32],
 
 /*
  * encrypt_strings.py generates arrays of XOR-encrypted bytes with a
- * per-build random key. The key is the first byte of the encrypted blob.
- * Decryption: for each byte, output[i] = encrypted[i+1] ^ encrypted[0].
+ * per-build random 32-byte key. The key is the first 32 bytes of the
+ * encrypted blob.
+ * Layout: [key: 32 bytes][encrypted_byte_0, encrypted_byte_1, ...]
+ * Decryption: plaintext[i] = encrypted[i + 32] ^ key[i % 32]
  */
+#define STRING_KEY_SIZE 32
+
 void spec_decrypt_string(const BYTE *encrypted, DWORD len, BYTE *output) {
-    if (len == 0) return;
-    BYTE xor_key = encrypted[0];
+    if (len <= STRING_KEY_SIZE) return;
+    const BYTE *key = encrypted;
+    const BYTE *enc = encrypted + STRING_KEY_SIZE;
+    DWORD data_len = len - STRING_KEY_SIZE;
     DWORD i;
-    for (i = 1; i < len; i++)
-        output[i - 1] = encrypted[i] ^ xor_key;
-    output[len - 1] = 0; /* null-terminate */
+    for (i = 0; i < data_len; i++)
+        output[i] = enc[i] ^ key[i % STRING_KEY_SIZE];
+    output[data_len] = 0; /* null-terminate */
 }

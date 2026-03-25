@@ -97,6 +97,19 @@ fn config_generation_decryptable_by_server() {
     )
     .unwrap();
 
+    // Parse CONFIG_BLOB_HEADER: [magic(4)][version(4)][data_size(4)][nonce(12)][tag(16)][ciphertext]
+    let blob = &gen.config_blob;
+    assert!(blob.len() >= 48, "config blob too small");
+    let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
+    let version = u32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]);
+    let data_size = u32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]) as usize;
+    let nonce_bytes = &blob[12..24];
+    let tag = &blob[24..40];
+    let ciphertext = &blob[40..40 + data_size];
+
+    assert_eq!(magic, 0x53504543, "default config magic should be SPEC");
+    assert_eq!(version, 1);
+
     // Derive the same shared secret the server would
     let implant_pubkey = PublicKey::from(gen.implant_pubkey);
     let shared = server_secret.diffie_hellman(&implant_pubkey);
@@ -105,10 +118,19 @@ fn config_generation_decryptable_by_server() {
     hasher.update(shared.as_bytes());
     let key: [u8; 32] = hasher.finalize().into();
 
-    let nonce = Nonce::from_slice(&gen.config_blob[..12]);
+    // Reconstruct ciphertext+tag (ChaCha20-Poly1305 expects appended tag)
+    let mut ct_with_tag = Vec::with_capacity(data_size + 16);
+    ct_with_tag.extend_from_slice(ciphertext);
+    ct_with_tag.extend_from_slice(tag);
+
+    let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
+
+    // AAD = magic + version (first 8 bytes of header)
+    use chacha20poly1305::aead::Payload;
+    let aad = &blob[0..8];
     let plaintext = cipher
-        .decrypt(nonce, &gen.config_blob[12..])
+        .decrypt(nonce, Payload { msg: ct_with_tag.as_slice(), aad })
         .expect("server should be able to decrypt implant config");
 
     // Walk TLV entries to verify structure
@@ -182,13 +204,15 @@ fn string_encryption_changes_blob() {
     let r2 = obfuscate(&blob, &settings).unwrap();
 
     assert_ne!(
-        r1, r2,
+        r1.blob, r2.blob,
         "two string encryption runs must produce different output"
     );
-    // Key region should have changed in both
+    // Key region should have changed in both.
+    // Note: the SPECSTR marker (8 bytes) is scrubbed by scrub_markers(),
+    // so we check the key region which follows the (now-randomized) marker.
     let key_start = 64 + 8; // padding + marker
-    assert_ne!(&r1[key_start..key_start + 32], &old_key);
-    assert_ne!(&r2[key_start..key_start + 32], &old_key);
+    assert_ne!(&r1.blob[key_start..key_start + 32], &old_key);
+    assert_ne!(&r2.blob[key_start..key_start + 32], &old_key);
 }
 
 #[test]
@@ -210,7 +234,7 @@ fn obfuscation_with_junk_insertion_modifies_size() {
     let result = obfuscate(&blob, &settings).unwrap();
 
     // Junk replaces int3 runs, so no consecutive 0xCC pairs should remain
-    let cc_pairs = result
+    let cc_pairs = result.blob
         .windows(2)
         .filter(|w| w[0] == 0xCC && w[1] == 0xCC)
         .count();

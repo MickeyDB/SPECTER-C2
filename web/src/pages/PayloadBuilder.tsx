@@ -235,9 +235,13 @@ export function PayloadBuilder() {
   const [xorEncryption, setXorEncryption] = useState(false)
 
   // Evasion
-  const [moduleOverloading, setModuleOverloading] = useState(false)
+  const [moduleOverloading, setModuleOverloading] = useState(true)
   const [pdataRegistration, setPdataRegistration] = useState(false)
   const [ntcontinueEntry, setNtcontinueEntry] = useState(false)
+
+  // Development / Debug
+  const [debugMode, setDebugMode] = useState(false)
+  const [skipAntiAnalysis, setSkipAntiAnalysis] = useState(false)
 
   // Build state
   const [building, setBuilding] = useState(false)
@@ -368,6 +372,8 @@ export function PayloadBuilder() {
           pdataRegistration,
           ntcontinueEntry,
         },
+        debugMode,
+        skipAntiAnalysis,
       })
 
       const res = await specterClient.generatePayload(req)
@@ -393,6 +399,8 @@ export function PayloadBuilder() {
     moduleOverloading,
     pdataRegistration,
     ntcontinueEntry,
+    debugMode,
+    skipAntiAnalysis,
     proxyTarget,
     serviceName,
     stagerUrl,
@@ -877,6 +885,45 @@ export function PayloadBuilder() {
                     <div className="text-xs text-specter-text">NtContinue Entry</div>
                     <div className="text-[10px] text-specter-muted">
                       Clean initial call stack via synthetic thread context transfer
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </section>
+
+            {/* Development / Debug */}
+            <section className="rounded-lg border border-specter-warning/30 bg-specter-warning/5 p-4">
+              <div className="mb-3 flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5 text-specter-warning" />
+                <h2 className="text-xs font-medium text-specter-text">Development</h2>
+              </div>
+              <div className="space-y-3">
+                <label className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={debugMode}
+                    onChange={(e) => setDebugMode(e.target.checked)}
+                    className="rounded border-specter-border"
+                  />
+                  <div>
+                    <div className="text-xs text-specter-text">Debug Mode</div>
+                    <div className="text-[10px] text-specter-warning">
+                      DebugView traces, simple 5s sleep — OPSEC unsafe for production
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={skipAntiAnalysis}
+                    onChange={(e) => setSkipAntiAnalysis(e.target.checked)}
+                    className="rounded border-specter-border"
+                  />
+                  <div>
+                    <div className="text-xs text-specter-text">Skip VM/Sandbox Checks</div>
+                    <div className="text-[10px] text-specter-warning">
+                      Disable anti-analysis checks — use for testing in VMs
                     </div>
                   </div>
                 </label>

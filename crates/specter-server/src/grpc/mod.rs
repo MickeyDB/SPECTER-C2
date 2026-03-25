@@ -531,6 +531,30 @@ impl SpecterService for SpecterGrpcService {
         }))
     }
 
+    async fn delete_profile(
+        &self,
+        request: Request<DeleteProfileRequest>,
+    ) -> Result<Response<DeleteProfileResponse>, Status> {
+        let ctx = require_permission(&request, "delete_profile")?;
+        let id = request.get_ref().id.clone();
+        self.profile_store
+            .delete_profile(&id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let _ = self
+            .audit_log
+            .append(
+                &ctx.operator_id,
+                AuditAction::ProfileDelete,
+                &id,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        Ok(Response::new(DeleteProfileResponse {}))
+    }
+
     async fn compile_profile(
         &self,
         request: Request<CompileProfileRequest>,
@@ -1414,6 +1438,8 @@ impl SpecterService for SpecterGrpcService {
             operator = %ctx.operator_id,
             format = %req.format,
             build_id = %build_id,
+            debug_mode = %req.debug_mode,
+            skip_anti_analysis = %req.skip_anti_analysis,
             "Generating payload"
         );
 
@@ -1515,7 +1541,7 @@ impl SpecterService for SpecterGrpcService {
             Some(fmt) => {
                 let result = self
                     .payload_builder
-                    .build_with_evasion(fmt, &profile, &server_pubkey, &channels, &sleep_config, kill_date, evasion_flags)
+                    .build_with_evasion(fmt, &profile, &server_pubkey, &channels, &sleep_config, kill_date, evasion_flags, req.debug_mode, req.skip_anti_analysis)
                     .map_err(|e| Status::internal(format!("Build failed: {e}")))?;
 
                 // Obfuscation is applied to the PIC blob BEFORE embedding into PE stubs
@@ -1528,6 +1554,7 @@ impl SpecterService for SpecterGrpcService {
                         ..Default::default()
                     };
                     crate::builder::obfuscate(&result.payload, &xor_only)
+                        .map(|r| r.blob)
                         .unwrap_or(result.payload)
                 } else {
                     result.payload

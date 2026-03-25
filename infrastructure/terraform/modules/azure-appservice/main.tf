@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 3.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 }
 
@@ -77,6 +81,8 @@ resource "azurerm_linux_web_app" "redirector" {
     remote_debugging_enabled = false
   }
 
+  zip_deploy_file = data.archive_file.app_code.output_path
+
   app_settings = {
     "BACKEND_URL"                      = var.backend_url
     "URI_PATTERN"                      = var.uri_pattern
@@ -84,7 +90,7 @@ resource "azurerm_linux_web_app" "redirector" {
     "HEADER_PATTERN"                   = var.header_pattern
     "DECOY_RESPONSE"                   = var.decoy_response
     "PROFILE_ID"                       = var.profile_id
-    "WEBSITE_RUN_FROM_PACKAGE"         = "0"
+    "WEBSITE_RUN_FROM_PACKAGE"         = "1"
     "SCM_DO_BUILD_DURING_DEPLOYMENT"   = "true"
     "WEBSITE_NODE_DEFAULT_VERSION"     = "~20"
   }
@@ -154,27 +160,19 @@ resource "azurerm_app_service_certificate_binding" "app" {
 }
 
 # --- Deploy Application Code ---
+#
+# Use Terraform's archive_file data source to create the deployment zip
+# and azurerm_linux_web_app's zip_deploy_file attribute for deployment.
+# This eliminates dependencies on external CLI tools (zip, az) and works
+# cross-platform (Windows, Linux, macOS) without authentication issues.
 
-resource "null_resource" "deploy_app" {
-  depends_on = [azurerm_linux_web_app.redirector]
+data "archive_file" "app_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/app"
+  output_path = "${path.module}/deploy.zip"
 
-  triggers = {
-    backend_url = var.backend_url
-    app_hash    = filesha256("${path.module}/app/server.js")
-  }
-
-  provisioner "local-exec" {
-    working_dir = "${path.module}/app"
-    command     = <<-EOT
-      zip -r ../deploy.zip . -x "node_modules/*"
-
-      az webapp deploy \
-        --resource-group ${local.resource_group_name} \
-        --name ${azurerm_linux_web_app.redirector.name} \
-        --src-path ../deploy.zip \
-        --type zip
-
-      rm -f ../deploy.zip
-    EOT
-  }
+  excludes = [
+    "node_modules",
+    "node_modules/**",
+  ]
 }

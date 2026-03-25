@@ -251,7 +251,8 @@ function RedirectorHealthWidget({ redirectors }: { redirectors: RedirectorInfo[]
         ) : (
           <div className="divide-y divide-specter-border">
             {redirectors.map((r) => {
-              const isHealthy = r.state === 'running' || r.state === 'healthy'
+              const s = r.state.toLowerCase()
+              const isHealthy = s === 'running' || s === 'healthy' || s === 'active'
               return (
                 <div key={r.id} className="flex items-center gap-3 px-4 py-2.5">
                   <span
