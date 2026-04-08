@@ -607,15 +607,19 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
         break;
 
-    case TASK_UPLOAD:
+    case TASK_UPLOAD: {
         /* TODO: migrate to module bus */
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        char msg[] = {'n','o','t',' ','i','m','p','l','e','m','e','n','t','e','d',0};
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, (BYTE*)msg, 15);
         break;
+    }
 
-    case TASK_DOWNLOAD:
+    case TASK_DOWNLOAD: {
         /* TODO: migrate to module bus */
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        char msg[] = {'n','o','t',' ','i','m','p','l','e','m','e','n','t','e','d',0};
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, (BYTE*)msg, 15);
         break;
+    }
 
     default:
         /* Unknown task type — report failure */

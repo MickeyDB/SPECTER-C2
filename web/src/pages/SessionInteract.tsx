@@ -33,9 +33,6 @@ import '@xterm/xterm/css/xterm.css'
 interface TabState {
   sessionId: string
   hostname: string
-  commandHistory: string[]
-  historyIndex: number
-  currentInput: string
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -101,11 +98,33 @@ const KNOWN_COMMANDS = [
 function useXterm(
   containerRef: React.RefObject<HTMLDivElement | null>,
   onCommand: (cmd: string) => void,
-  tabState: TabState,
-  setTabState: (update: (prev: TabState) => TabState) => void,
+  sessionId: string,
 ) {
   const termRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const commandHistoryRef = useRef<string[]>([])
+  const historyIndexRef = useRef<number>(0)
+  const onCommandRef = useRef(onCommand)
+
+  // Keep onCommand ref up to date without re-creating terminal
+  useEffect(() => {
+    onCommandRef.current = onCommand
+  }, [onCommand])
+
+  // Load saved history from localStorage on mount
+  useEffect(() => {
+    if (!sessionId) return
+    const saved = localStorage.getItem(`specter-history-${sessionId}`)
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) {
+          commandHistoryRef.current = parsed
+          historyIndexRef.current = parsed.length
+        }
+      } catch { /* ignore invalid JSON */ }
+    }
+  }, [sessionId])
 
   useEffect(() => {
     const container = containerRef.current
@@ -172,17 +191,20 @@ function useXterm(
         term.writeln('')
         const cmd = currentLine.trim()
         if (cmd) {
-          setTabState((prev) => ({
-            ...prev,
-            commandHistory: [...prev.commandHistory, cmd],
-            historyIndex: prev.commandHistory.length + 1,
-            currentInput: '',
-          }))
+          commandHistoryRef.current = [...commandHistoryRef.current, cmd]
+          historyIndexRef.current = commandHistoryRef.current.length
+          // Persist history to localStorage (Fix 8)
+          if (sessionId) {
+            localStorage.setItem(
+              `specter-history-${sessionId}`,
+              JSON.stringify(commandHistoryRef.current),
+            )
+          }
 
           if (cmd === 'clear') {
             term.clear()
           } else {
-            onCommand(cmd)
+            onCommandRef.current(cmd)
           }
         }
         currentLine = ''
@@ -193,8 +215,8 @@ function useXterm(
           term.write('\b \b')
         }
       } else if (ev.key === 'ArrowUp') {
-        const history = tabState.commandHistory
-        const idx = tabState.historyIndex - 1
+        const history = commandHistoryRef.current
+        const idx = historyIndexRef.current - 1
         if (idx >= 0 && idx < history.length) {
           // Clear current line
           while (currentLine.length > 0) {
@@ -203,11 +225,11 @@ function useXterm(
           }
           currentLine = history[idx]
           term.write(currentLine)
-          setTabState((prev) => ({ ...prev, historyIndex: idx }))
+          historyIndexRef.current = idx
         }
       } else if (ev.key === 'ArrowDown') {
-        const history = tabState.commandHistory
-        const idx = tabState.historyIndex + 1
+        const history = commandHistoryRef.current
+        const idx = historyIndexRef.current + 1
         // Clear current line
         while (currentLine.length > 0) {
           term.write('\b \b')
@@ -216,9 +238,9 @@ function useXterm(
         if (idx < history.length) {
           currentLine = history[idx]
           term.write(currentLine)
-          setTabState((prev) => ({ ...prev, historyIndex: idx }))
+          historyIndexRef.current = idx
         } else {
-          setTabState((prev) => ({ ...prev, historyIndex: history.length }))
+          historyIndexRef.current = history.length
         }
       } else if (ev.key === 'Tab') {
         ev.preventDefault()
@@ -250,7 +272,7 @@ function useXterm(
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, [containerRef, onCommand, tabState.commandHistory, tabState.historyIndex, setTabState])
+  }, [containerRef, sessionId])
 
   return termRef
 }
@@ -258,6 +280,39 @@ function useXterm(
 function writePrompt(term: XTerminal) {
   term.write('\x1b[32mspecter>\x1b[0m ')
 }
+
+function writeHelp(term: XTerminal) {
+  const lines = [
+    '\x1b[1mSPECTER C2 — Session Commands\x1b[0m',
+    '',
+    '\x1b[33mBuilt-in:\x1b[0m',
+    '  sleep <seconds> [jitter%]  — Change callback interval',
+    '  kill                       — Terminate implant',
+    '  cd <path>                  — Change working directory',
+    '  pwd                        — Print working directory',
+    '',
+    '\x1b[33mShell:\x1b[0m',
+    '  <any command>              — Execute via cmd.exe (e.g., whoami, ipconfig)',
+    '',
+    '\x1b[33mFile:\x1b[0m',
+    '  upload <local> <remote>    — Upload file to target',
+    '  download <remote> [local]  — Download file from target',
+    '',
+    '\x1b[33mModules:\x1b[0m',
+    '  module_load <name> [args]  — Load and execute a module',
+    '  bof <name> [args]          — Load and execute a BOF',
+    '',
+    '\x1b[33mLocal:\x1b[0m',
+    '  help / ?                   — Show this help',
+    '  clear                      — Clear terminal',
+    '',
+  ]
+  lines.forEach((l) => term.writeln(l))
+}
+
+const BUILTIN_TASKS = new Set([
+  'sleep', 'kill', 'exit', 'cd', 'pwd', 'upload', 'download', 'module_load', 'bof',
+])
 
 // ── Sidebar Component ──────────────────────────────────────────────────
 
@@ -447,9 +502,6 @@ export function SessionInteract() {
       ? [{
           sessionId: id,
           hostname: '...',
-          commandHistory: [],
-          historyIndex: 0,
-          currentInput: '',
         }]
       : []
   )
@@ -500,13 +552,22 @@ export function SessionInteract() {
     async (cmd: string) => {
       if (!id) return
 
-      const parts = cmd.split(/\s+/)
-      const command = parts[0]
+      const trimmed = cmd.trim()
+      if (!trimmed) return
+
+      const parts = trimmed.split(/\s+/)
+      const command = parts[0].toLowerCase()
       const args = parts.slice(1).join(' ')
 
-      // Handle local commands
-      if (command === 'help') {
-        // Help is handled in terminal output, not via gRPC
+      // Handle local-only commands (Fix 4 + Fix 9)
+      if (command === 'help' || command === '?') {
+        const term = termRef.current
+        if (term) writeHelp(term)
+        return
+      }
+      if (command === 'clear') {
+        const term = termRef.current
+        if (term) term.clear()
         return
       }
       if (command === 'exit') {
@@ -514,12 +575,25 @@ export function SessionInteract() {
         return
       }
 
+      // Map commands to task types (Fix 2)
+      let taskType: string
+      let taskArgs: string
+
+      if (BUILTIN_TASKS.has(command)) {
+        taskType = command
+        taskArgs = args
+      } else {
+        // Everything else is a shell command
+        taskType = 'shell'
+        taskArgs = trimmed // full command string
+      }
+
       try {
         const encoder = new TextEncoder()
         await specterClient.queueTask({
           sessionId: id,
-          taskType: command,
-          arguments: encoder.encode(args),
+          taskType: taskType,
+          arguments: encoder.encode(taskArgs),
           priority: TaskPriority.NORMAL,
           operatorId: '',
         })
@@ -535,39 +609,54 @@ export function SessionInteract() {
   // Handle sidebar quick actions
   const handleAction = useCallback(
     (action: string) => {
+      if (action === 'sleep') {
+        // Fix 6: prompt for sleep interval instead of sending bare 'sleep'
+        const input = prompt('Sleep interval (seconds) and jitter (0-100):', '60 15')
+        if (input) {
+          handleCommand(`sleep ${input}`)
+        }
+        return
+      }
       handleCommand(action)
     },
     [handleCommand]
   )
 
-  const activeTab = tabs[activeTabIndex]
+  // xterm hook (Fix 3: stable deps — only containerRef and sessionId)
+  const termRef = useXterm(terminalRef, handleCommand, id ?? '')
 
-  const setActiveTabState = useCallback(
-    (update: (prev: TabState) => TabState) => {
-      setTabs((prev) =>
-        prev.map((t, i) => (i === activeTabIndex ? update(t) : t))
-      )
-    },
-    [activeTabIndex]
-  )
+  // Track which task results have already been displayed (Fix 1)
+  const displayedTaskIds = useRef<Set<string>>(new Set())
 
-  // xterm hook
-  useXterm(terminalRef, handleCommand, activeTab ?? {
-    sessionId: '',
-    hostname: '',
-    commandHistory: [],
-    historyIndex: 0,
-    currentInput: '',
-  }, setActiveTabState)
+  // Display task results in terminal when tasks update (Fix 1)
+  useEffect(() => {
+    const terminal = termRef.current
+    if (!terminal) return
+
+    tasks.forEach((task) => {
+      if (
+        (task.status === TaskStatus.COMPLETE || task.status === TaskStatus.FAILED) &&
+        !displayedTaskIds.current.has(task.id)
+      ) {
+        displayedTaskIds.current.add(task.id)
+        const resultText = task.result ? new TextDecoder().decode(task.result) : ''
+        if (resultText) {
+          resultText.split('\n').forEach((line) => {
+            terminal.writeln(line)
+          })
+        }
+        if (task.status === TaskStatus.FAILED) {
+          terminal.writeln('\x1b[31m[FAILED]\x1b[0m')
+        }
+      }
+    })
+  }, [tasks, termRef])
 
   const addTab = () => {
     if (!id) return
     const newTab: TabState = {
       sessionId: id,
       hostname: session?.hostname ?? '...',
-      commandHistory: [],
-      historyIndex: 0,
-      currentInput: '',
     }
     setTabs((prev) => [...prev, newTab])
     setActiveTabIndex(tabs.length)

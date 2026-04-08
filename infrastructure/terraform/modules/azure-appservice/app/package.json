@@ -7,9 +7,7 @@
   "scripts": {
     "start": "node server.js"
   },
-  "dependencies": {
-    "http-proxy-middleware": "^2.0.6"
-  },
+  "dependencies": {},
   "engines": {
     "node": ">=20.0.0"
   }

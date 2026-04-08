@@ -99,7 +99,9 @@ pub async fn deploy_terraform(
     // If Terraform outputs include a hostname/domain, update the config so the
     // UI can show the actual endpoint (e.g., App Service default hostname).
     let resolved_domain = outputs
-        .get("default_hostname")
+        .get("app_default_hostname")
+        .or_else(|| outputs.get("app_url"))
+        .or_else(|| outputs.get("default_hostname"))
         .or_else(|| outputs.get("domain"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
