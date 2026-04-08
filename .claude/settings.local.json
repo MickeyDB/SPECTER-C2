@@ -55,7 +55,10 @@
       "Bash(ls C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.exe C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.dll)",
       "Bash(pip install:*)",
       "Bash(python -c \"import yara; print\\(''yara-python OK''\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''scripts/scan-public-rules.py''\\).read\\(\\)\\); print\\(''Script syntax OK''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''scripts/scan-public-rules.py''\\).read\\(\\)\\); print\\(''Script syntax OK''\\)\")",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/specter-build --pic test_blob.bin --dump-markers --scan-only)",
+      "Bash(./target/release/specter-build --pic test_dupes.bin --no-obfuscate --dump-markers --scan-only)"
     ]
   }
 }

