@@ -58,7 +58,10 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''scripts/scan-public-rules.py''\\).read\\(\\)\\); print\\(''Script syntax OK''\\)\")",
       "Bash(cargo build:*)",
       "Bash(./target/release/specter-build --pic test_blob.bin --dump-markers --scan-only)",
-      "Bash(./target/release/specter-build --pic test_dupes.bin --no-obfuscate --dump-markers --scan-only)"
+      "Bash(./target/release/specter-build --pic test_dupes.bin --no-obfuscate --dump-markers --scan-only)",
+      "Bash(ls -la C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.exe C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.dll C:/Users/localuser/Documents/SPECTER-C2/implant/build/*.bin)",
+      "Bash(./target/release/specter-build --pic implant/build/specter.bin --format dotnet --channel http://10.0.0.1:8080 --debug --skip-aa --dump-markers --scan-only)",
+      "Bash(./target/release/specter-build --pic implant/build/specter.bin --format dotnet --channel http://10.0.0.1:8080 --debug --skip-aa --xor --dump-markers --scan-only)"
     ]
   }
 }

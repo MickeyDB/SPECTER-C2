@@ -24,7 +24,7 @@
 
 /* Config region */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONFIG_MAX_CAPACITY] = {
+volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONFIG_MAX_CAPACITY] = {
     0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
     0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
     0x00, 0x10, 0x00, 0x00, /* max_size = 4096 */
@@ -32,7 +32,7 @@ static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONF
 
 /* PIC blob region */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
+volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
     'S','P','E','C','P','I','C','B','L','O','B','\0',
     0x00, 0x00, 0x00, 0x00, /* pic_size */
     0x00, 0x00, 0x00, 0x00, /* entry_offset */
@@ -62,9 +62,8 @@ void WinMainCRTStartup(void) {
 
     PBYTE b = (PBYTE)img_base;
 
-    BUILD_CONFIG_MARKER(cfg_marker);
-    PBYTE cp = stub_find_marker_in_image(b, img_size, cfg_marker, CONFIG_MARKER_LEN);
-    if (!cp) { g_stub_exit_code = 103; goto done; }
+    /* Read config directly from the static array (no marker scan) */
+    PBYTE cp = (PBYTE)stub_config_region + CONFIG_MARKER_LEN;
     g_stub_exit_code = 204;
 
     DWORD cfg_max = *(DWORD *)cp;
@@ -74,9 +73,8 @@ void WinMainCRTStartup(void) {
     if (cfg_len == 0 || cfg_len > cfg_max) { g_stub_exit_code = 104; goto done; }
     g_stub_exit_code = 205;
 
-    BUILD_PIC_MARKER(pic_marker);
-    PBYTE pp = stub_find_marker_in_image(b, img_size, pic_marker, PIC_MARKER_LEN);
-    if (!pp) { g_stub_exit_code = 105; goto done; }
+    /* Read PIC data directly from the static array (no marker scan) */
+    PBYTE pp = (PBYTE)stub_pic_region + PIC_MARKER_LEN;
     g_stub_exit_code = 206;
 
     DWORD pic_sz = *(DWORD *)pp;

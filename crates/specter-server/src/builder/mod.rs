@@ -428,12 +428,10 @@ impl PayloadBuilder {
             let data_end = data_start + max_size;
             let data_end = data_end.min(payload.len());
 
-            // Zero the data region first
-            for byte in &mut payload[data_start..data_end] {
-                *byte = 0;
-            }
-
-            // Write [config_len: u32][config_blob] into the data region
+            // Write [config_len: u32][config_blob] into the data region.
+            // Only zero/write the bytes we actually need — do NOT zero the
+            // entire max_size region, as subsequent data (e.g., PIC blob marker)
+            // may immediately follow the config capacity boundary.
             let write_end = (data_start + config_with_len.len()).min(data_end);
             payload[data_start..write_end]
                 .copy_from_slice(&config_with_len[..write_end - data_start]);

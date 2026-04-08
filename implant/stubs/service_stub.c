@@ -86,7 +86,7 @@ typedef struct _SERVICE_TABLE_ENTRYW {
 
 /* Config region */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONFIG_MAX_CAPACITY] = {
+volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONFIG_MAX_CAPACITY] = {
     0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
     0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
     0x00, 0x10, 0x00, 0x00, /* max_size = 4096 */
@@ -94,7 +94,7 @@ static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONF
 
 /* PIC blob region */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
+volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
     'S','P','E','C','P','I','C','B','L','O','B','\0',
     0x00, 0x00, 0x00, 0x00, /* pic_size */
     0x00, 0x00, 0x00, 0x00, /* entry_offset */

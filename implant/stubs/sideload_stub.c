@@ -34,7 +34,7 @@
  *   [zero padding to fill capacity]
  */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONFIG_MAX_CAPACITY] = {
+volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONFIG_MAX_CAPACITY] = {
     /* Config marker: 16 bytes of 0x43 */
     0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
     0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43, 0x43,
@@ -55,7 +55,7 @@ static volatile BYTE stub_config_region[CONFIG_MARKER_LEN + sizeof(DWORD) + CONF
  *   [pic_size bytes: PIC blob data]
  */
 __attribute__((section(".data"), used))
-static volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
+volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + PIC_MAX_CAPACITY] = {
     /* PIC marker: "SPECPICBLOB\0" */
     'S','P','E','C','P','I','C','B','L','O','B','\0',
     /* PIC size placeholder: 0 */
