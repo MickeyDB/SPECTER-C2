@@ -32,12 +32,12 @@ static IMPLANT_CONFIG g_config;
  * Layout before builder:  ['S','P','E','C','C','F','G','M', 0,0,0,0]
  * Layout after builder:   [random 8 bytes] [magic: u32 LE]
  */
-static volatile const BYTE cfg_magic_marker[12] = {
+static volatile BYTE cfg_magic_marker[12] __attribute__((section(".data"), used)) = {
     'S','P','E','C','C','F','G','M', 0x00, 0x00, 0x00, 0x00
 };
 
 DWORD cfg_get_magic(void) {
-    return *(const DWORD *)(cfg_magic_marker + 8);
+    return *(volatile DWORD *)(cfg_magic_marker + 8);
 }
 
 /* In-memory encryption state (used during sleep) */

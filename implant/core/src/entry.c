@@ -29,7 +29,7 @@ static IMPLANT_CONTEXT g_ctx;
    The builder locates the marker, patches the flags byte, and scrubs the
    marker with random bytes.  volatile const prevents the compiler from
    optimizing away reads or the marker bytes themselves. */
-static volatile const BYTE g_build_flags_region[] = {
+static volatile BYTE g_build_flags_region[] __attribute__((section(".data"), used)) = {
     'S','P','B','F',  /* marker — builder finds and scrubs this */
     0x00              /* flags byte — builder patches this       */
 };

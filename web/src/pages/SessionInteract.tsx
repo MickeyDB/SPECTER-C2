@@ -377,6 +377,8 @@ function SessionSidebar({
               <MetadataRow icon={Globe} label="External IP" value={session.externalIp} />
               <MetadataRow icon={Network} label="Internal IP" value={session.internalIp} />
               <MetadataRow icon={Monitor} label="OS" value={session.osVersion} />
+              <MetadataRow icon={Clock} label="Sleep" value="Unknown" />
+              <MetadataRow icon={Clock} label="Jitter" value="Unknown" />
               <MetadataRow icon={Clock} label="Last Check-in" value={formatRelativeTime(session.lastCheckin)} />
               <MetadataRow icon={Clock} label="First Seen" value={formatTimestamp(session.firstSeen)} />
             </div>
@@ -543,7 +545,7 @@ export function SessionInteract() {
       fetchTasks()
     }
     refresh()
-    const interval = setInterval(refresh, 10_000)
+    const interval = setInterval(refresh, 5_000)
     return () => clearInterval(interval)
   }, [fetchSession, fetchTasks])
 
@@ -575,7 +577,7 @@ export function SessionInteract() {
         return
       }
 
-      // Map commands to task types (Fix 2)
+      // Map commands to task types
       let taskType: string
       let taskArgs: string
 
@@ -597,10 +599,18 @@ export function SessionInteract() {
           priority: TaskPriority.NORMAL,
           operatorId: '',
         })
+        // Show queued confirmation in yellow
+        const term = termRef.current
+        if (term) {
+          term.writeln(`\x1b[33m[queued]\x1b[0m ${taskType}`)
+        }
         // Refresh tasks after queuing
         fetchTasks()
       } catch {
-        // Error queuing will be shown in terminal
+        const term = termRef.current
+        if (term) {
+          term.writeln(`\x1b[31m[error]\x1b[0m Failed to queue task`)
+        }
       }
     },
     [id, navigate, fetchTasks]
@@ -625,10 +635,12 @@ export function SessionInteract() {
   // xterm hook (Fix 3: stable deps — only containerRef and sessionId)
   const termRef = useXterm(terminalRef, handleCommand, id ?? '')
 
-  // Track which task results have already been displayed (Fix 1)
+  // Track which task results have already been displayed
   const displayedTaskIds = useRef<Set<string>>(new Set())
+  // Track mount time so we don't re-display old results on remount
+  const mountTimeRef = useRef(Date.now())
 
-  // Display task results in terminal when tasks update (Fix 1)
+  // Display task results in terminal when tasks update
   useEffect(() => {
     const terminal = termRef.current
     if (!terminal) return
@@ -638,16 +650,32 @@ export function SessionInteract() {
         (task.status === TaskStatus.COMPLETE || task.status === TaskStatus.FAILED) &&
         !displayedTaskIds.current.has(task.id)
       ) {
+        // Check if the task predates this component mount (5s grace period)
+        const taskTime = task.createdAt ? Number(task.createdAt.seconds) * 1000 : 0
+        const isNew = taskTime > mountTimeRef.current - 5000
+
         displayedTaskIds.current.add(task.id)
+
+        // Only render results for tasks created after mount
+        if (!isNew) return
+
         const resultText = task.result ? new TextDecoder().decode(task.result) : ''
-        if (resultText) {
-          resultText.split('\n').forEach((line) => {
-            terminal.writeln(line)
+        const typeTag = task.taskType || 'task'
+
+        if (task.status === TaskStatus.FAILED) {
+          const errMsg = resultText || 'Task failed'
+          terminal.writeln(`\x1b[31m[${typeTag}] [FAILED] ${errMsg}\x1b[0m`)
+        } else if (resultText) {
+          const lines = resultText.split('\n')
+          lines.forEach((line, i) => {
+            if (i === 0) {
+              terminal.writeln(`\x1b[32m[${typeTag}]\x1b[0m ${line}`)
+            } else {
+              terminal.writeln(`        ${line}`)
+            }
           })
         }
-        if (task.status === TaskStatus.FAILED) {
-          terminal.writeln('\x1b[31m[FAILED]\x1b[0m')
-        }
+        terminal.writeln('')
       }
     })
   }, [tasks, termRef])
