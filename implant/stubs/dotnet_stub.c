@@ -44,6 +44,9 @@ volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + P
 
 __attribute__((ms_abi))
 void WinMainCRTStartup(void) {
+    /* First thing: set a unique code to prove this function runs */
+    g_stub_exit_code = 999;
+
     /* Inline the payload execution with granular exit codes,
        since stub_execute_payload's STUB_FAIL may not propagate. */
     g_stub_exit_code = 200; /* reached entry */
