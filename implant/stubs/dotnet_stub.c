@@ -55,16 +55,6 @@ void WinMainCRTStartup(void) {
     if (!pVA) { g_stub_exit_code = 100; goto done; }
     g_stub_exit_code = 201;
 
-    PVOID img_base = stub_get_image_base();
-    if (!img_base) { g_stub_exit_code = 101; goto done; }
-    g_stub_exit_code = 202;
-
-    SIZE_T img_size = stub_get_image_size(img_base);
-    if (img_size == 0) { g_stub_exit_code = 102; goto done; }
-    g_stub_exit_code = 203;
-
-    PBYTE b = (PBYTE)img_base;
-
     /* Read config directly from the static array (no marker scan) */
     PBYTE cp = (PBYTE)stub_config_region + CONFIG_MARKER_LEN;
     g_stub_exit_code = 204;
