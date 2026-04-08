@@ -191,7 +191,7 @@ async fn process_ws_beacon(data: &[u8], state: &HttpState) -> Option<Vec<u8>> {
         tasks_payload.push(PendingTaskPayload {
             task_id: t.id.clone(),
             task_type: t.task_type.clone(),
-            arguments: String::from_utf8_lossy(&t.arguments).to_string(),
+            arguments: t.arguments.clone(),
         });
     }
 

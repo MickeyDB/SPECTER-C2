@@ -127,6 +127,13 @@ pub fn validate_profile(profile: &Profile) -> Result<Vec<Warning>, ProfileError>
         });
     }
 
+    // Reject unsupported compression algorithms at validation time.
+    if matches!(profile.transform.compress, Compression::Zstd) {
+        return Err(ProfileError::Validation(
+            "zstd compression is not yet implemented — use 'lz4' or 'none'".into(),
+        ));
+    }
+
     // Validate error_rate if set.
     if let Some(rate) = profile.http.response.error_rate_percent {
         if !(0.0..=100.0).contains(&rate) {

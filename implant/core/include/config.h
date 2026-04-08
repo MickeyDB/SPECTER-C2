@@ -53,7 +53,8 @@ typedef enum _SLEEP_METHOD {
 /* ------------------------------------------------------------------ */
 
 typedef struct _CHANNEL_CONFIG {
-    char   url[256];       /* Teamserver URL / hostname               */
+    char   url[256];       /* Teamserver hostname (no path)            */
+    char   uri[256];       /* Request URI path (e.g., /api/v1/status)  */
     DWORD  port;           /* Port number                             */
     DWORD  type;           /* CHANNEL_TYPE                            */
     DWORD  priority;       /* Lower = higher priority (0 = primary)   */
@@ -82,6 +83,8 @@ typedef struct _IMPLANT_CONFIG {
     DWORD          max_retries;        /* Max consecutive failures        */
     QWORD          kill_date;          /* FILETIME: 100-ns since 1601     */
     DWORD          profile_id;
+    const BYTE    *profile_blob;      /* Pointer to profile TLV data     */
+    DWORD          profile_blob_len;  /* Length of profile TLV data      */
     DWORD          checkin_count;      /* Incremented each check-in       */
     DWORD          evasion_flags;      /* Bitmask of enabled evasion mods */
     DWORD          build_flags;        /* Runtime build flags (debug, skip AA) */

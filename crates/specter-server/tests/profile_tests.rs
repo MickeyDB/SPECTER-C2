@@ -1,5 +1,6 @@
 use specter_server::db;
 use specter_server::listener::{extract_embedded_data, format_profile_response};
+use axum::http::{HeaderMap, Uri};
 use specter_server::profile::{
     compile_profile, parse_profile, transform_decode, transform_encode, validate_profile,
     ProfileStore,
@@ -291,7 +292,7 @@ fn extract_embedded_data_from_json_body() {
     let profile = parse_profile(minimal_yaml()).unwrap();
     let body = br#"{"data": "SGVsbG8gV29ybGQ="}"#;
 
-    let extracted = extract_embedded_data(body, &profile.http.request);
+    let extracted = extract_embedded_data(body, &profile.http.request, &HeaderMap::new(), &Uri::from_static("/"));
     assert!(extracted.is_some());
     assert_eq!(extracted.unwrap(), b"SGVsbG8gV29ybGQ=");
 }
@@ -301,7 +302,7 @@ fn extract_embedded_data_returns_none_for_missing_field() {
     let profile = parse_profile(minimal_yaml()).unwrap();
     let body = br#"{"other_field": "value"}"#;
 
-    let extracted = extract_embedded_data(body, &profile.http.request);
+    let extracted = extract_embedded_data(body, &profile.http.request, &HeaderMap::new(), &Uri::from_static("/"));
     assert!(extracted.is_none());
 }
 
@@ -310,7 +311,7 @@ fn extract_embedded_data_returns_none_for_invalid_json() {
     let profile = parse_profile(minimal_yaml()).unwrap();
     let body = b"not valid json";
 
-    let extracted = extract_embedded_data(body, &profile.http.request);
+    let extracted = extract_embedded_data(body, &profile.http.request, &HeaderMap::new(), &Uri::from_static("/"));
     assert!(extracted.is_none());
 }
 
@@ -331,7 +332,7 @@ transform: {}
     let profile = parse_profile(yaml).unwrap();
     let body = b"raw body data";
 
-    let extracted = extract_embedded_data(body, &profile.http.request);
+    let extracted = extract_embedded_data(body, &profile.http.request, &HeaderMap::new(), &Uri::from_static("/"));
     assert!(extracted.is_some());
     assert_eq!(extracted.unwrap(), b"raw body data");
 }

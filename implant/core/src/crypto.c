@@ -224,6 +224,34 @@ void spec_poly1305_auth(BYTE tag_out[16], const BYTE *msg, DWORD msg_len,
 /*  ChaCha20-Poly1305 AEAD (RFC 8439)                                  */
 /* ================================================================== */
 
+/* ---- Heap helpers for large MAC buffers (PEB-resolved) ---- */
+
+static PVOID crypto_heap_alloc(DWORD size) {
+    typedef HANDLE (__attribute__((ms_abi)) *fn_gph)(void);
+    typedef PVOID  (__attribute__((ms_abi)) *fn_ha)(HANDLE, DWORD, SIZE_T);
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32) return NULL;
+    fn_gph pGPH = (fn_gph)find_export_by_hash(k32, 0xDA077562); /* GetProcessHeap */
+    fn_ha  pHA  = (fn_ha) find_export_by_hash(k32, 0xB1CE974E); /* HeapAlloc      */
+    if (!pGPH || !pHA) return NULL;
+    HANDLE heap = pGPH();
+    if (!heap) return NULL;
+    return pHA(heap, 0x08, size); /* HEAP_ZERO_MEMORY */
+}
+
+static void crypto_heap_free(PVOID ptr) {
+    if (!ptr) return;
+    typedef HANDLE (__attribute__((ms_abi)) *fn_gph)(void);
+    typedef BOOL   (__attribute__((ms_abi)) *fn_hf)(HANDLE, DWORD, PVOID);
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32) return;
+    fn_gph pGPH = (fn_gph)find_export_by_hash(k32, 0xDA077562); /* GetProcessHeap */
+    fn_hf  pHF  = (fn_hf) find_export_by_hash(k32, 0xBF94BC05); /* HeapFree       */
+    if (!pGPH || !pHF) return;
+    HANDLE heap = pGPH();
+    if (heap) pHF(heap, 0, ptr);
+}
+
 static void pad16(BYTE *buf, DWORD *buf_len, DWORD data_len) {
     DWORD rem = data_len & 0xF;
     if (rem) {
@@ -255,12 +283,22 @@ void spec_aead_encrypt(const BYTE key[32], const BYTE nonce[12],
     DWORD ct_padded = pt_len + ((16 - (pt_len & 0xF)) & 0xF);
     DWORD total_mac_len = aad_padded + ct_padded + 16;
 
-    /* Use stack-allocated buffer. Limit: callers must keep total < ~4KB. */
-    BYTE mac_data[4096];
-    if (total_mac_len > sizeof(mac_data)) {
-        /* Fallback: zero tag on overflow (should not happen in practice) */
-        spec_memset(tag, 0, 16);
-        return;
+    /* Stack buffer for small payloads; heap-allocate for large ones */
+    BYTE mac_stack[4096];
+    BYTE *mac_data = mac_stack;
+    BOOL mac_heap = FALSE;
+
+    if (total_mac_len > sizeof(mac_stack)) {
+        BYTE *heap_buf = (BYTE *)crypto_heap_alloc(total_mac_len);
+        if (heap_buf) {
+            mac_data = heap_buf;
+            mac_heap = TRUE;
+        } else {
+            /* Cannot compute MAC — fail explicitly */
+            spec_memset(tag, 0, 16);
+            spec_memset(poly_key, 0, sizeof(poly_key));
+            return;
+        }
     }
 
     mac_len = 0;
@@ -285,6 +323,7 @@ void spec_aead_encrypt(const BYTE key[32], const BYTE nonce[12],
 
     spec_memset(poly_key, 0, sizeof(poly_key));
     spec_memset(mac_data, 0, mac_len);
+    if (mac_heap) crypto_heap_free(mac_data);
 }
 
 BOOL spec_aead_decrypt(const BYTE key[32], const BYTE nonce[12],
@@ -303,10 +342,20 @@ BOOL spec_aead_decrypt(const BYTE key[32], const BYTE nonce[12],
     DWORD ct_padded = ct_len + ((16 - (ct_len & 0xF)) & 0xF);
     DWORD total_mac_len = aad_padded + ct_padded + 16;
 
-    BYTE mac_data[4096];
-    if (total_mac_len > sizeof(mac_data)) {
-        spec_memset(poly_key, 0, sizeof(poly_key));
-        return FALSE;
+    /* Stack buffer for small payloads; heap-allocate for large ones */
+    BYTE mac_stack[4096];
+    BYTE *mac_data = mac_stack;
+    BOOL mac_heap = FALSE;
+
+    if (total_mac_len > sizeof(mac_stack)) {
+        BYTE *heap_buf = (BYTE *)crypto_heap_alloc(total_mac_len);
+        if (heap_buf) {
+            mac_data = heap_buf;
+            mac_heap = TRUE;
+        } else {
+            spec_memset(poly_key, 0, sizeof(poly_key));
+            return FALSE;
+        }
     }
 
     mac_len = 0;
@@ -334,6 +383,7 @@ BOOL spec_aead_decrypt(const BYTE key[32], const BYTE nonce[12],
 
     spec_memset(poly_key, 0, sizeof(poly_key));
     spec_memset(mac_data, 0, mac_len);
+    if (mac_heap) crypto_heap_free(mac_data);
 
     if (diff != 0) {
         spec_memset(computed_tag, 0, sizeof(computed_tag));

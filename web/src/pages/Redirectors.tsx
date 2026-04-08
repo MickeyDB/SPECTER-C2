@@ -286,6 +286,7 @@ function ConfirmDialog({
 function DeployWizard({
   state,
   profiles,
+  listeners,
   onCancel,
   onNext,
   onBack,
@@ -294,6 +295,7 @@ function DeployWizard({
 }: {
   state: DeployWizardState
   profiles: ProfileInfo[]
+  listeners: Array<{ id: string; name: string; port: number; protocol: string; status: string }>
   onCancel: () => void
   onNext: () => void
   onBack: () => void
@@ -422,15 +424,40 @@ function DeployWizard({
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-specter-muted">Backend URL (teamserver)</label>
-                <input
-                  type="text"
-                  value={state.backendUrl}
-                  onChange={(e) => onUpdate({ backendUrl: e.target.value })}
-                  placeholder={window.location.origin}
-                  className="w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
-                />
-                <p className="mt-1 text-[10px] text-specter-muted">Leave blank to use current origin</p>
+                <label className="mb-1 block text-xs font-medium text-specter-muted">Backend URL (teamserver + listener)</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={state.backendUrl}
+                    onChange={(e) => onUpdate({ backendUrl: e.target.value })}
+                    placeholder="http://teamserver:8080"
+                    className="flex-1 rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
+                  />
+                  <select
+                    onChange={(e) => {
+                      if (e.target.value) onUpdate({ backendUrl: e.target.value })
+                    }}
+                    value=""
+                    className="rounded border border-specter-border bg-specter-surface px-2 py-2 text-xs text-specter-muted focus:border-specter-accent focus:outline-none"
+                  >
+                    <option value="">Auto-fill from listener...</option>
+                    {listeners
+                      .filter((l) => l.status === 'RUNNING')
+                      .map((l) => {
+                        const proto = l.protocol === 'https' ? 'https' : 'http'
+                        const host = window.location.hostname
+                        const url = `${proto}://${host}:${l.port}`
+                        return (
+                          <option key={l.id} value={url}>
+                            {l.name} ({url})
+                          </option>
+                        )
+                      })}
+                  </select>
+                </div>
+                <p className="mt-1 text-[10px] text-specter-muted">
+                  Select a running listener or enter manually. The redirector will proxy C2 traffic to this address.
+                </p>
               </div>
             </div>
           )}
@@ -637,6 +664,7 @@ function DomainPoolTable({
 export function Redirectors() {
   const [redirectors, setRedirectors] = useState<RedirectorInfo[]>([])
   const [profiles, setProfiles] = useState<ProfileInfo[]>([])
+  const [listeners, setListeners] = useState<Array<{ id: string; name: string; port: number; protocol: string; status: string }>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
@@ -655,9 +683,10 @@ export function Redirectors() {
       setLoading(true)
       setError(null)
 
-      const [redirectorsRes, profilesRes] = await Promise.allSettled([
+      const [redirectorsRes, profilesRes, listenersRes] = await Promise.allSettled([
         specterClient.listRedirectors({}),
         specterClient.listProfiles({}),
+        specterClient.listListeners({}),
       ])
 
       if (redirectorsRes.status === 'fulfilled') {
@@ -665,6 +694,17 @@ export function Redirectors() {
       }
       if (profilesRes.status === 'fulfilled') {
         setProfiles(profilesRes.value.profiles)
+      }
+      if (listenersRes.status === 'fulfilled') {
+        setListeners(
+          (listenersRes.value.listeners || []).map((l: any) => ({
+            id: l.id || '',
+            name: l.name || '',
+            port: Number(l.port) || 0,
+            protocol: l.protocol || 'http',
+            status: l.status || '',
+          }))
+        )
       }
 
       if (redirectorsRes.status === 'rejected' && profilesRes.status === 'rejected') {
@@ -965,6 +1005,7 @@ export function Redirectors() {
         <DeployWizard
           state={deployWizard}
           profiles={profiles}
+          listeners={listeners}
           onCancel={() => setDeployWizard(null)}
           onNext={handleDeployNext}
           onBack={handleDeployBack}

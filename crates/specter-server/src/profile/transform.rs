@@ -54,9 +54,8 @@ fn compress(data: &[u8], algo: &Compression) -> Result<Vec<u8>, ProfileError> {
         Compression::None => Ok(data.to_vec()),
         Compression::Lz4 => Ok(lz4_flex::compress_prepend_size(data)),
         Compression::Zstd => {
-            // Zstd not yet supported; reject at transform time
             Err(ProfileError::Validation(
-                "zstd compression is not yet implemented".into(),
+                "zstd compression is not yet implemented — use 'lz4' or 'none' in the profile transform.compress field".into(),
             ))
         }
     }
@@ -68,7 +67,7 @@ fn decompress(data: &[u8], algo: &Compression) -> Result<Vec<u8>, ProfileError> 
         Compression::Lz4 => lz4_flex::decompress_size_prepended(data)
             .map_err(|e| ProfileError::Validation(format!("LZ4 decompression failed: {e}"))),
         Compression::Zstd => Err(ProfileError::Validation(
-            "zstd decompression is not yet implemented".into(),
+            "zstd decompression is not yet implemented — use 'lz4' or 'none' in the profile transform.compress field".into(),
         )),
     }
 }

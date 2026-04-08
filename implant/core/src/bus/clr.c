@@ -499,9 +499,21 @@ DWORD clr_execute_assembly(MODULE_BUS_API *api, const BYTE *assembly_bytes,
     spec_memset(variant_null, 0, sizeof(variant_null));
     /* VT_EMPTY = 0, already zeroed */
 
-    /* For simplicity, invoke with no arguments (supports Main() entry) */
+    /*
+     * Build arguments SAFEARRAY for Main(string[]).
+     *
+     * _MethodInfo::Invoke_3 expects a SAFEARRAY(VT_VARIANT) where the
+     * first element is a VARIANT containing a SAFEARRAY(VT_BSTR) of
+     * the string arguments.  For Main() with no args, pass NULL.
+     *
+     * If args is non-NULL and non-empty, we create a single-element
+     * BSTR array.  The BSTR is created via SysAllocStringLen.
+     */
     typedef HRESULT (__attribute__((ms_abi)) *fn_MethodInfo_Invoke3)(
         PVOID self, BYTE *obj, PVOID parameters, BYTE *retval);
+    typedef PVOID (__attribute__((ms_abi)) *fn_SysAllocStringLen)(
+        const WCHAR *str, DWORD len);
+    typedef void (__attribute__((ms_abi)) *fn_SysFreeString)(PVOID bstr);
 
     PVOID *mi_vtbl = *(PVOID **)method_info;
     fn_MethodInfo_Invoke3 pInvoke =
@@ -510,7 +522,78 @@ DWORD clr_execute_assembly(MODULE_BUS_API *api, const BYTE *assembly_bytes,
     BYTE retval[16];
     spec_memset(retval, 0, sizeof(retval));
 
-    hr = pInvoke(method_info, variant_null, NULL, retval);
+    PVOID sa_args = NULL;   /* SAFEARRAY(VT_VARIANT) for Invoke_3 parameters */
+    PVOID sa_bstr = NULL;   /* SAFEARRAY(VT_BSTR) holding the args strings   */
+    PVOID bstr_val = NULL;  /* BSTR for the args string                      */
+
+    if (args && spec_strlen(args) > 0) {
+        fn_SysAllocStringLen pSysAlloc =
+            (fn_SysAllocStringLen)api->resolve("oleaut32.dll", "SysAllocStringLen");
+        fn_SysFreeString pSysFree =
+            (fn_SysFreeString)api->resolve("oleaut32.dll", "SysFreeString");
+
+        if (pSysAlloc && pSysFree) {
+            /* Convert narrow args string to wide chars (ASCII subset) */
+            DWORD args_len = (DWORD)spec_strlen(args);
+            WCHAR wargs[512];
+            DWORD wlen = (args_len < 511) ? args_len : 511;
+            for (DWORD i = 0; i < wlen; i++)
+                wargs[i] = (WCHAR)(BYTE)args[i];
+            wargs[wlen] = 0;
+
+            bstr_val = pSysAlloc(wargs, wlen);
+            if (bstr_val) {
+                /* Create SAFEARRAY(VT_BSTR) with 1 element */
+                #define VT_BSTR 8
+                struct { DWORD cElements; LONG lLbound; } bstr_bounds;
+                bstr_bounds.cElements = 1;
+                bstr_bounds.lLbound = 0;
+                sa_bstr = pSACreate(VT_BSTR, 1, &bstr_bounds);
+                if (sa_bstr) {
+                    PVOID bstr_data = NULL;
+                    hr = pSAAccess(sa_bstr, &bstr_data);
+                    if (SUCCEEDED(hr) && bstr_data) {
+                        *(PVOID *)bstr_data = bstr_val;
+                        pSAUnaccess(sa_bstr);
+                    }
+
+                    /*
+                     * Create SAFEARRAY(VT_VARIANT) with 1 element containing
+                     * a VARIANT of type VT_ARRAY | VT_BSTR pointing to sa_bstr.
+                     */
+                    #define VT_VARIANT 12
+                    #define VT_ARRAY   0x2000
+                    struct { DWORD cElements; LONG lLbound; } var_bounds;
+                    var_bounds.cElements = 1;
+                    var_bounds.lLbound = 0;
+                    sa_args = pSACreate(VT_VARIANT, 1, &var_bounds);
+                    if (sa_args) {
+                        PVOID var_data = NULL;
+                        hr = pSAAccess(sa_args, &var_data);
+                        if (SUCCEEDED(hr) && var_data) {
+                            /* Build VARIANT in-place: vt(2) + pad(6) + data(8) = 16 bytes */
+                            BYTE *vp = (BYTE *)var_data;
+                            spec_memset(vp, 0, 16);
+                            WORD vt_type = VT_ARRAY | VT_BSTR;
+                            spec_memcpy(vp, &vt_type, 2);
+                            spec_memcpy(vp + 8, &sa_bstr, sizeof(PVOID));
+                            pSAUnaccess(sa_args);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    hr = pInvoke(method_info, variant_null, sa_args, retval);
+
+    /* Clean up argument SAFEARRAYs */
+    if (sa_args)
+        pSADestroy(sa_args);
+    /* sa_bstr is owned by sa_args variant after embedding, but if sa_args
+     * was not created we still need to clean up sa_bstr. */
+    if (!sa_args && sa_bstr)
+        pSADestroy(sa_bstr);
 
     /* Clean up COM references */
     IUnknownVtbl **ppMi = (IUnknownVtbl **)method_info;
@@ -529,7 +612,6 @@ DWORD clr_execute_assembly(MODULE_BUS_API *api, const BYTE *assembly_bytes,
         return 9;
     }
 
-    (void)args;  /* TODO: wire args into SAFEARRAY for Main(string[]) */
     api->log(LOG_INFO, "CLR: assembly executed successfully");
     return 0;
 }

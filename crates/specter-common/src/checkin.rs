@@ -154,7 +154,7 @@ pub fn serialize_binary_response(resp: &CheckinResponse) -> Vec<u8> {
         let mut task_buf = Vec::new();
         tlv_write_string(&mut task_buf, tlv_tags::TASK_ID, &task.task_id);
         tlv_write_string(&mut task_buf, tlv_tags::TASK_TYPE, &task.task_type);
-        tlv_write_bytes(&mut task_buf, tlv_tags::TASK_ARGS, task.arguments.as_bytes());
+        tlv_write_bytes(&mut task_buf, tlv_tags::TASK_ARGS, &task.arguments);
         tlv_write_bytes(&mut buf, tlv_tags::TASK_BLOCK, &task_buf);
     }
 
@@ -209,8 +209,26 @@ pub struct CheckinResponse {
 pub struct PendingTaskPayload {
     pub task_id: String,
     pub task_type: String,
-    #[serde(default)]
-    pub arguments: String,
+    /// Raw task arguments (binary-safe). Serialized as UTF-8 string in JSON
+    /// when possible, base64-encoded otherwise.
+    #[serde(default, serialize_with = "serialize_args", deserialize_with = "deserialize_args")]
+    pub arguments: Vec<u8>,
+}
+
+fn serialize_args<S: serde::Serializer>(args: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
+    match std::str::from_utf8(args) {
+        Ok(text) => s.serialize_str(text),
+        Err(_) => {
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(args);
+            s.serialize_str(&encoded)
+        }
+    }
+}
+
+fn deserialize_args<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(s.into_bytes())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -274,7 +292,7 @@ mod tlv_tests {
             tasks: vec![PendingTaskPayload {
                 task_id: "task-001".to_string(),
                 task_type: "shell".to_string(),
-                arguments: "whoami".to_string(),
+                arguments: b"whoami".to_vec(),
             }],
         };
         let data = serialize_binary_response(&resp);
@@ -320,12 +338,12 @@ mod tlv_tests {
                 PendingTaskPayload {
                     task_id: "t1".to_string(),
                     task_type: "shell".to_string(),
-                    arguments: "whoami".to_string(),
+                    arguments: b"whoami".to_vec(),
                 },
                 PendingTaskPayload {
                     task_id: "t2".to_string(),
                     task_type: "download".to_string(),
-                    arguments: "/etc/passwd".to_string(),
+                    arguments: b"/etc/passwd".to_vec(),
                 },
             ],
         };

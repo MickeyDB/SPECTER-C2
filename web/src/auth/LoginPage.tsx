@@ -37,7 +37,7 @@ export function LoginPage() {
   }, [loginWithToken, navigate, from])
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-specter-bg">
+    <div className="flex min-h-screen w-full items-center justify-center bg-specter-bg px-4">
       <div className="w-full max-w-md space-y-8 p-8">
         {/* Header */}
         <div className="text-center">

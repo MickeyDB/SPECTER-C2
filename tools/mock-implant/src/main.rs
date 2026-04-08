@@ -223,11 +223,12 @@ async fn run_implant(id: u32, server: String, meta: ImplantMeta, interval: u64, 
                                 );
                             }
                             for task in &checkin_resp.tasks {
+                                let args_str = String::from_utf8_lossy(&task.arguments);
                                 println!(
                                     "  → task_id={} type={} args={}",
-                                    task.task_id, task.task_type, task.arguments
+                                    task.task_id, task.task_type, args_str
                                 );
-                                let result = mock_task_result(&task.task_type, &task.arguments);
+                                let result = mock_task_result(&task.task_type, &args_str);
                                 pending_results.push(TaskResultPayload {
                                     task_id: task.task_id.clone(),
                                     status: "COMPLETE".to_string(),

@@ -60,8 +60,15 @@ const STRIP_RESPONSE_HEADERS = new Set([
 function isImplantTraffic(req) {
   const url = req.url || '/';
   if (!uriRegex.test(url)) return false;
-  const hdrValue = req.headers[HEADER_NAME];
-  if (!hdrValue || !hdrRegex.test(hdrValue)) return false;
+
+  // Header check is optional — if HEADER_NAME is empty or 'none', skip it.
+  // This allows the redirector to work with implants that don't send profile
+  // headers (e.g., legacy wire format without a C2 profile applied).
+  if (HEADER_NAME && HEADER_NAME !== 'none') {
+    const hdrValue = req.headers[HEADER_NAME];
+    if (!hdrValue || !hdrRegex.test(hdrValue)) return false;
+  }
+
   return true;
 }
 

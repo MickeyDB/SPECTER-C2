@@ -255,9 +255,32 @@ function useXterm(
           writePrompt(term)
           term.write(currentLine)
         }
+      } else if (ev.ctrlKey && ev.key === 'v') {
+        /* Ctrl+V paste — handled by onData below */
+      } else if (ev.ctrlKey && ev.key === 'c') {
+        /* Ctrl+C — cancel current line */
+        term.writeln('^C')
+        currentLine = ''
+        writePrompt(term)
+      } else if (ev.ctrlKey && ev.key === 'l') {
+        /* Ctrl+L — clear screen */
+        term.clear()
+        writePrompt(term)
       } else if (!ev.ctrlKey && !ev.altKey && !ev.metaKey && key.length === 1) {
         currentLine += key
         term.write(key)
+      }
+    })
+
+    /* Handle pasted text (Ctrl+V or right-click paste).
+       onData fires for both typed characters and paste events.
+       We only use it for multi-character paste since onKey handles typing. */
+    term.onData((data) => {
+      if (data.length > 1) {
+        /* Multi-character input = paste. Filter control chars but allow backslash. */
+        const filtered = data.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+        currentLine += filtered
+        term.write(filtered)
       }
     })
 
@@ -619,12 +642,26 @@ export function SessionInteract() {
   // Handle sidebar quick actions
   const handleAction = useCallback(
     (action: string) => {
+      if (action === 'kill') {
+        if (!confirm('Terminate this implant? This cannot be undone.')) return
+        handleCommand('kill')
+        return
+      }
       if (action === 'sleep') {
-        // Fix 6: prompt for sleep interval instead of sending bare 'sleep'
         const input = prompt('Sleep interval (seconds) and jitter (0-100):', '60 15')
         if (input) {
           handleCommand(`sleep ${input}`)
         }
+        return
+      }
+      if (action === 'download') {
+        const path = prompt('Remote file path to download:')
+        if (path) handleCommand(`download ${path}`)
+        return
+      }
+      if (action === 'upload') {
+        const input = prompt('Upload: <local path> <remote path>')
+        if (input) handleCommand(`upload ${input}`)
         return
       }
       handleCommand(action)

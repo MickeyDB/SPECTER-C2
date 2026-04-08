@@ -16,6 +16,7 @@
 
 #include "specter.h"
 #include "ntdefs.h"
+#include "config.h"
 #include "bus.h"
 
 #ifndef TEST_BUILD
@@ -117,12 +118,14 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
         return -1;
 
 #ifndef TEST_BUILD
-    /* Verify Ed25519 signature using teamserver's signing key from config.
-     * The signing key is expected in the implant config. For now, use a
-     * placeholder — real config integration happens in Phase 06. */
+    /* Verify Ed25519 signature using teamserver's signing key from config. */
+    IMPLANT_CONFIG *cfg = cfg_get(ctx);
     BYTE signing_key[32];
-    spec_memset(signing_key, 0, 32);
-    /* TODO: load signing key from ctx->config */
+    if (cfg) {
+        spec_memcpy(signing_key, cfg->module_signing_key, 32);
+    } else {
+        spec_memset(signing_key, 0, 32);
+    }
 
     if (!loader_verify_package(package, len, signing_key))
         return -1;
@@ -134,8 +137,11 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
 
 #ifndef TEST_BUILD
     BYTE implant_privkey[32];
-    spec_memset(implant_privkey, 0, 32);
-    /* TODO: load private key from ctx->config */
+    if (cfg) {
+        spec_memcpy(implant_privkey, cfg->implant_privkey, 32);
+    } else {
+        spec_memset(implant_privkey, 0, 32);
+    }
 
     if (!loader_decrypt_package(package, len, implant_privkey, plaintext, &plaintext_len)) {
         spec_memset(plaintext, 0, sizeof(plaintext));
