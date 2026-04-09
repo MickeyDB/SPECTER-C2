@@ -14,6 +14,7 @@
 #include "hash.c"
 #include "string.c"
 #include "peb.c"
+#include "heap.c"
 #include "crypto.c"
 #include "crypto_sign.c"
 #include "syscalls.c"

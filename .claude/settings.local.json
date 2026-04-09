@@ -63,7 +63,9 @@
       "Bash(./target/release/specter-build --pic implant/build/specter.bin --format dotnet --channel http://10.0.0.1:8080 --debug --skip-aa --dump-markers --scan-only)",
       "Bash(./target/release/specter-build --pic implant/build/specter.bin --format dotnet --channel http://10.0.0.1:8080 --debug --skip-aa --xor --dump-markers --scan-only)",
       "Bash(grep -n \"Task$Type\\\\|MessageShape.*Task\\\\|type Task \" C:/Users/localuser/Documents/SPECTER-C2/web/src/gen/specter/v1/tasks_pb.ts)",
-      "Bash(awk 'NR>=1439 && NR<=1673 && /return/' C:/Users/localuser/Documents/SPECTER-C2/implant/core/src/comms.c)"
+      "Bash(awk 'NR>=1439 && NR<=1673 && /return/' C:/Users/localuser/Documents/SPECTER-C2/implant/core/src/comms.c)",
+      "Bash(xargs wc:*)",
+      "Bash(grep -r \"AEAD_MAX\\\\|http_buf\\\\|4096\" /c/Users/localuser/Documents/SPECTER-C2/implant/core/include/*.h)"
     ]
   }
 }
