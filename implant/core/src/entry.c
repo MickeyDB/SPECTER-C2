@@ -29,13 +29,12 @@ static IMPLANT_CONTEXT g_ctx;
    The builder locates the marker, patches the flags byte, and scrubs the
    marker with random bytes.  volatile const prevents the compiler from
    optimizing away reads or the marker bytes themselves. */
-/* Builder-patchable build flags. Placed in .data with explicit used+retain
-   attributes to prevent linker garbage collection and compiler elimination.
-   The volatile prevents the compiler from constant-folding the read. */
-volatile BYTE g_build_flags_region[8] __attribute__((section(".data"), used, retain)) = {
+/* Builder-patchable build flags.
+   volatile prevents constant-folding. We use a simple array without
+   section attributes — the linker script merges .data into .text anyway. */
+static volatile BYTE g_build_flags_region[] = {
     'S','P','B','F',  /* marker — builder finds and scrubs this */
-    0x00,             /* flags byte — builder patches this       */
-    0x00, 0x00, 0x00  /* padding for alignment                   */
+    0x00              /* flags byte — builder patches this       */
 };
 
 /* Read the builder-patched build flags (safe to call before cfg_init). */

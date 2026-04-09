@@ -13,7 +13,8 @@ else
   DEV_FLAGS =
 endif
 
-CFLAGS  = -Wall -Werror -Os -fno-stack-protector -funwind-tables \
+CFLAGS  = -Wall -Werror -Wno-unused-function -Os -fno-stack-protector \
+          -funwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \
           -falign-labels=1 -falign-loops=1 -fno-common -nostdlib -nostdinc \
           -ffreestanding -masm=intel -std=c11 -DWIN32_LEAN_AND_MEAN \

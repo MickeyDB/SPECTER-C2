@@ -1613,6 +1613,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                         spec_memset(resp_plain, 0, 4096);
                     }
                 }
+            }
         } else if (body_len > COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE + COMMS_WIRE_TAG_SIZE) {
             /* Legacy wire format:
                [4-byte LE len][12-byte server_id][12-byte nonce][ciphertext][16-byte tag] */
