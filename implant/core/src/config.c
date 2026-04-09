@@ -37,7 +37,9 @@ static BYTE g_profile_blob_buf[MAX_PROFILE_BLOB];
  * Layout before builder:  ['S','P','E','C','C','F','G','M', 0,0,0,0]
  * Layout after builder:   [random 8 bytes] [magic: u32 LE]
  */
-static volatile BYTE cfg_magic_marker[12] __attribute__((section(".data"), used)) = {
+/* Builder-patchable config magic region. Non-static so it's visible to the linker
+   as a global symbol, preventing elimination in the unity build. */
+volatile BYTE cfg_magic_marker[12] __attribute__((section(".data"), used, retain)) = {
     'S','P','E','C','C','F','G','M', 0x00, 0x00, 0x00, 0x00
 };
 
