@@ -622,11 +622,7 @@ export function SessionInteract() {
           priority: TaskPriority.NORMAL,
           operatorId: '',
         })
-        // Show queued confirmation in yellow
-        const term = termRef.current
-        if (term) {
-          term.writeln(`\x1b[33m[queued]\x1b[0m ${taskType}`)
-        }
+        // No queued message — result or OK will confirm completion
         // Refresh tasks after queuing
         fetchTasks()
       } catch {
@@ -703,7 +699,9 @@ export function SessionInteract() {
           const errMsg = resultText || 'Task failed'
           terminal.writeln(`\x1b[31m[${typeTag}] [FAILED] ${errMsg}\x1b[0m`)
         } else if (resultText) {
-          const lines = resultText.split('\n')
+          // Trim trailing whitespace/newlines for cleaner output
+          const trimmed = resultText.replace(/\s+$/, '')
+          const lines = trimmed.split('\n')
           lines.forEach((line, i) => {
             if (i === 0) {
               terminal.writeln(`\x1b[32m[${typeTag}]\x1b[0m ${line}`)
@@ -711,8 +709,12 @@ export function SessionInteract() {
               terminal.writeln(`        ${line}`)
             }
           })
+        } else {
+          // No output but completed successfully (sleep, cd, etc.)
+          terminal.writeln(`\x1b[32m[${typeTag}]\x1b[0m OK`)
         }
-        terminal.writeln('')
+        // Re-draw prompt so the operator can immediately type the next command
+        writePrompt(terminal)
       }
     })
   }, [tasks, termRef])

