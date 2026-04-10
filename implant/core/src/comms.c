@@ -1806,6 +1806,12 @@ static QWORD failover_get_tick(void) {
 #endif
 }
 
+/* ================================================================== */
+/* Phase 1+ infrastructure: channel health monitoring and failover.    */
+/* These functions are implemented but NOT wired into the main loop.   */
+/* Integration planned for Phase 1.1 (roadmap.md).                     */
+/* ================================================================== */
+
 /* ------------------------------------------------------------------ */
 /*  Channel health check                                               */
 /* ------------------------------------------------------------------ */

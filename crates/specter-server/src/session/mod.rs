@@ -114,6 +114,24 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Update sleep interval and jitter for a session (called when a sleep task completes).
+    pub async fn update_sleep_config(
+        &self,
+        session_id: &str,
+        interval: u32,
+        jitter: u32,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE sessions SET sleep_interval = ?1, sleep_jitter = ?2 WHERE id = ?3 AND deleted = 0",
+        )
+        .bind(interval as i64)
+        .bind(jitter as i64)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_session(&self, id: &str) -> Result<Option<SessionInfo>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, hostname, username, pid, os_version, integrity_level, process_name, \
@@ -339,6 +357,9 @@ fn row_to_session(row: &SqliteRow) -> SessionInfo {
     let status_str: &str = row.get("status");
     let pid: i64 = row.get("pid");
 
+    let sleep_interval: i64 = row.try_get("sleep_interval").unwrap_or(60);
+    let sleep_jitter: i64 = row.try_get("sleep_jitter").unwrap_or(10);
+
     SessionInfo {
         id: row.get("id"),
         hostname: row.get("hostname"),
@@ -353,5 +374,7 @@ fn row_to_session(row: &SqliteRow) -> SessionInfo {
         first_seen: Some(ts(first_seen)),
         status: str_to_status(status_str),
         active_channel: row.get("active_channel"),
+        sleep_interval: sleep_interval as u32,
+        sleep_jitter: sleep_jitter as u32,
     }
 }

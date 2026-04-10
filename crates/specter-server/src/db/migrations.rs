@@ -86,6 +86,23 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             .await?;
     }
 
+    // Add sleep_interval and sleep_jitter columns to sessions (idempotent)
+    let has_sleep_col: bool = sqlx::query_scalar::<_, i32>(
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'sleep_interval'"
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+
+    if !has_sleep_col {
+        sqlx::query("ALTER TABLE sessions ADD COLUMN sleep_interval INTEGER NOT NULL DEFAULT 60")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE sessions ADD COLUMN sleep_jitter INTEGER NOT NULL DEFAULT 10")
+            .execute(pool)
+            .await?;
+    }
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS audit_log (
             id TEXT PRIMARY KEY,

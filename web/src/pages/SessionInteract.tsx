@@ -193,7 +193,6 @@ function useXterm(
         if (cmd) {
           commandHistoryRef.current = [...commandHistoryRef.current, cmd]
           historyIndexRef.current = commandHistoryRef.current.length
-          // Persist history to localStorage (Fix 8)
           if (sessionId) {
             localStorage.setItem(
               `specter-history-${sessionId}`,
@@ -203,12 +202,20 @@ function useXterm(
 
           if (cmd === 'clear') {
             term.clear()
+            writePrompt(term)
+          } else if (cmd === 'help' || cmd === '?') {
+            onCommandRef.current(cmd)
+            writePrompt(term)
           } else {
+            // Server command — don't write prompt yet.
+            // The prompt will be written when the result arrives.
             onCommandRef.current(cmd)
           }
+        } else {
+          // Empty Enter — just write a new prompt
+          writePrompt(term)
         }
         currentLine = ''
-        writePrompt(term)
       } else if (ev.key === 'Backspace') {
         if (currentLine.length > 0) {
           currentLine = currentLine.slice(0, -1)
@@ -400,8 +407,8 @@ function SessionSidebar({
               <MetadataRow icon={Globe} label="External IP" value={session.externalIp} />
               <MetadataRow icon={Network} label="Internal IP" value={session.internalIp} />
               <MetadataRow icon={Monitor} label="OS" value={session.osVersion} />
-              <MetadataRow icon={Clock} label="Sleep" value="Unknown" />
-              <MetadataRow icon={Clock} label="Jitter" value="Unknown" />
+              <MetadataRow icon={Clock} label="Sleep" value={session?.sleepInterval ? `${session.sleepInterval}s` : 'Unknown'} />
+              <MetadataRow icon={Clock} label="Jitter" value={session?.sleepJitter !== undefined ? `${session.sleepJitter}%` : 'Unknown'} />
               <MetadataRow icon={Clock} label="Last Check-in" value={formatRelativeTime(session.lastCheckin)} />
               <MetadataRow icon={Clock} label="First Seen" value={formatTimestamp(session.firstSeen)} />
             </div>

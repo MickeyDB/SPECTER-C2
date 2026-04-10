@@ -8,6 +8,10 @@
  * Messages use length-prefixed ChaCha20-Poly1305 AEAD (same as HTTPS channel).
  */
 
+/* Phase 1+ channel implementation. Fully coded but not dispatched from
+   the main comms_checkin path. Integration requires Phase 1.1 channel
+   abstraction (see roadmap.md). */
+
 #include "specter.h"
 #include "ntdefs.h"
 #include "peb.h"

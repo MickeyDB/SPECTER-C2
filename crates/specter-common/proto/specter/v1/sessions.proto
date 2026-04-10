@@ -26,6 +26,8 @@ message SessionInfo {
   google.protobuf.Timestamp first_seen = 11;
   SessionStatus status = 12;
   string active_channel = 13;
+  uint32 sleep_interval = 14;
+  uint32 sleep_jitter = 15;
 }
 
 message ListSessionsRequest {}

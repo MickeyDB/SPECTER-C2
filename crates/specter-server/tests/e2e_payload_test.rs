@@ -149,26 +149,6 @@ fn decrypt_config_blob(config_blob: &[u8], key: &[u8; 32]) -> Vec<u8> {
         .expect("AEAD decryption failed -- key derivation mismatch or corrupted config")
 }
 
-/// Extract the config blob from a raw payload that has layout:
-/// [PIC blob][config_len: u32 LE][config_blob]
-fn extract_config_from_raw(payload: &[u8], pic_len: usize) -> &[u8] {
-    let config_len_offset = pic_len;
-    assert!(
-        payload.len() >= config_len_offset + 4,
-        "payload too short to contain config length"
-    );
-    let config_len = u32::from_le_bytes([
-        payload[config_len_offset],
-        payload[config_len_offset + 1],
-        payload[config_len_offset + 2],
-        payload[config_len_offset + 3],
-    ]) as usize;
-    assert!(
-        payload.len() >= config_len_offset + 4 + config_len,
-        "payload too short to contain full config blob"
-    );
-    &payload[config_len_offset + 4..config_len_offset + 4 + config_len]
-}
 
 // ── TLV field IDs (must match config_gen.rs) ────────────────────────────────
 

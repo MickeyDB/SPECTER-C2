@@ -10,6 +10,12 @@
  * re-application if reverted by EDR.
  */
 
+/* KNOWN LIMITATION: This module patches EtwEventWrite and AmsiScanBuffer
+   in USER-MODE ntdll only. It does NOT defeat kernel ETW-TI (Threat
+   Intelligence) providers used by CrowdStrike, MDE, and SentinelOne.
+   Kernel-level Nt* syscall telemetry is NOT affected by these patches.
+   See docs/roadmap.md Phase 2.1 for evasion documentation. */
+
 #include "specter.h"
 #include "ntdefs.h"
 #include "syscalls.h"

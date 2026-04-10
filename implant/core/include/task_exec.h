@@ -149,7 +149,7 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task);
 
 /**
  * Parse a task_type string from TLV into a DWORD task type constant.
- * Returns TASK_CMD_EXEC, TASK_SHELLCODE, etc., or 0 for unknown.
+ * Returns TASK_TYPE_CMD, TASK_TYPE_MODULE, etc., or 0 for unknown.
  */
 DWORD parse_task_type(const char *type_str, DWORD len);
 
