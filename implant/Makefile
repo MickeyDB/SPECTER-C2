@@ -2,9 +2,9 @@
 # Cross-compilation using MinGW-w64 targeting Windows x86-64 PIC blob
 
 CC      = x86_64-w64-mingw32-gcc
-LD      = x86_64-w64-mingw32-ld
-OBJCOPY = x86_64-w64-mingw32-objcopy
-PYTHON  = python3
+LD      = $(if $(shell command -v x86_64-w64-mingw32-ld 2>/dev/null),x86_64-w64-mingw32-ld,ld)
+OBJCOPY = $(if $(shell command -v x86_64-w64-mingw32-objcopy 2>/dev/null),x86_64-w64-mingw32-objcopy,objcopy)
+PYTHON  = $(if $(shell command -v python3 2>/dev/null),python3,python)
 
 # Set DEV=1 to skip anti-analysis checks (for testing on VMs)
 ifdef DEV
@@ -13,18 +13,34 @@ else
   DEV_FLAGS =
 endif
 
+ifdef BAREBONE
+  BAREBONE_FLAGS = -DSPECTER_BAREBONE -ffunction-sections -fdata-sections
+  BAREBONE_LDFLAGS = --gc-sections
+else
+  BAREBONE_FLAGS =
+  BAREBONE_LDFLAGS =
+endif
+
+ifdef BAREBONE_MODULE_OVERLOAD
+  BAREBONE_FLAGS += -DSPECTER_BAREBONE_MODULE_OVERLOAD
+endif
+
+ifdef BAREBONE_MODULES
+  BAREBONE_FLAGS += -DSPECTER_BAREBONE_MODULES
+endif
+
 CFLAGS  = -Wall -Werror -Wno-unused-function -Os -fno-stack-protector \
           -funwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \
           -falign-labels=1 -falign-loops=1 -fno-common -nostdlib -nostdinc \
           -ffreestanding -masm=intel -std=c11 -DWIN32_LEAN_AND_MEAN \
-          -mno-stack-arg-probe $(DEV_FLAGS) \
+          -mno-stack-arg-probe $(DEV_FLAGS) $(BAREBONE_FLAGS) \
           -Icore/include
 
 LDFLAGS = -T scripts/linker.ld -nostdlib --no-dynamic-linker --image-base=0 \
           --disable-auto-import --disable-runtime-pseudo-reloc \
           --sort-section=name \
-          -Map=build/specter.map
+          -Map=build/specter.map $(BAREBONE_LDFLAGS)
 
 SRC_DIR   = core/src
 EVA_DIR   = core/src/evasion
@@ -65,13 +81,13 @@ MOD_SRCS   = $(wildcard $(MOD_DIR)/*/$(notdir $(wildcard $(MOD_DIR)/*/*.c)))
 MOD_NAMES  = $(filter-out include,$(patsubst $(MOD_DIR)/%/,%,$(sort $(dir $(wildcard $(MOD_DIR)/*/*.c)))))
 MOD_BINS   = $(patsubst %,$(MOD_BUILD_DIR)/%.bin,$(MOD_NAMES))
 
-.PHONY: all clean size test modules modules-clean stubs stubs-clean
+.PHONY: all clean size test modules modules-clean stubs stubs-clean pic-loader
 
 all: $(TARGET_BIN) size
 
 modules: $(MOD_BUILD_DIR) $(MOD_BINS)
 	@echo "=== Built $(words $(MOD_BINS)) module(s) ==="
-	@for f in $(MOD_BINS); do echo "  $$f ($$(wc -c < $$f | tr -d ' ') bytes)"; done
+	@$(PYTHON) scripts/list_module_sizes.py $(MOD_BINS)
 
 $(MOD_BUILD_DIR):
 	mkdir -p $(MOD_BUILD_DIR)
@@ -101,7 +117,7 @@ $(MOD_BUILD_DIR)/%.elf: $(MOD_DIR)/%/*.c | $(MOD_BUILD_DIR)
 	$(LD) $(MOD_LDFLAGS) -o $@ $(MOD_BUILD_DIR)/$*.o
 
 clean:
-	rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/*.elf $(BUILD_DIR)/*.bin $(BUILD_DIR)/*.map
+	$(PYTHON) scripts/clean_build.py $(BUILD_DIR)
 
 modules-clean:
 	rm -rf $(MOD_BUILD_DIR)
@@ -116,13 +132,18 @@ stubs-clean:
 
 size: $(TARGET_BIN)
 	@echo "--- SPECTER PIC Blob Size ---"
-	@wc -c < $(TARGET_BIN) | tr -d ' '
+	@$(PYTHON) scripts/print_size.py "$(TARGET_BIN)"
 	@echo " bytes"
 
 # ---- Test targets (native host compiler) ----
 
 $(TEST_BIN_DIR):
 	mkdir -p $(TEST_BIN_DIR)
+
+pic-loader: $(TEST_BIN_DIR)/pic_loader.exe
+
+$(TEST_BIN_DIR)/pic_loader.exe: $(TEST_DIR)/pic_loader.c | $(TEST_BIN_DIR)
+	$(CC) -Wall -Werror -O2 -std=c11 -o $@ $<
 
 $(TEST_BIN_DIR)/test_bus_api: $(TEST_DIR)/test_bus_api.c $(SRC_DIR)/crypto.c $(BUS_DIR)/bus_api.c | $(TEST_BIN_DIR)
 	$(TEST_CC) $(TEST_CFLAGS) -o $@ $^

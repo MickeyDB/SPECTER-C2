@@ -172,16 +172,7 @@ PVOID loader_load_pic(const BYTE *blob, DWORD blob_len,
     if (!blob || blob_len == 0 || !api || !mod)
         return NULL;
 
-    /*
-     * PIC convention: first 8 bytes of the blob contain a pointer slot
-     * that we fill with the MODULE_BUS_API address. The actual entry
-     * point is at offset 8 (after the API pointer).
-     *
-     * Layout in memory:
-     *   [0..7]   = MODULE_BUS_API *api  (injected by loader)
-     *   [8..]    = PIC code (entry point)
-     */
-    if (blob_len < 16)
+    if (blob_len < 8)
         return NULL;
 
     /* Allocate RW memory via bus */
@@ -196,9 +187,6 @@ PVOID loader_load_pic(const BYTE *blob, DWORD blob_len,
     /* Copy blob to allocated memory */
     spec_memcpy(mem, blob, blob_len);
 
-    /* Inject API table pointer at offset 0 */
-    *(QWORD *)mem = (QWORD)(ULONG_PTR)api;
-
     /* Flip memory to RX (read-execute) */
     if (!api->mem_protect(mem, alloc_size, PAGE_EXECUTE_READ)) {
         api->mem_free(mem);
@@ -208,7 +196,7 @@ PVOID loader_load_pic(const BYTE *blob, DWORD blob_len,
     /* Fill loaded module structure */
     mod->memory_base = mem;
     mod->memory_size = alloc_size;
-    mod->entry_point = (PVOID)((BYTE *)mem + 8);
+    mod->entry_point = mem;
     mod->module_type = MODULE_TYPE_PIC;
     mod->status = MODULE_STATUS_LOADING;
 

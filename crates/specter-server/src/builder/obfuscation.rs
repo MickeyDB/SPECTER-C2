@@ -31,9 +31,13 @@ const HASH_SALT_MARKER: &[u8; 8] = b"SPECHASH";
 // Phase 0.4: CONFIG_MAGIC_MARKER ("SPECCFGM") removed — config magic is now
 // derived from CRC32(pic_blob[0..64]) on both builder and implant sides.
 /// Marker for the memguard nonce: "SPECMGRD" + 4 zero bytes (12 bytes total).
-const MEMGUARD_NONCE_MARKER: &[u8] = &[0x53, 0x50, 0x45, 0x43, 0x4D, 0x47, 0x52, 0x44, 0x00, 0x00, 0x00, 0x00];
+const MEMGUARD_NONCE_MARKER: &[u8] = &[
+    0x53, 0x50, 0x45, 0x43, 0x4D, 0x47, 0x52, 0x44, 0x00, 0x00, 0x00, 0x00,
+];
 /// Marker for the heap encryption nonce: "SPECHEAP" + 4 zero bytes (12 bytes total).
-const HEAP_NONCE_MARKER: &[u8] = &[0x53, 0x50, 0x45, 0x43, 0x48, 0x45, 0x41, 0x50, 0x00, 0x00, 0x00, 0x00];
+const HEAP_NONCE_MARKER: &[u8] = &[
+    0x53, 0x50, 0x45, 0x43, 0x48, 0x45, 0x41, 0x50, 0x00, 0x00, 0x00, 0x00,
+];
 /// Marker for the control-flow flattening stub: "SPECFLOW\x00".
 const CFF_MARKER: &[u8; 9] = b"SPECFLOW\x00";
 
@@ -107,10 +111,12 @@ pub struct ObfuscationResult {
 /// 2. API hash randomization (uses SPECHASH marker)
 /// 3. Junk code insertion
 /// 4. Control-flow flattening (uses SPECFLOW marker, if enabled)
-/// 5. Config magic patching (uses SPECCFGM marker)
-/// 6. Marker scrubbing — replaces ALL remaining marker bytes with random data
-/// 7. XOR encryption (wraps entire blob with decryption stub, if enabled)
-pub fn obfuscate(blob: &[u8], settings: &ObfuscationSettings) -> Result<ObfuscationResult, ObfuscationError> {
+/// 5. Marker scrubbing — replaces ALL remaining marker bytes with random data
+/// 6. XOR encryption (wraps entire blob with decryption stub, if enabled)
+pub fn obfuscate(
+    blob: &[u8],
+    settings: &ObfuscationSettings,
+) -> Result<ObfuscationResult, ObfuscationError> {
     if blob.len() < 16 {
         return Err(ObfuscationError::BlobTooSmall(blob.len()));
     }
@@ -149,7 +155,10 @@ pub fn obfuscate(blob: &[u8], settings: &ObfuscationSettings) -> Result<Obfuscat
 }
 
 /// Legacy convenience wrapper that returns only the blob (for backward compat).
-pub fn obfuscate_blob(blob: &[u8], settings: &ObfuscationSettings) -> Result<Vec<u8>, ObfuscationError> {
+pub fn obfuscate_blob(
+    blob: &[u8],
+    settings: &ObfuscationSettings,
+) -> Result<Vec<u8>, ObfuscationError> {
     obfuscate(blob, settings).map(|r| r.blob)
 }
 
@@ -159,7 +168,10 @@ pub fn obfuscate_blob(blob: &[u8], settings: &ObfuscationSettings) -> Result<Vec
 /// magic, since the builder still needs those markers after embedding.
 ///
 /// Call this on the raw PIC blob before `embed_pic_blob()`.
-pub fn apply_transforms(blob: &mut Vec<u8>, settings: &ObfuscationSettings) -> Result<(), ObfuscationError> {
+pub fn apply_transforms(
+    blob: &mut Vec<u8>,
+    settings: &ObfuscationSettings,
+) -> Result<(), ObfuscationError> {
     if blob.len() < 16 {
         return Ok(());
     }
@@ -204,10 +216,8 @@ pub fn apply_transforms(blob: &mut Vec<u8>, settings: &ObfuscationSettings) -> R
     Ok(())
 }
 
-/// Phase B: Scrub all remaining SPEC* markers and the SPBF marker from the
-/// final assembled payload (after config magic patching and build flags
-/// patching are complete). This must be the LAST step before optional XOR
-/// encryption.
+/// Phase B: Scrub all remaining SPEC* markers from the final assembled
+/// payload. This must be the LAST step before optional XOR encryption.
 ///
 /// Call this on the fully assembled payload (PE stub + embedded PIC + config).
 pub fn finalize_payload(payload: &mut [u8]) {
@@ -373,10 +383,9 @@ const JUNK_TEMPLATES: &[&[u8]] = &[
 /// Insert random NOP-equivalent junk sequences at 0xCC (int3) padding
 /// boundaries, which typically appear between functions in compiled PIC blobs.
 ///
-/// This modifies the blob size (not in-place) so it must run after any
-/// marker-relative transforms.
-fn insert_junk_code(blob: &[u8], density: u8, rng: &mut impl Rng) -> Vec<u8> {
-    let density = density.clamp(2, 64) as usize;
+/// This preserves the blob size by replacing each padding run with a junk
+/// sequence of exactly the same length.
+fn insert_junk_code(blob: &[u8], _density: u8, rng: &mut impl Rng) -> Vec<u8> {
     let mut out = Vec::with_capacity(blob.len() + blob.len() / 8);
 
     let mut i = 0;
@@ -765,9 +774,12 @@ fn xor_decrypt_blob(encrypted: &[u8]) -> Vec<u8> {
     let size_end = key_end + 4;
 
     let key = &encrypted[key_start..key_end];
-    let blob_size =
-        u32::from_le_bytes([encrypted[key_end], encrypted[key_end + 1], encrypted[key_end + 2], encrypted[key_end + 3]])
-            as usize;
+    let blob_size = u32::from_le_bytes([
+        encrypted[key_end],
+        encrypted[key_end + 1],
+        encrypted[key_end + 2],
+        encrypted[key_end + 3],
+    ]) as usize;
     let blob_start = size_end;
 
     let mut decrypted = Vec::with_capacity(blob_size);
@@ -1071,7 +1083,10 @@ mod tests {
         };
 
         let result = obfuscate(&blob, &settings).unwrap();
-        assert_ne!(result.blob, blob, "obfuscated blob should differ from original");
+        assert_ne!(
+            result.blob, blob,
+            "obfuscated blob should differ from original"
+        );
     }
 
     #[test]
@@ -1089,20 +1104,23 @@ mod tests {
 
         let r1 = obfuscate(&blob, &settings).unwrap();
         let r2 = obfuscate(&blob, &settings).unwrap();
-        assert_ne!(r1.blob, r2.blob, "two obfuscations should produce unique outputs");
+        assert_ne!(
+            r1.blob, r2.blob,
+            "two obfuscations should produce unique outputs"
+        );
     }
 
     #[test]
     fn test_scrub_markers_removes_all_signatures() {
         // Build a blob containing all remaining markers (Phase 0.4: SPECCFGM removed)
         let mut blob = vec![0u8; 32]; // padding
-        // Add SPECSTR marker
+                                      // Add SPECSTR marker
         blob.extend_from_slice(STRING_TABLE_MARKER);
         blob.extend_from_slice(&[0xAA; 34]); // key(32) + count(2)
-        // Add SPECHASH marker
+                                             // Add SPECHASH marker
         blob.extend_from_slice(HASH_SALT_MARKER);
         blob.extend_from_slice(&[0x00; 6]); // salt(4) + count(2)
-        // Add SPECMGRD nonce
+                                            // Add SPECMGRD nonce
         blob.extend_from_slice(MEMGUARD_NONCE_MARKER);
         // Add SPECHEAP nonce
         blob.extend_from_slice(HEAP_NONCE_MARKER);
@@ -1116,11 +1134,26 @@ mod tests {
         let magics = scrub_markers(&mut blob, &mut rng);
 
         // Verify no original marker bytes remain
-        assert!(find_marker(&blob, STRING_TABLE_MARKER).is_none(), "SPECSTR should be scrubbed");
-        assert!(find_marker(&blob, HASH_SALT_MARKER).is_none(), "SPECHASH should be scrubbed");
-        assert!(find_marker(&blob, MEMGUARD_NONCE_MARKER).is_none(), "SPECMGRD should be scrubbed");
-        assert!(find_marker(&blob, HEAP_NONCE_MARKER).is_none(), "SPECHEAP should be scrubbed");
-        assert!(find_marker(&blob, CFF_MARKER).is_none(), "SPECFLOW should be scrubbed");
+        assert!(
+            find_marker(&blob, STRING_TABLE_MARKER).is_none(),
+            "SPECSTR should be scrubbed"
+        );
+        assert!(
+            find_marker(&blob, HASH_SALT_MARKER).is_none(),
+            "SPECHASH should be scrubbed"
+        );
+        assert!(
+            find_marker(&blob, MEMGUARD_NONCE_MARKER).is_none(),
+            "SPECMGRD should be scrubbed"
+        );
+        assert!(
+            find_marker(&blob, HEAP_NONCE_MARKER).is_none(),
+            "SPECHEAP should be scrubbed"
+        );
+        assert!(
+            find_marker(&blob, CFF_MARKER).is_none(),
+            "SPECFLOW should be scrubbed"
+        );
 
         // Phase 0.4: config_magic is now derived, not stored in magics
         assert_eq!(magics.config_magic, 0);
@@ -1165,7 +1198,9 @@ mod tests {
 
     #[test]
     fn test_xor_encrypt_roundtrip() {
-        let original: Vec<u8> = (0..256).map(|i| [0x48, 0x89, 0x5C, 0x24, 0x08, 0x90, 0x90, 0xCC][i % 8]).collect();
+        let original: Vec<u8> = (0..256)
+            .map(|i| [0x48, 0x89, 0x5C, 0x24, 0x08, 0x90, 0x90, 0xCC][i % 8])
+            .collect();
         let mut rng = rand::thread_rng();
         let encrypted = xor_encrypt_blob(&original, &mut rng);
 

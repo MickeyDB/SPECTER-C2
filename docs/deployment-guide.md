@@ -531,6 +531,7 @@ Use the **Reports** page or `GenerateReport` RPC:
 - [ ] Deploy at least one redirector between teamserver and targets
 - [ ] Create a C2 profile that matches legitimate traffic for the target environment
 - [ ] Set appropriate kill dates on all implants
+- [ ] Complete an OPSEC telemetry review for the selected payload/profile (`docs/opsec-telemetry-review.md`)
 - [ ] Configure working hours if applicable
 - [ ] Enable string encryption and API hash randomization at minimum
 - [ ] Run YARA scan on generated payloads — iterate if detections found

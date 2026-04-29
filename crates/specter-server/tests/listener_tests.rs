@@ -265,6 +265,226 @@ async fn task_results_in_checkin_are_processed_correctly() {
     assert_eq!(task.result, b"HOST_B");
 }
 
+/// Phase 1.2: task result larger than legacy 64 KiB TLV limit must round-trip on JSON check-in.
+#[tokio::test]
+async fn large_task_result_roundtrips_via_json_checkin() {
+    const LARGE_LEN: usize = 100 * 1024;
+    let (_session_mgr, task_disp, app) = setup().await;
+
+    let checkin = CheckinRequest {
+        session_id: None,
+        hostname: "HOST_LARGE".into(),
+        username: "user_large".into(),
+        pid: 7777,
+        os_version: "Win11".into(),
+        integrity_level: "Medium".into(),
+        process_name: "beacon.exe".into(),
+        internal_ip: "10.0.0.7".into(),
+        external_ip: "7.7.7.7".into(),
+        task_results: vec![],
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/checkin")
+                .header("content-type", "application/json")
+                .body(checkin_request_body(&checkin))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let cr: CheckinResponse = serde_json::from_slice(&body).unwrap();
+    let session_id = cr.session_id;
+
+    let tid = task_disp
+        .queue_task(
+            &session_id,
+            "shell",
+            b"generate-big-output",
+            TaskPriority::Normal,
+            "op1",
+        )
+        .await
+        .unwrap();
+
+    let mut big = String::with_capacity(LARGE_LEN);
+    big.push_str("SPECTER_LARGE_HEAD:");
+    while big.len() < LARGE_LEN - "SPECTER_LARGE_TAIL".len() {
+        big.push('A');
+    }
+    big.push_str("SPECTER_LARGE_TAIL");
+    assert_eq!(big.len(), LARGE_LEN);
+
+    let checkin_with_result = CheckinRequest {
+        session_id: Some(session_id),
+        hostname: "HOST_LARGE".into(),
+        username: "user_large".into(),
+        pid: 7777,
+        os_version: "Win11".into(),
+        integrity_level: "Medium".into(),
+        process_name: "beacon.exe".into(),
+        internal_ip: "10.0.0.7".into(),
+        external_ip: "7.7.7.7".into(),
+        task_results: vec![TaskResultPayload {
+            task_id: tid.clone(),
+            status: "COMPLETE".into(),
+            result: big.clone(),
+        }],
+    };
+
+    let resp2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/checkin")
+                .header("content-type", "application/json")
+                .body(checkin_request_body(&checkin_with_result))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+
+    let task = task_disp.get_task(&tid).await.unwrap().unwrap();
+    assert_eq!(
+        task.status,
+        i32::from(specter_common::proto::specter::v1::TaskStatus::Complete)
+    );
+    assert_eq!(task.result.len(), LARGE_LEN);
+    assert!(task.result.starts_with(b"SPECTER_LARGE_HEAD:"));
+    assert!(task.result.ends_with(b"SPECTER_LARGE_TAIL"));
+}
+
+#[tokio::test]
+async fn sleep_result_persists_and_beacon_remains_live_across_followup_checkins() {
+    let (session_mgr, task_disp, app) = setup().await;
+
+    // Initial check-in to create session.
+    let checkin = CheckinRequest {
+        session_id: None,
+        hostname: "HOST_SLEEP".into(),
+        username: "user_sleep".into(),
+        pid: 3333,
+        os_version: "Windows 11".into(),
+        integrity_level: "High".into(),
+        process_name: "beacon.exe".into(),
+        internal_ip: "10.0.0.3".into(),
+        external_ip: "4.4.4.4".into(),
+        task_results: vec![],
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/checkin")
+                .header("content-type", "application/json")
+                .body(checkin_request_body(&checkin))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let created: CheckinResponse = serde_json::from_slice(&body).unwrap();
+    let sid = created.session_id;
+
+    // Queue a sleep task.
+    let sleep_tid = task_disp
+        .queue_task(&sid, "sleep", b"45 20", TaskPriority::Normal, "op1")
+        .await
+        .unwrap();
+
+    // Dispatch queued sleep task on next check-in.
+    let dispatch_req = CheckinRequest {
+        session_id: Some(sid.clone()),
+        task_results: vec![],
+        ..checkin.clone()
+    };
+    let dispatch_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/checkin")
+                .header("content-type", "application/json")
+                .body(checkin_request_body(&dispatch_req))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dispatch_resp.status(), 200);
+    let dispatch_body = dispatch_resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let dispatched: CheckinResponse = serde_json::from_slice(&dispatch_body).unwrap();
+    assert_eq!(dispatched.tasks.len(), 1);
+    assert_eq!(dispatched.tasks[0].task_id, sleep_tid);
+    assert_eq!(dispatched.tasks[0].task_type, "sleep");
+
+    // Send sleep result and then perform follow-up check-ins.
+    let complete_req = CheckinRequest {
+        session_id: Some(sid.clone()),
+        task_results: vec![TaskResultPayload {
+            task_id: sleep_tid,
+            status: "COMPLETE".into(),
+            result: "interval=45s jitter=20%".into(),
+        }],
+        ..checkin.clone()
+    };
+    let complete_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/checkin")
+                .header("content-type", "application/json")
+                .body(checkin_request_body(&complete_req))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(complete_resp.status(), 200);
+
+    for _ in 0..5 {
+        let follow_req = CheckinRequest {
+            session_id: Some(sid.clone()),
+            task_results: vec![],
+            ..checkin.clone()
+        };
+        let follow_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/checkin")
+                    .header("content-type", "application/json")
+                    .body(checkin_request_body(&follow_req))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(follow_resp.status(), 200);
+    }
+
+    // Validate persisted sleep metadata and active status.
+    let session = session_mgr.get_session(&sid).await.unwrap().unwrap();
+    assert_eq!(session.sleep_interval, 45);
+    assert_eq!(session.sleep_jitter, 20);
+    assert_eq!(
+        session.status,
+        i32::from(specter_common::proto::specter::v1::SessionStatus::Active)
+    );
+}
+
 #[tokio::test]
 async fn health_endpoint_returns_200() {
     let (_session_mgr, _task_disp, app) = setup().await;

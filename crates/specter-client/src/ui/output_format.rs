@@ -88,10 +88,7 @@ pub fn format_json(content: &str) -> Vec<Line<'_>> {
         Ok(value) => {
             let pretty =
                 serde_json::to_string_pretty(&value).unwrap_or_else(|_| content.to_string());
-            pretty
-                .lines()
-                .map(highlight_json_line)
-                .collect()
+            pretty.lines().map(highlight_json_line).collect()
         }
         Err(_) => vec![Line::from(Span::styled(
             content,

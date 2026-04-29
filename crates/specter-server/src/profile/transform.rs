@@ -55,7 +55,7 @@ fn compress(data: &[u8], algo: &Compression) -> Result<Vec<u8>, ProfileError> {
         Compression::Lz4 => Ok(lz4_flex::compress_prepend_size(data)),
         Compression::Zstd => Err(ProfileError::Validation(
             "Zstd compression not available. Use 'lz4' or 'none'.".into(),
-        ))
+        )),
     }
 }
 

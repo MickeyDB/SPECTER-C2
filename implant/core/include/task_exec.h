@@ -20,6 +20,9 @@
 #define HASH_CREATEPROCESSA     0x9EF6FE79  /* "CreateProcessA"      */
 #define HASH_CREATEPIPE         0x1BF19F27  /* "CreatePipe"          */
 #define HASH_READFILE           0xF94DC161  /* "ReadFile"            */
+#define HASH_WRITEFILE          0xF5DC98F0  /* "WriteFile"           */
+#define HASH_CREATEFILEA        0x99707E5A  /* "CreateFileA"         */
+#define HASH_GETFILESIZE        0xAC749580  /* "GetFileSize"         */
 #define HASH_CLOSEHANDLE        0x2EAC8647  /* "CloseHandle"         */
 #define HASH_WAITFORSINGLEOBJ   0xDA18E23A  /* "WaitForSingleObject" */
 #define HASH_GETEXITCODEPROCESS 0x58A06379  /* "GetExitCodeProcess"  */
@@ -111,6 +114,26 @@ typedef BOOL (__attribute__((ms_abi)) *fn_ReadFile)(
     DWORD nNumberOfBytesToRead,
     PDWORD lpNumberOfBytesRead,
     PVOID lpOverlapped);
+
+typedef BOOL (__attribute__((ms_abi)) *fn_WriteFile)(
+    HANDLE hFile,
+    const BYTE *lpBuffer,
+    DWORD nNumberOfBytesToWrite,
+    PDWORD lpNumberOfBytesWritten,
+    PVOID lpOverlapped);
+
+typedef HANDLE (__attribute__((ms_abi)) *fn_CreateFileA)(
+    const char *lpFileName,
+    DWORD dwDesiredAccess,
+    DWORD dwShareMode,
+    SECURITY_ATTRIBUTES *lpSecurityAttributes,
+    DWORD dwCreationDisposition,
+    DWORD dwFlagsAndAttributes,
+    HANDLE hTemplateFile);
+
+typedef DWORD (__attribute__((ms_abi)) *fn_GetFileSize)(
+    HANDLE hFile,
+    PDWORD lpFileSizeHigh);
 
 typedef BOOL (__attribute__((ms_abi)) *fn_CloseHandle)(HANDLE hObject);
 

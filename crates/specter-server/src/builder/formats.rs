@@ -351,7 +351,7 @@ fn build_pe64_stub(
     pe[opt + 2] = 14; // MajorLinkerVersion
     pe[opt + 3] = 0; // MinorLinkerVersion
     put_u32(&mut pe, opt + 4, section_raw_size); // SizeOfCode
-    // AddressOfEntryPoint: point to start of .text section
+                                                 // AddressOfEntryPoint: point to start of .text section
     put_u32(&mut pe, opt + 16, SECTION_ALIGNMENT); // AddressOfEntryPoint
     put_u32(&mut pe, opt + 20, SECTION_ALIGNMENT); // BaseOfCode
     put_u64(&mut pe, opt + 24, IMAGE_BASE); // ImageBase
@@ -445,7 +445,11 @@ fn build_minimal_dotnet_stub(payload: &[u8]) -> Vec<u8> {
     let cli_metadata_size: u32 = 96;
     let metadata_start = clr_header_size;
 
-    let raw_section_size = clr_header_size + cli_metadata_size + PAYLOAD_MARKER.len() as u32 + payload.len() as u32 + 256;
+    let raw_section_size = clr_header_size
+        + cli_metadata_size
+        + PAYLOAD_MARKER.len() as u32
+        + payload.len() as u32
+        + 256;
     let section_raw_size = align_up(raw_section_size, FILE_ALIGNMENT);
     let section_virtual_size = align_up(raw_section_size, SECTION_ALIGNMENT);
     let total_image_size = align_up(SECTION_ALIGNMENT + section_virtual_size, SECTION_ALIGNMENT);
@@ -487,7 +491,7 @@ fn build_minimal_dotnet_stub(payload: &[u8]) -> Vec<u8> {
     put_u16(&mut pe, opt, 0x010B); // Magic: PE32
     pe[opt + 2] = 11; // MajorLinkerVersion
     put_u32(&mut pe, opt + 4, section_raw_size); // SizeOfCode
-    // EntryPoint -> _CorExeMain (CLR bootstrap), point into .text
+                                                 // EntryPoint -> _CorExeMain (CLR bootstrap), point into .text
     put_u32(&mut pe, opt + 16, SECTION_ALIGNMENT); // AddressOfEntryPoint
     put_u32(&mut pe, opt + 20, SECTION_ALIGNMENT); // BaseOfCode
     put_u32(&mut pe, opt + 24, 0); // BaseOfData
@@ -528,7 +532,7 @@ fn build_minimal_dotnet_stub(payload: &[u8]) -> Vec<u8> {
     put_u32(&mut pe, sec_start, clr_header_size); // cb (size)
     put_u16(&mut pe, sec_start + 4, 2); // MajorRuntimeVersion
     put_u16(&mut pe, sec_start + 6, 5); // MinorRuntimeVersion
-    // MetaData RVA and size
+                                        // MetaData RVA and size
     put_u32(&mut pe, sec_start + 8, SECTION_ALIGNMENT + metadata_start); // MetaData RVA
     put_u32(&mut pe, sec_start + 12, cli_metadata_size); // MetaData Size
     put_u32(&mut pe, sec_start + 16, 0x00000001); // Flags: ILONLY
@@ -539,7 +543,7 @@ fn build_minimal_dotnet_stub(payload: &[u8]) -> Vec<u8> {
     put_u32(&mut pe, md, 0x424A5342); // "BSJB" signature
     put_u16(&mut pe, md + 4, 1); // MajorVersion
     put_u16(&mut pe, md + 6, 1); // MinorVersion
-    // Version string: "v4.0.30319\0" padded to 12 bytes
+                                 // Version string: "v4.0.30319\0" padded to 12 bytes
     put_u32(&mut pe, md + 12, 12); // VersionLength
     pe[md + 16..md + 26].copy_from_slice(b"v4.0.30319");
 

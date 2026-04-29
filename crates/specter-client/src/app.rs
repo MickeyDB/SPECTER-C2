@@ -554,6 +554,8 @@ mod tests {
             first_seen: None,
             status: SessionStatus::Active.into(),
             active_channel: String::new(),
+            sleep_interval: 0,
+            sleep_jitter: 0,
         }
     }
 

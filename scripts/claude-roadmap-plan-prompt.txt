@@ -1,0 +1,12 @@
+The file docs/roadmap.md was just refreshed to match the repository (checkboxes, completed vs open work, architecture log).
+
+1. Read docs/roadmap.md.
+
+2. Scan the repo only to **validate or correct** the roadmap claims (do not reprint the whole roadmap). Call out any checkbox you believe is still wrong with file:line evidence.
+
+3. Produce a **delta execution plan**:
+   - Top 5 next actions (2-week horizon), each with acceptance criteria
+   - What to do in the following month (themes only)
+   - One paragraph on OPSEC/testing gates before merging risky changes
+
+Output markdown. Be concise.

@@ -105,7 +105,8 @@ describe('ProfileEditor', () => {
 
   it('renders JA3 hash section', () => {
     renderProfileEditor()
-    expect(screen.getByText('Computed JA3 Hash')).toBeInTheDocument()
+    expect(screen.getByText('TLS Fingerprints')).toBeInTheDocument()
+    expect(screen.getByText('JA3')).toBeInTheDocument()
   })
 
   it('renders the Monaco editor mock', () => {

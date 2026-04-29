@@ -184,7 +184,7 @@ All crypto is implemented natively (no external libraries).
 | Foliage | APC-based sleep with memory encryption |
 | ThreadPool | Thread pool timer hijacking |
 
-During sleep, the implant's memory is encrypted to evade memory scanners.
+Advanced sleep methods may encrypt or reshape implant memory during idle periods, but this is build/config dependent and must be validated per target OS and telemetry stack. The baseline delay path prioritizes stability over memory masking.
 
 ## Evasion Techniques
 
@@ -192,13 +192,15 @@ During sleep, the implant's memory is encrypted to evade memory scanners.
 |-----------|---------|
 | PEB walking | Resolve DLLs and exports without `GetProcAddress` |
 | DJB2 hash lookup | API resolution by hash, not string |
-| Direct syscalls | Bypass user-mode API hooks |
-| Sleep encryption | Encrypt implant memory during sleep |
+| Direct / indirect syscalls | Reduce exposure to some user-mode API hooks; kernel telemetry remains visible |
+| Sleep masking | Reduce selected point-in-time memory signals during sleep when enabled and validated |
 | Profile templating | Shape traffic to mimic legitimate requests |
 | Domain fronting | Decouple TLS SNI from HTTP Host header |
 | Kill date | Automatic self-termination after engagement ends |
 | No static imports | Zero entries in IAT |
 | CRT-free | No C runtime dependency |
+
+For operator-facing limitations and validation gates, see `docs/evasion-playbook.md` and `docs/opsec-telemetry-review.md`.
 
 ## Module System
 

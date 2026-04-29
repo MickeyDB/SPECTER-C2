@@ -530,27 +530,19 @@ static void test_pic_loader_basic(void) {
     LOADED_MODULE mod;
     memset(&mod, 0, sizeof(mod));
 
-    /* Build a PIC blob: 8 bytes API pointer slot + code */
+    /* Build a PIC blob with entry at offset 0. */
     BYTE pic_blob[64];
     memset(pic_blob, 0, sizeof(pic_blob));
-    /* First 8 bytes = API pointer slot (will be overwritten by loader) */
-    /* Bytes 8+: "code" */
-    pic_blob[8] = 0xC3;  /* ret */
+    pic_blob[0] = 0xC3;  /* ret */
 
     PVOID entry = loader_load_pic(pic_blob, sizeof(pic_blob), api, &mod);
 
     int ok = 1;
     if (!entry) { ok = 0; }
     if (ok && mod.memory_base == NULL) { ok = 0; }
-    if (ok && mod.entry_point != (BYTE *)mod.memory_base + 8) { ok = 0; }
+    if (ok && mod.entry_point != mod.memory_base) { ok = 0; }
     if (ok && mod.module_type != MODULE_TYPE_PIC) { ok = 0; }
     if (ok && mod.status != MODULE_STATUS_LOADING) { ok = 0; }
-
-    /* Verify API pointer was injected at offset 0 */
-    if (ok) {
-        QWORD injected = *(QWORD *)mod.memory_base;
-        if (injected != (QWORD)(ULONG_PTR)api) { ok = 0; }
-    }
 
     if (ok) PASS();
     else FAIL("PIC load failed");
@@ -577,7 +569,7 @@ static void test_pic_loader_null_args(void) {
         FAIL("zero length accepted");
 
     TEST("PIC loader rejects too-small blob");
-    if (loader_load_pic(buf, 8, api, &mod) == NULL)
+    if (loader_load_pic(buf, 7, api, &mod) == NULL)
         PASS();
     else
         FAIL("too-small blob accepted");

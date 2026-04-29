@@ -1529,6 +1529,9 @@ impl SpecterService for SpecterGrpcService {
                 module_overloading: e.module_overloading,
                 pdata_registration: e.pdata_registration,
                 ntcontinue_entry: e.ntcontinue_entry,
+                etw_usermode_patch: e.etw_usermode_patch,
+                module_preserve_headers: false,
+                module_patch_only: false,
             }
         } else {
             crate::builder::EvasionFlags::default()
@@ -1541,7 +1544,18 @@ impl SpecterService for SpecterGrpcService {
             Some(fmt) => {
                 let result = self
                     .payload_builder
-                    .build_with_evasion(fmt, &profile, &server_pubkey, &channels, &sleep_config, kill_date, evasion_flags, req.debug_mode, req.skip_anti_analysis, &obf_settings)
+                    .build_with_evasion(
+                        fmt,
+                        &profile,
+                        &server_pubkey,
+                        &channels,
+                        &sleep_config,
+                        kill_date,
+                        evasion_flags,
+                        req.debug_mode,
+                        req.skip_anti_analysis,
+                        &obf_settings,
+                    )
                     .map_err(|e| Status::internal(format!("Build failed: {e}")))?;
 
                 // Obfuscation transforms (string rotation, hash randomization, junk

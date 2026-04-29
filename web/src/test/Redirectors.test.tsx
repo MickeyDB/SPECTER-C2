@@ -8,6 +8,7 @@ vi.mock('@/lib/client', () => ({
   specterClient: {
     listRedirectors: vi.fn().mockRejectedValue(new Error('not connected')),
     listProfiles: vi.fn().mockRejectedValue(new Error('not connected')),
+    listListeners: vi.fn().mockRejectedValue(new Error('not connected')),
     deployRedirector: vi.fn().mockRejectedValue(new Error('not connected')),
     destroyRedirector: vi.fn().mockRejectedValue(new Error('not connected')),
     burnRedirector: vi.fn().mockRejectedValue(new Error('not connected')),
@@ -74,6 +75,7 @@ describe('Redirectors', () => {
   it('shows empty state when no redirectors', async () => {
     mockClient.listRedirectors.mockResolvedValue({ redirectors: [] } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
     mockClient.listProfiles.mockResolvedValue({ profiles: [] } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
+    mockClient.listListeners.mockResolvedValue({ listeners: [] } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
 
     renderRedirectors()
 
@@ -85,6 +87,7 @@ describe('Redirectors', () => {
   it('shows error when connection fails', async () => {
     mockClient.listRedirectors.mockRejectedValue(new Error('not connected'))
     mockClient.listProfiles.mockRejectedValue(new Error('not connected'))
+    mockClient.listListeners.mockRejectedValue(new Error('not connected'))
 
     renderRedirectors()
 
@@ -146,6 +149,7 @@ describe('Redirectors with data', () => {
         },
       ],
     } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
+    mockClient.listListeners.mockResolvedValue({ listeners: [] } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
   })
 
   it('displays redirector cards', async () => {

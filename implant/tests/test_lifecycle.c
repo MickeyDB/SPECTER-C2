@@ -144,20 +144,20 @@ static void test_modmgr_execute_bad_inputs(void) {
     MODULE_MANAGER *mgr = modmgr_test_get_manager();
 
     /* NULL package */
-    int result = modmgr_execute(mgr, NULL, 100);
+    int result = modmgr_execute(mgr, NULL, 100, NULL, 0);
     check(result == -1, "modmgr_execute(NULL package) returns -1");
 
     /* Zero length */
     BYTE dummy[4] = {0};
-    result = modmgr_execute(mgr, dummy, 0);
+    result = modmgr_execute(mgr, dummy, 0, NULL, 0);
     check(result == -1, "modmgr_execute(len=0) returns -1");
 
     /* Too-short package (bad header) */
-    result = modmgr_execute(mgr, dummy, 4);
+    result = modmgr_execute(mgr, dummy, 4, NULL, 0);
     check(result == -1, "modmgr_execute(short package) returns -1");
 
     /* NULL manager */
-    result = modmgr_execute(NULL, dummy, 4);
+    result = modmgr_execute(NULL, dummy, 4, NULL, 0);
     check(result == -1, "modmgr_execute(NULL mgr) returns -1");
 }
 
@@ -195,7 +195,7 @@ static void test_modmgr_execute_pic(void) {
 
     /* Execute — in TEST_BUILD, loader_load_pic uses bus API's mem_alloc
      * which stubs to NULL in test mode, so this will fail at the load step. */
-    int slot = modmgr_execute(mgr, package, total_len);
+    int slot = modmgr_execute(mgr, package, total_len, NULL, 0);
 
     check(slot == -1, "modmgr_execute PIC fails gracefully when mem_alloc unavailable");
     check(mgr->active_count == 0, "active_count unchanged after failed load");
@@ -401,7 +401,7 @@ static void test_modmgr_full_slots(void) {
     hdr->encrypted_size = sizeof(pic_blob);
     memcpy(package + sizeof(MODULE_PACKAGE_HDR), pic_blob, sizeof(pic_blob));
 
-    int result = modmgr_execute(mgr, package, total_len);
+    int result = modmgr_execute(mgr, package, total_len, NULL, 0);
     check(result == -1, "modmgr_execute returns -1 when all slots full");
 
     free(package);

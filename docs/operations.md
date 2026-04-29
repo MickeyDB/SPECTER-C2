@@ -153,11 +153,12 @@ The hash chain enables detection of log tampering.
 - Configure appropriate sleep intervals and jitter
 
 ### Implant Stealth
-- Sleep obfuscation encrypts implant memory during idle periods
-- Direct syscalls bypass user-mode API hooks
+- Sleep obfuscation is build/config dependent; validate memory state during idle periods before relying on it
+- Direct/indirect syscalls reduce exposure to some user-mode API hooks; they do not hide kernel telemetry
 - PEB walking avoids `GetProcAddress` calls
 - No static imports (clean IAT)
 - Profile-driven request/response shaping
+- Record an OPSEC telemetry review for each production payload/profile (`docs/opsec-telemetry-review.md`)
 
 ### Infrastructure
 - Use multiple redirectors for redundancy

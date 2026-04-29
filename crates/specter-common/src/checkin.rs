@@ -35,7 +35,7 @@ pub const TLV_VERSION: u8 = 0x01;
 
 fn tlv_write_bytes(buf: &mut Vec<u8>, tag: u16, data: &[u8]) {
     buf.extend_from_slice(&tag.to_le_bytes());
-    buf.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
     buf.extend_from_slice(data);
 }
 
@@ -67,10 +67,11 @@ where
     F: FnMut(u16, &[u8]),
 {
     let mut pos = 0;
-    while pos + 4 <= data.len() {
+    while pos + 6 <= data.len() {
         let tag = u16::from_le_bytes([data[pos], data[pos + 1]]);
-        let len = u16::from_le_bytes([data[pos + 2], data[pos + 3]]) as usize;
-        pos += 4;
+        let len = u32::from_le_bytes([data[pos + 2], data[pos + 3], data[pos + 4], data[pos + 5]])
+            as usize;
+        pos += 6;
         if pos + len > data.len() {
             return None;
         }
@@ -211,7 +212,11 @@ pub struct PendingTaskPayload {
     pub task_type: String,
     /// Raw task arguments (binary-safe). Serialized as UTF-8 string in JSON
     /// when possible, base64-encoded otherwise.
-    #[serde(default, serialize_with = "serialize_args", deserialize_with = "deserialize_args")]
+    #[serde(
+        default,
+        serialize_with = "serialize_args",
+        deserialize_with = "deserialize_args"
+    )]
     pub arguments: Vec<u8>,
 }
 
@@ -286,6 +291,29 @@ mod tlv_tests {
     }
 
     #[test]
+    fn test_binary_checkin_with_large_task_result_over_64k() {
+        const DATA_LEN: usize = 70 * 1024;
+        let mut payload = vec![TLV_VERSION];
+        tlv_write_string(&mut payload, tlv_tags::HOSTNAME, "HOST_BIG");
+        tlv_write_string(&mut payload, tlv_tags::USERNAME, "user");
+        tlv_write_u32(&mut payload, tlv_tags::PID, 4242);
+
+        let mut inner = Vec::with_capacity(DATA_LEN + 64);
+        tlv_write_string(&mut inner, tlv_tags::RESULT_TASK_ID, "task-big");
+        tlv_write_string(&mut inner, tlv_tags::RESULT_STATUS, "COMPLETE");
+        let blob: Vec<u8> = vec![0x5Au8; DATA_LEN];
+        tlv_write_bytes(&mut inner, tlv_tags::RESULT_DATA, &blob);
+        tlv_write_bytes(&mut payload, tlv_tags::TASK_RESULT, &inner);
+
+        let req = parse_binary_checkin(&payload).expect("should parse");
+        assert_eq!(req.task_results.len(), 1);
+        assert_eq!(req.task_results[0].task_id, "task-big");
+        assert_eq!(req.task_results[0].status, "COMPLETE");
+        assert_eq!(req.task_results[0].result.len(), DATA_LEN);
+        assert!(req.task_results[0].result.bytes().all(|b| b == 0x5A));
+    }
+
+    #[test]
     fn test_binary_response_serialize() {
         let resp = CheckinResponse {
             session_id: "test-session-id".to_string(),
@@ -303,28 +331,24 @@ mod tlv_tests {
         let body = &data[1..];
         let mut found_session_id = String::new();
         let mut found_task_count = 0;
-        tlv_iter(body, |tag, value| {
-            match tag {
-                tlv_tags::SESSION_ID => found_session_id = tlv_read_string(value),
-                tlv_tags::TASK_BLOCK => {
-                    found_task_count += 1;
-                    let mut task_id = String::new();
-                    let mut task_type = String::new();
-                    let mut task_args = String::new();
-                    tlv_iter(value, |inner_tag, inner_value| {
-                        match inner_tag {
-                            tlv_tags::TASK_ID => task_id = tlv_read_string(inner_value),
-                            tlv_tags::TASK_TYPE => task_type = tlv_read_string(inner_value),
-                            tlv_tags::TASK_ARGS => task_args = tlv_read_string(inner_value),
-                            _ => {}
-                        }
-                    });
-                    assert_eq!(task_id, "task-001");
-                    assert_eq!(task_type, "shell");
-                    assert_eq!(task_args, "whoami");
-                }
-                _ => {}
+        tlv_iter(body, |tag, value| match tag {
+            tlv_tags::SESSION_ID => found_session_id = tlv_read_string(value),
+            tlv_tags::TASK_BLOCK => {
+                found_task_count += 1;
+                let mut task_id = String::new();
+                let mut task_type = String::new();
+                let mut task_args = String::new();
+                tlv_iter(value, |inner_tag, inner_value| match inner_tag {
+                    tlv_tags::TASK_ID => task_id = tlv_read_string(inner_value),
+                    tlv_tags::TASK_TYPE => task_type = tlv_read_string(inner_value),
+                    tlv_tags::TASK_ARGS => task_args = tlv_read_string(inner_value),
+                    _ => {}
+                });
+                assert_eq!(task_id, "task-001");
+                assert_eq!(task_type, "shell");
+                assert_eq!(task_args, "whoami");
             }
+            _ => {}
         });
         assert_eq!(found_session_id, "test-session-id");
         assert_eq!(found_task_count, 1);

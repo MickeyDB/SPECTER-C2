@@ -1,3 +1,4 @@
+use base64::Engine;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{ActivePanel, App, ConsoleLine, LineKind};
@@ -707,7 +708,35 @@ fn handle_console_submit(app: &mut App) -> EventResult {
         None => return EventResult::Continue,
     };
 
-    let args = build_task_args(&parsed);
+    const MAX_TRANSFER_BYTES: usize = 1024 * 1024;
+
+    let args = if parsed.name == "upload" {
+        let local = &parsed.args[0];
+        let remote = &parsed.args[1];
+        let file_bytes = match std::fs::read(local) {
+            Ok(data) => data,
+            Err(e) => {
+                app.console_append(ConsoleLine::new(
+                    LineKind::Error,
+                    format!("Failed to read local file '{local}': {e}"),
+                ));
+                return EventResult::Continue;
+            }
+        };
+        if file_bytes.len() > MAX_TRANSFER_BYTES {
+            app.console_append(ConsoleLine::new(
+                LineKind::Error,
+                format!(
+                    "File exceeds implant transfer limit ({MAX_TRANSFER_BYTES} bytes): '{local}'"
+                ),
+            ));
+            return EventResult::Continue;
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(file_bytes);
+        format!("{remote}\n{b64}").into_bytes()
+    } else {
+        build_task_args(&parsed)
+    };
 
     // Show "queued" message
     app.console_append(
@@ -1042,6 +1071,8 @@ mod tests {
             first_seen: None,
             status: SessionStatus::Active.into(),
             active_channel: String::new(),
+            sleep_interval: 0,
+            sleep_jitter: 0,
         }
     }
 

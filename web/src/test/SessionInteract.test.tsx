@@ -23,6 +23,7 @@ vi.mock('@xterm/xterm', () => {
     writeln = vi.fn()
     write = vi.fn()
     onKey = vi.fn()
+    onData = vi.fn()
     clear = vi.fn()
     dispose = vi.fn()
   }
@@ -165,7 +166,7 @@ describe('SessionInteract with session data', () => {
       expect(screen.getAllByText('WORKSTATION-1').length).toBeGreaterThanOrEqual(1)
     })
 
-    expect(screen.getByText('Sleep')).toBeInTheDocument()
+    expect(screen.getAllByText('Sleep').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('Kill')).toBeInTheDocument()
     expect(screen.getByText('Upload')).toBeInTheDocument()
     expect(screen.getByText('Download')).toBeInTheDocument()

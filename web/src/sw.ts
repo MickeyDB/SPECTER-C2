@@ -84,7 +84,7 @@ function idbClear(storeName: string): Promise<void> {
 
 // ── Install ─────────────────────────────────────────────────────────
 
-self.addEventListener('install', (_event: ExtendableEvent) => {
+self.addEventListener('install', () => {
   // Static asset precaching is handled by Workbox (precacheAndRoute above).
   // Activate immediately without waiting for old SW to be released.
   self.skipWaiting();

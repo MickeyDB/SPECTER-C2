@@ -592,7 +592,7 @@ static DWORD cmd_status(MODULE_BUS_API *api, const MODULE_ARGS *args)
 /*  Module entry point                                                 */
 /* ------------------------------------------------------------------ */
 
-DWORD module_entry(MODULE_BUS_API *api, BYTE *args_raw, DWORD args_len)
+DWORD MODULE_ENTRYPOINT module_entry(MODULE_BUS_API *api, BYTE *args_raw, DWORD args_len)
 {
     MODULE_ARGS  args;
     const char  *subcmd;

@@ -40,6 +40,15 @@ BOOL cfg_check_killdate(IMPLANT_CONTEXT *ctx) { (void)ctx; return FALSE; }
 PVOID find_module_by_hash(DWORD hash) { (void)hash; return NULL; }
 PVOID find_export_by_hash(PVOID base, DWORD hash) { (void)base; (void)hash; return NULL; }
 
+/* Stubs for comms paths not exercised by failover tests. */
+BOOL init_heap_cache(void) { return TRUE; }
+PVOID heap_alloc_cached(DWORD size) { return calloc(1, size); }
+void heap_free_cached(PVOID ptr) { free(ptr); }
+PVOID task_alloc(DWORD size) { return heap_alloc_cached(size); }
+void task_free(PVOID ptr) { heap_free_cached(ptr); }
+DWORD parse_task_type(const char *type_str, DWORD len) { (void)type_str; (void)len; return 0; }
+void task_free_results(IMPLANT_CONTEXT *ctx) { (void)ctx; }
+
 /* Controllable TCP/TLS stubs for testing failover behavior */
 static BOOL g_tcp_connect_fail = FALSE;
 static BOOL g_tls_handshake_fail = FALSE;

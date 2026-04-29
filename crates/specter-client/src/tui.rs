@@ -1,6 +1,7 @@
 use std::io;
 use std::time::Duration;
 
+use base64::Engine;
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -196,12 +197,6 @@ fn handle_event_update(app: &mut App, event: &specter_common::proto::specter::v1
 
                 // Show task completion with result in console
                 if status_str == "completed" || status_str == "complete" {
-                    let result_text = if task.result.is_empty() {
-                        "(no output)".to_string()
-                    } else {
-                        String::from_utf8_lossy(&task.result).to_string()
-                    };
-
                     app.console_append(
                         ConsoleLine::new(
                             LineKind::TaskComplete,
@@ -210,12 +205,89 @@ fn handle_event_update(app: &mut App, event: &specter_common::proto::specter::v1
                         .with_session(task.session_id.clone()),
                     );
 
-                    // Append each line of output
-                    for line in result_text.lines() {
-                        app.console_append(
-                            ConsoleLine::new(LineKind::Output, line.to_string())
-                                .with_session(task.session_id.clone()),
-                        );
+                    if task.task_type == "download" && !task.result.is_empty() {
+                        match base64::engine::general_purpose::STANDARD.decode(&task.result) {
+                            Ok(bytes) => {
+                                let remote = String::from_utf8_lossy(&task.arguments);
+                                let base = std::path::Path::new(remote.trim())
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("download.bin");
+                                let safe: String = base
+                                    .chars()
+                                    .filter(|c| {
+                                        c.is_alphanumeric() || matches!(*c, '.' | '_' | '-' | ' ')
+                                    })
+                                    .collect();
+                                let fname = if safe.trim().is_empty() {
+                                    "download.bin".to_string()
+                                } else {
+                                    safe
+                                };
+                                let path = std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                                    .join(format!("specter-{short_id}-{fname}"));
+                                match std::fs::write(&path, &bytes) {
+                                    Ok(()) => {
+                                        app.console_append(
+                                            ConsoleLine::new(
+                                                LineKind::System,
+                                                format!(
+                                                    "Saved {} bytes to {}",
+                                                    bytes.len(),
+                                                    path.display()
+                                                ),
+                                            )
+                                            .with_session(task.session_id.clone()),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        app.console_append(
+                                            ConsoleLine::new(
+                                                LineKind::Error,
+                                                format!(
+                                                    "Decoded download but failed to write {}: {e}",
+                                                    path.display()
+                                                ),
+                                            )
+                                            .with_session(task.session_id.clone()),
+                                        );
+                                        let result_text =
+                                            String::from_utf8_lossy(&task.result).to_string();
+                                        for line in result_text.lines() {
+                                            app.console_append(
+                                                ConsoleLine::new(
+                                                    LineKind::Output,
+                                                    line.to_string(),
+                                                )
+                                                .with_session(task.session_id.clone()),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                let result_text = String::from_utf8_lossy(&task.result).to_string();
+                                for line in result_text.lines() {
+                                    app.console_append(
+                                        ConsoleLine::new(LineKind::Output, line.to_string())
+                                            .with_session(task.session_id.clone()),
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        let result_text = if task.result.is_empty() {
+                            "(no output)".to_string()
+                        } else {
+                            String::from_utf8_lossy(&task.result).to_string()
+                        };
+                        for line in result_text.lines() {
+                            app.console_append(
+                                ConsoleLine::new(LineKind::Output, line.to_string())
+                                    .with_session(task.session_id.clone()),
+                            );
+                        }
                     }
                 } else if status_str == "failed" {
                     let err_text = if task.result.is_empty() {

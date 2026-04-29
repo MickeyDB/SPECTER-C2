@@ -1487,7 +1487,7 @@ schtask_cleanup:
 /*  Module entry point                                                 */
 /* ------------------------------------------------------------------ */
 
-DWORD module_entry(MODULE_BUS_API *api, BYTE *args_raw, DWORD args_len)
+DWORD MODULE_ENTRYPOINT module_entry(MODULE_BUS_API *api, BYTE *args_raw, DWORD args_len)
 {
     MODULE_ARGS  args;
     const char  *subcmd;

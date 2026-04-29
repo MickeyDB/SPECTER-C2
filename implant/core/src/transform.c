@@ -14,6 +14,29 @@
 #include "ntdefs.h"
 #include "transform.h"
 #include "crypto.h"
+#include "heap.h"
+
+#ifdef TEST_BUILD
+#include <stdlib.h>
+#endif
+
+static PVOID transform_heap_alloc(DWORD size)
+{
+#ifdef TEST_BUILD
+    return calloc(1, size);
+#else
+    return heap_alloc_cached(size);
+#endif
+}
+
+static void transform_heap_free(PVOID ptr)
+{
+#ifdef TEST_BUILD
+    free(ptr);
+#else
+    heap_free_cached(ptr);
+#endif
+}
 
 /* ------------------------------------------------------------------ */
 /*  Internal helpers — LE I/O                                           */
@@ -564,30 +587,18 @@ NTSTATUS transform_send(const BYTE *plaintext, DWORD len,
     if (!plaintext || len == 0 || !session_key || !cfg || !output || !output_len)
         return STATUS_INVALID_PARAMETER;
 
-    /* Determine buffer size: use stack for small payloads, heap for large */
+    /* Use heap scratch buffers. Large stack frames fault in PIC builds that
+       disable stack probing, even when the logical payload is small. */
     DWORD buf_size = TRANSFORM_MAX_OUTPUT;
     DWORD needed = len + 4096; /* payload + overhead for compression/encryption/encoding */
     if (needed > buf_size) buf_size = needed;
 
-    BYTE buf1_stack[TRANSFORM_MAX_OUTPUT];
-    BYTE buf2_stack[TRANSFORM_MAX_OUTPUT];
-    BYTE *buf1 = buf1_stack;
-    BYTE *buf2 = buf2_stack;
-    BOOL heap_alloc = FALSE;
-
-    if (buf_size > TRANSFORM_MAX_OUTPUT) {
-        BYTE *h1 = (BYTE *)crypto_heap_alloc(buf_size);
-        BYTE *h2 = (BYTE *)crypto_heap_alloc(buf_size);
-        if (h1 && h2) {
-            buf1 = h1;
-            buf2 = h2;
-            heap_alloc = TRUE;
-        } else {
-            /* Cleanup partial alloc and fall back to stack */
-            if (h1) crypto_heap_free(h1);
-            if (h2) crypto_heap_free(h2);
-            buf_size = TRANSFORM_MAX_OUTPUT;
-        }
+    BYTE *buf1 = (BYTE *)transform_heap_alloc(buf_size);
+    BYTE *buf2 = (BYTE *)transform_heap_alloc(buf_size);
+    if (!buf1 || !buf2) {
+        if (buf1) transform_heap_free(buf1);
+        if (buf2) transform_heap_free(buf2);
+        return STATUS_NO_MEMORY;
     }
     DWORD cur_len;
 
@@ -627,14 +638,16 @@ NTSTATUS transform_send(const BYTE *plaintext, DWORD len,
     /* Zero intermediate buffers */
     spec_memset(buf1, 0, buf_size);
     spec_memset(buf2, 0, buf_size);
-    if (heap_alloc) { crypto_heap_free(buf1); crypto_heap_free(buf2); }
+    transform_heap_free(buf1);
+    transform_heap_free(buf2);
 
     return STATUS_SUCCESS;
 
 transform_send_fail:
     spec_memset(buf1, 0, buf_size);
     spec_memset(buf2, 0, buf_size);
-    if (heap_alloc) { crypto_heap_free(buf1); crypto_heap_free(buf2); }
+    transform_heap_free(buf1);
+    transform_heap_free(buf2);
     return STATUS_UNSUCCESSFUL;
 }
 
@@ -650,29 +663,17 @@ NTSTATUS transform_recv(const BYTE *encoded, DWORD len,
     if (!encoded || len == 0 || !session_key || !cfg || !output || !output_len)
         return STATUS_INVALID_PARAMETER;
 
-    /* Determine buffer size: use stack for small payloads, heap for large */
+    /* Use heap scratch buffers; see transform_send for PIC stack rationale. */
     DWORD buf_size = TRANSFORM_MAX_OUTPUT;
     DWORD needed = len + 4096; /* encoded input + overhead */
     if (needed > buf_size) buf_size = needed;
 
-    BYTE buf1_stack[TRANSFORM_MAX_OUTPUT];
-    BYTE buf2_stack[TRANSFORM_MAX_OUTPUT];
-    BYTE *buf1 = buf1_stack;
-    BYTE *buf2 = buf2_stack;
-    BOOL heap_alloc = FALSE;
-
-    if (buf_size > TRANSFORM_MAX_OUTPUT) {
-        BYTE *h1 = (BYTE *)crypto_heap_alloc(buf_size);
-        BYTE *h2 = (BYTE *)crypto_heap_alloc(buf_size);
-        if (h1 && h2) {
-            buf1 = h1;
-            buf2 = h2;
-            heap_alloc = TRUE;
-        } else {
-            if (h1) crypto_heap_free(h1);
-            if (h2) crypto_heap_free(h2);
-            buf_size = TRANSFORM_MAX_OUTPUT;
-        }
+    BYTE *buf1 = (BYTE *)transform_heap_alloc(buf_size);
+    BYTE *buf2 = (BYTE *)transform_heap_alloc(buf_size);
+    if (!buf1 || !buf2) {
+        if (buf1) transform_heap_free(buf1);
+        if (buf2) transform_heap_free(buf2);
+        return STATUS_NO_MEMORY;
     }
     DWORD cur_len;
 
@@ -712,13 +713,15 @@ NTSTATUS transform_recv(const BYTE *encoded, DWORD len,
     /* Zero intermediate buffers */
     spec_memset(buf1, 0, buf_size);
     spec_memset(buf2, 0, buf_size);
-    if (heap_alloc) { crypto_heap_free(buf1); crypto_heap_free(buf2); }
+    transform_heap_free(buf1);
+    transform_heap_free(buf2);
 
     return STATUS_SUCCESS;
 
 transform_recv_fail:
     spec_memset(buf1, 0, buf_size);
     spec_memset(buf2, 0, buf_size);
-    if (heap_alloc) { crypto_heap_free(buf1); crypto_heap_free(buf2); }
+    transform_heap_free(buf1);
+    transform_heap_free(buf2);
     return STATUS_UNSUCCESSFUL;
 }

@@ -20,9 +20,10 @@ Thumbs.db
 *.swo
 
 # Build output
-implant/build/*.bin
-implant/build/*.exe
-implant/build/*.o
+implant/build/
 
 # Test executables
 implant/tests/*.exe
+
+# Local automation state
+.claude/worktrees/

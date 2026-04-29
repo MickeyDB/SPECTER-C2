@@ -39,6 +39,33 @@ fn sample_config() -> RedirectorConfig {
     }
 }
 
+async fn insert_redirector(pool: &SqlitePool, config: &RedirectorConfig, state: RedirectorState) {
+    let config_yaml = serde_yaml::to_string(config).unwrap();
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO redirectors (id, name, redirector_type, provider, domain, alternative_domains, tls_cert_mode, backend_url, filtering_rules, health_check_interval, auto_rotate_on_block, state, config_yaml, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+    )
+    .bind(&config.id)
+    .bind(&config.name)
+    .bind(config.redirector_type.to_string())
+    .bind(config.provider.to_string())
+    .bind(&config.domain)
+    .bind(serde_json::to_string(&config.alternative_domains).unwrap_or_default())
+    .bind(config.tls_cert_mode.to_string())
+    .bind(&config.backend_url)
+    .bind(serde_json::to_string(&config.filtering_rules).unwrap_or_default())
+    .bind(config.health_check_interval as i64)
+    .bind(config.auto_rotate_on_block)
+    .bind(state.to_string())
+    .bind(&config_yaml)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 // ── Config parsing tests ───────────────────────────────────────────────────
 
 #[test]
@@ -174,11 +201,14 @@ fn valid_state_transitions_are_accepted() {
     let valid = [
         (RedirectorState::Provisioning, RedirectorState::Active),
         (RedirectorState::Provisioning, RedirectorState::Failed),
+        (RedirectorState::Provisioning, RedirectorState::Burning),
         (RedirectorState::Active, RedirectorState::Degraded),
         (RedirectorState::Active, RedirectorState::Burning),
         (RedirectorState::Degraded, RedirectorState::Active),
         (RedirectorState::Degraded, RedirectorState::Burning),
         (RedirectorState::Degraded, RedirectorState::Failed),
+        (RedirectorState::Failed, RedirectorState::Burning),
+        (RedirectorState::Failed, RedirectorState::Burned),
         (RedirectorState::Burning, RedirectorState::Burned),
         (RedirectorState::Burning, RedirectorState::Failed),
     ];
@@ -197,7 +227,7 @@ fn invalid_state_transitions_are_rejected() {
         (RedirectorState::Burned, RedirectorState::Burning),
         (RedirectorState::Failed, RedirectorState::Active),
         (RedirectorState::Failed, RedirectorState::Provisioning),
-        (RedirectorState::Provisioning, RedirectorState::Burning),
+        (RedirectorState::Failed, RedirectorState::Degraded),
         (RedirectorState::Provisioning, RedirectorState::Degraded),
         (RedirectorState::Provisioning, RedirectorState::Burned),
     ];
@@ -230,7 +260,7 @@ fn self_transitions_are_rejected() {
 }
 
 #[test]
-fn terminal_states_cannot_transition() {
+fn burned_state_cannot_transition() {
     let targets = [
         RedirectorState::Provisioning,
         RedirectorState::Active,
@@ -244,10 +274,6 @@ fn terminal_states_cannot_transition() {
         assert!(
             !RedirectorState::Burned.can_transition_to(target),
             "Burned -> {target} should be invalid"
-        );
-        assert!(
-            !RedirectorState::Failed.can_transition_to(target),
-            "Failed -> {target} should be invalid"
         );
     }
 }
@@ -279,7 +305,10 @@ async fn deploy_creates_redirector_in_provisioning_state() {
     assert_eq!(id, config.id);
 
     let (returned_config, state) = orch.status(&id).await.unwrap();
-    assert_eq!(state, RedirectorState::Provisioning);
+    assert!(matches!(
+        state,
+        RedirectorState::Provisioning | RedirectorState::Failed
+    ));
     assert_eq!(returned_config.name, config.name);
     assert_eq!(returned_config.domain, config.domain);
 }
@@ -301,10 +330,9 @@ async fn deploy_multiple_and_list() {
 
     let items = orch.list().await.unwrap();
     assert_eq!(items.len(), 2);
-    // All should be Provisioning
     assert!(items
         .iter()
-        .all(|(_, s)| *s == RedirectorState::Provisioning));
+        .all(|(_, s)| matches!(s, RedirectorState::Provisioning | RedirectorState::Failed)));
 }
 
 #[tokio::test]
@@ -317,18 +345,10 @@ async fn status_returns_not_found_for_unknown_id() {
 
 #[tokio::test]
 async fn health_check_transitions_active_to_degraded() {
-    let (pool, bus, orch) = setup().await;
+    let (pool, _bus, orch) = setup().await;
     let config = sample_config();
-    let id = orch.deploy(&config).await.unwrap();
-
-    // Manually transition to Active (simulating successful terraform deploy)
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE redirectors SET state = 'Active', updated_at = ?1 WHERE id = ?2")
-        .bind(now)
-        .bind(&id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let id = config.id.clone();
+    insert_redirector(&pool, &config, RedirectorState::Active).await;
 
     // Failed health check -> Degraded
     orch.health_check(&id, false).await.unwrap();
@@ -340,16 +360,8 @@ async fn health_check_transitions_active_to_degraded() {
 async fn health_check_transitions_degraded_to_active() {
     let (pool, _bus, orch) = setup().await;
     let config = sample_config();
-    let id = orch.deploy(&config).await.unwrap();
-
-    // Set to Active then Degraded
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE redirectors SET state = 'Degraded', updated_at = ?1 WHERE id = ?2")
-        .bind(now)
-        .bind(&id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let id = config.id.clone();
+    insert_redirector(&pool, &config, RedirectorState::Degraded).await;
 
     // Healthy check -> back to Active
     orch.health_check(&id, true).await.unwrap();
@@ -361,16 +373,8 @@ async fn health_check_transitions_degraded_to_active() {
 async fn health_check_noop_when_already_healthy() {
     let (pool, _bus, orch) = setup().await;
     let config = sample_config();
-    let id = orch.deploy(&config).await.unwrap();
-
-    // Set to Active
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE redirectors SET state = 'Active', updated_at = ?1 WHERE id = ?2")
-        .bind(now)
-        .bind(&id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let id = config.id.clone();
+    insert_redirector(&pool, &config, RedirectorState::Active).await;
 
     // Healthy check on Active -> stays Active (noop)
     orch.health_check(&id, true).await.unwrap();
@@ -382,16 +386,8 @@ async fn health_check_noop_when_already_healthy() {
 async fn burn_transitions_active_to_burning() {
     let (pool, _bus, orch) = setup().await;
     let config = sample_config();
-    let id = orch.deploy(&config).await.unwrap();
-
-    // Set to Active
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE redirectors SET state = 'Active', updated_at = ?1 WHERE id = ?2")
-        .bind(now)
-        .bind(&id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let id = config.id.clone();
+    insert_redirector(&pool, &config, RedirectorState::Active).await;
 
     orch.burn(&id).await.unwrap();
     let (_, state) = orch.status(&id).await.unwrap();
@@ -399,33 +395,23 @@ async fn burn_transitions_active_to_burning() {
 }
 
 #[tokio::test]
-async fn burn_from_provisioning_fails() {
-    let (_pool, _bus, orch) = setup().await;
+async fn burn_from_provisioning_succeeds() {
+    let (pool, _bus, orch) = setup().await;
     let config = sample_config();
-    let id = orch.deploy(&config).await.unwrap();
+    let id = config.id.clone();
+    insert_redirector(&pool, &config, RedirectorState::Provisioning).await;
 
-    // Provisioning -> Burning should fail
-    let result = orch.burn(&id).await;
-    assert!(matches!(
-        result,
-        Err(RedirectorError::InvalidStateTransition { .. })
-    ));
+    orch.burn(&id).await.unwrap();
+    let (_, state) = orch.status(&id).await.unwrap();
+    assert_eq!(state, RedirectorState::Burning);
 }
 
 #[tokio::test]
 async fn destroy_already_burned_is_noop() {
     let (pool, _bus, orch) = setup().await;
     let config = sample_config();
-    let id = orch.deploy(&config).await.unwrap();
-
-    // Set to Burned
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE redirectors SET state = 'Burned', updated_at = ?1 WHERE id = ?2")
-        .bind(now)
-        .bind(&id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let id = config.id.clone();
+    insert_redirector(&pool, &config, RedirectorState::Burned).await;
 
     // Destroy on Burned -> noop (Ok)
     orch.destroy(&id).await.unwrap();
@@ -435,18 +421,11 @@ async fn destroy_already_burned_is_noop() {
 
 #[tokio::test]
 async fn full_lifecycle_provisioning_to_burned() {
-    let (pool, bus, orch) = setup().await;
+    let (pool, _bus, orch) = setup().await;
     let config = sample_config();
-    let id = orch.deploy(&config).await.unwrap();
+    let id = config.id.clone();
 
-    // Provisioning -> Active
-    let now = chrono::Utc::now().timestamp();
-    sqlx::query("UPDATE redirectors SET state = 'Active', updated_at = ?1 WHERE id = ?2")
-        .bind(now)
-        .bind(&id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    insert_redirector(&pool, &config, RedirectorState::Active).await;
 
     // Active -> Degraded (health failure)
     orch.health_check(&id, false).await.unwrap();

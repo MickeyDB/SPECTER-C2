@@ -18,8 +18,8 @@ use tempfile::TempDir;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use specter_server::builder::{
-    builder_init, BuilderConfig, ChannelConfig, EvasionFlags, ObfuscationSettings,
-    OutputFormat, SleepConfig,
+    builder_init, BuilderConfig, ChannelConfig, EvasionFlags, ObfuscationSettings, OutputFormat,
+    SleepConfig,
 };
 use specter_server::profile::parse_profile;
 use specter_server::profile::schema::Profile;
@@ -68,8 +68,8 @@ fn test_channels() -> Vec<ChannelConfig> {
 /// Create a fake PIC blob (>= 64 bytes so the PIC key derivation path is used).
 fn fake_pic_blob() -> Vec<u8> {
     let mut blob = vec![0x90u8; 128]; // NOP sled
-    // Implants derive the config key from SHA256(pic[0..64]).
-    // Use deterministic bytes so we can reproduce the key in tests.
+                                      // Implants derive the config key from SHA256(pic[0..64]).
+                                      // Use deterministic bytes so we can reproduce the key in tests.
     for (i, b) in blob.iter_mut().enumerate().take(64) {
         *b = (i as u8).wrapping_mul(7).wrapping_add(0x41);
     }
@@ -128,8 +128,8 @@ fn decrypt_config_blob(config_blob: &[u8], key: &[u8; 32]) -> Vec<u8> {
     let tag = &config_blob[24..40];
     let ciphertext = &config_blob[40..40 + data_size];
 
-    // Sanity: version must be 1
-    assert_eq!(_version, 1, "unexpected config version");
+    // Sanity: version must match CONFIG_VERSION v2
+    assert_eq!(_version, 2, "unexpected config version");
     // Magic should not be the default (builder randomizes it per build)
     // but we don't assert that because the no-PIC fallback uses the default.
     let _ = magic;
@@ -145,10 +145,15 @@ fn decrypt_config_blob(config_blob: &[u8], key: &[u8; 32]) -> Vec<u8> {
     let cipher = ChaCha20Poly1305::new_from_slice(key).expect("invalid key length");
 
     cipher
-        .decrypt(nonce, Payload { msg: ct_with_tag.as_slice(), aad })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ct_with_tag.as_slice(),
+                aad,
+            },
+        )
         .expect("AEAD decryption failed -- key derivation mismatch or corrupted config")
 }
-
 
 // ── TLV field IDs (must match config_gen.rs) ────────────────────────────────
 
@@ -176,17 +181,19 @@ fn parse_tlv(plaintext: &[u8]) -> Vec<TlvEntry> {
     let mut entries = Vec::new();
     let mut pos = 0;
     while pos < plaintext.len() {
-        assert!(
-            pos + 3 <= plaintext.len(),
-            "truncated TLV at offset {pos}"
-        );
+        assert!(pos + 5 <= plaintext.len(), "truncated TLV at offset {pos}");
         let fid = plaintext[pos];
-        let len = u16::from_le_bytes([plaintext[pos + 1], plaintext[pos + 2]]) as usize;
-        pos += 3;
+        let len = u32::from_le_bytes([
+            plaintext[pos + 1],
+            plaintext[pos + 2],
+            plaintext[pos + 3],
+            plaintext[pos + 4],
+        ]) as usize;
+        pos += 5;
         assert!(
             pos + len <= plaintext.len(),
             "TLV entry at offset {} claims length {} but only {} bytes remain",
-            pos - 3,
+            pos - 5,
             len,
             plaintext.len() - pos
         );
@@ -272,9 +279,7 @@ fn test_raw_payload_builds_and_has_config() {
         b"SPECPICBLOB\x00",
     ];
     for marker in known_markers {
-        let found = payload
-            .windows(marker.len())
-            .any(|w| w == *marker);
+        let found = payload.windows(marker.len()).any(|w| w == *marker);
         assert!(
             !found,
             "marker {:?} should not appear in the final payload",
@@ -319,8 +324,8 @@ fn test_config_decryptable_with_pic_key() {
     //
     // Strategy: try interpreting the 4 bytes at offset (payload.len() - 4 - N)
     // as config_len and see if it equals N. We iterate from the end.
-    let config_blob = find_config_blob_from_tail(payload)
-        .expect("could not locate config blob in payload");
+    let config_blob =
+        find_config_blob_from_tail(payload).expect("could not locate config blob in payload");
 
     // Derive the key the same way the implant does
     let key = derive_pic_key(&pic);
@@ -330,7 +335,10 @@ fn test_config_decryptable_with_pic_key() {
 
     // Verify the plaintext is valid TLV
     let entries = parse_tlv(&plaintext);
-    assert!(!entries.is_empty(), "decrypted config should have TLV entries");
+    assert!(
+        !entries.is_empty(),
+        "decrypted config should have TLV entries"
+    );
 }
 
 /// Scan from the tail of the payload to find the config blob.
@@ -391,8 +399,8 @@ fn test_config_tlv_fields_correct() {
         .unwrap();
 
     let payload = &result.payload;
-    let config_blob = find_config_blob_from_tail(payload)
-        .expect("could not locate config blob in payload");
+    let config_blob =
+        find_config_blob_from_tail(payload).expect("could not locate config blob in payload");
 
     let key = derive_pic_key(&pic);
     let plaintext = decrypt_config_blob(config_blob, &key);
@@ -422,7 +430,11 @@ fn test_config_tlv_fields_correct() {
         !sleep_entries.is_empty(),
         "SLEEP_INTERVAL field must be present"
     );
-    assert_eq!(sleep_entries[0].data.len(), 8, "SLEEP_INTERVAL should be 8 bytes (u64)");
+    assert_eq!(
+        sleep_entries[0].data.len(),
+        8,
+        "SLEEP_INTERVAL should be 8 bytes (u64)"
+    );
     let interval = u64::from_le_bytes(sleep_entries[0].data[..8].try_into().unwrap());
     assert_eq!(interval, 120, "SLEEP_INTERVAL should be 120");
 
@@ -459,8 +471,7 @@ fn test_config_tlv_fields_correct() {
     );
     assert_eq!(implant_pk_entries[0].data.len(), 32);
     assert_eq!(
-        implant_pk_entries[0].data,
-        &result.implant_pubkey,
+        implant_pk_entries[0].data, &result.implant_pubkey,
         "IMPLANT_PUBKEY in TLV should match BuildResult"
     );
 
@@ -481,16 +492,11 @@ fn test_config_tlv_fields_correct() {
         "PROFILE_BLOB should not be empty"
     );
 
-    // Verify evasion flags are present (default has module_overloading=true)
+    // Default evasion flags are all off — TLV omitted when bitfield is zero
     let evasion_entries = find_tlv_entries(&entries, config_field::EVASION_FLAGS);
     assert!(
-        !evasion_entries.is_empty(),
-        "EVASION_FLAGS field must be present when default flags are non-zero"
-    );
-    assert_eq!(
-        evasion_entries[0].data,
-        &[0x01],
-        "default evasion should have module_overloading bit set"
+        evasion_entries.is_empty(),
+        "EVASION_FLAGS should be omitted when no evasion bits are set"
     );
 }
 
@@ -591,8 +597,8 @@ fn test_markers_scrubbed_after_obfuscation() {
             &SleepConfig::default(),
             None,
             EvasionFlags::default(),
-            true,  // debug_mode
-            true,  // skip_anti_analysis
+            true, // debug_mode
+            true, // skip_anti_analysis
             &ObfuscationSettings::default(),
         )
         .unwrap();
@@ -612,9 +618,7 @@ fn test_markers_scrubbed_after_obfuscation() {
     ];
 
     for (marker, name) in markers {
-        let found = payload
-            .windows(marker.len())
-            .any(|w| w == *marker);
+        let found = payload.windows(marker.len()).any(|w| w == *marker);
         assert!(
             !found,
             "marker {name} should not appear in the final payload after obfuscation"
@@ -653,8 +657,8 @@ fn test_wire_format_roundtrip() {
 
     // Extract implant private key from the config TLV so we can simulate ECDH
     let payload = &result.payload;
-    let config_blob = find_config_blob_from_tail(payload)
-        .expect("could not locate config blob in payload");
+    let config_blob =
+        find_config_blob_from_tail(payload).expect("could not locate config blob in payload");
     let pic_key = derive_pic_key(&pic);
     let plaintext = decrypt_config_blob(config_blob, &pic_key);
     let entries = parse_tlv(&plaintext);

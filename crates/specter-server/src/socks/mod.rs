@@ -432,10 +432,9 @@ impl SocksRelay {
                 }
                 match msg[0] {
                     MSG_DATA => {
-                        if msg.len() > 1
-                            && write_half.write_all(&msg[1..]).await.is_err() {
-                                break;
-                            }
+                        if msg.len() > 1 && write_half.write_all(&msg[1..]).await.is_err() {
+                            break;
+                        }
                     }
                     MSG_CLOSE => break,
                     _ => {}

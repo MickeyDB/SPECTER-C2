@@ -62,6 +62,8 @@ message EvasionConfig {
   bool pdata_registration = 2;
   // Use NtContinue to transfer execution with a synthetic clean call stack.
   bool ntcontinue_entry = 3;
+  // Patch EtwEventWrite in user-mode ntdll (opt-in; does NOT defeat kernel ETW-TI).
+  bool etw_usermode_patch = 4;
 }
 
 message YaraWarning {

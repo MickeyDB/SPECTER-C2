@@ -140,7 +140,6 @@ pub fn fuzzy_search(pattern: &str, items: &[(usize, &str)]) -> Vec<FuzzyMatch> {
     if pattern.is_empty() {
         return items
             .iter()
-            
             .map(|&(index, _)| FuzzyMatch {
                 index,
                 score: 0,

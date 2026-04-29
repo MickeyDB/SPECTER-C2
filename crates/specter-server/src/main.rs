@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -32,6 +33,10 @@ struct Cli {
     #[arg(long)]
     web_ui_dir: Option<String>,
 
+    /// Directory containing payload builder artifacts (specter.bin and PE stubs)
+    #[arg(long, env = "SPECTER_TEMPLATE_DIR")]
+    template_dir: Option<String>,
+
     /// Generate an operator mTLS certificate bundle and exit.
     /// Writes operator.pem, operator-key.pem, ca.pem, and operator.p12 to the output dir.
     #[arg(long, value_name = "USERNAME")]
@@ -40,6 +45,33 @@ struct Cli {
     /// Output directory for --init-cert files (default: current directory)
     #[arg(long, default_value = ".")]
     cert_out: String,
+}
+
+fn resolve_template_dir(cli_value: Option<String>) -> PathBuf {
+    if let Some(value) = cli_value {
+        return value.into();
+    }
+
+    let release_config = PathBuf::from("/config/implant-build");
+    if release_config.exists() {
+        return release_config;
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("implant-build");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+
+    let dev_dir = PathBuf::from("implant/build");
+    if dev_dir.exists() {
+        return dev_dir;
+    }
+
+    PathBuf::from("implant-build")
 }
 
 #[tokio::main]
@@ -62,10 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Generating operator certificate for '{username}'");
 
         let pool = specter_server::db::init_db(&cli.db_path).await?;
-        let master_key =
-            specter_server::auth::ca::derive_master_key(&cli.db_path);
-        let ca =
-            specter_server::auth::ca::EmbeddedCA::init(pool.clone(), &master_key).await?;
+        let master_key = specter_server::auth::ca::derive_master_key(&cli.db_path);
+        let ca = specter_server::auth::ca::EmbeddedCA::init(pool.clone(), &master_key).await?;
 
         let bundle = ca
             .issue_operator_cert(username, "ADMIN", 365)
@@ -109,6 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db_path: cli.db_path,
         dev_mode: cli.dev_mode,
         web_ui_dir: cli.web_ui_dir,
+        template_dir: resolve_template_dir(cli.template_dir),
     })
     .await
 }

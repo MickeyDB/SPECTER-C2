@@ -101,6 +101,8 @@ See component-specific docs:
 - [Implant](./implant.md)
 - [Protocols & API](./protocols.md)
 - [Operations Guide](./operations.md)
+- [Evasion Playbook](./evasion-playbook.md)
+- [OPSEC Telemetry Review](./opsec-telemetry-review.md)
 
 ---
 

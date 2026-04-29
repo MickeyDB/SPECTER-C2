@@ -25,6 +25,8 @@
  */
 typedef DWORD (*MODULE_ENTRY)(MODULE_BUS_API *api, BYTE *args, DWORD args_len);
 
+#define MODULE_ENTRYPOINT __attribute__((section(".text.entry")))
+
 /* ------------------------------------------------------------------ */
 /*  Module argument blob format                                        */
 /*                                                                     */

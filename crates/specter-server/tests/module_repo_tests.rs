@@ -321,7 +321,15 @@ async fn package_module_decrypts_correctly() {
     let ciphertext_and_tag = &enc_payload[12..];
 
     let cipher = ChaCha20Poly1305::new_from_slice(&derived_key).unwrap();
-    let decrypted = cipher.decrypt(nonce, ciphertext_and_tag).unwrap();
+    let decrypted = cipher
+        .decrypt(
+            nonce,
+            chacha20poly1305::aead::Payload {
+                msg: ciphertext_and_tag,
+                aad: &package[..48],
+            },
+        )
+        .unwrap();
 
     assert_eq!(
         decrypted, original_blob,

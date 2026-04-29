@@ -23,6 +23,7 @@ import {
 import { specterClient } from '@/lib/client'
 import type { RedirectorInfo } from '@/gen/specter/v1/azure_pb'
 import type { ProfileInfo } from '@/gen/specter/v1/profiles_pb'
+import type { Listener } from '@/gen/specter/v1/listeners_pb'
 import { create } from '@bufbuild/protobuf'
 import {
   DeployRedirectorRequestSchema,
@@ -697,12 +698,12 @@ export function Redirectors() {
       }
       if (listenersRes.status === 'fulfilled') {
         setListeners(
-          (listenersRes.value.listeners || []).map((l: any) => ({
+          (listenersRes.value.listeners || []).map((l: Listener) => ({
             id: l.id || '',
             name: l.name || '',
             port: Number(l.port) || 0,
             protocol: l.protocol || 'http',
-            status: l.status || '',
+            status: String(l.status || ''),
           }))
         )
       }

@@ -790,9 +790,7 @@ fn format_timestamp(ts: i64) -> String {
             .unwrap_or_else(Utc::now)
     } else {
         // seconds
-        Utc.timestamp_opt(ts, 0)
-            .single()
-            .unwrap_or_else(Utc::now)
+        Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now)
     };
     dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }

@@ -6,8 +6,7 @@
 //! - High-priority task completion (configurable)
 
 /// Notification priority levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum NotifyLevel {
     /// No notifications.
     Off,
@@ -19,7 +18,6 @@ pub enum NotifyLevel {
     /// All events including task queued.
     Verbose,
 }
-
 
 impl NotifyLevel {
     pub fn label(self) -> &'static str {

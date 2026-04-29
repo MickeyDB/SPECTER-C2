@@ -240,7 +240,7 @@ static DWORD __attribute__((ms_abi)) guardian_thread_entry(PVOID param) {
 
     /* Call the module entry point */
     PIC_ENTRY_FN entry = (PIC_ENTRY_FN)gp->entry_point;
-    DWORD result = entry(gp->bus_api, NULL, 0);
+    DWORD result = entry(gp->bus_api, gp->module->args, gp->module->args_len);
 
     /* Module returned normally — mark completed */
     if (gp->module->status == MODULE_STATUS_RUNNING)

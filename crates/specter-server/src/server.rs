@@ -35,6 +35,40 @@ pub struct ServerConfig {
     pub dev_mode: bool,
     /// Optional path to the Web UI static assets directory (web/dist/).
     pub web_ui_dir: Option<String>,
+    /// Directory containing payload builder artifacts such as specter.bin.
+    pub template_dir: std::path::PathBuf,
+}
+
+fn validate_template_dir(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !dir.exists() {
+        return Err(format!(
+            "payload builder artifact root does not exist: {} (set --template-dir or SPECTER_TEMPLATE_DIR)",
+            dir.display()
+        )
+        .into());
+    }
+    if !dir.is_dir() {
+        return Err(format!(
+            "payload builder artifact root is not a directory: {}",
+            dir.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn describe_payload_artifacts(builder: &crate::builder::PayloadBuilder) -> String {
+    let mut formats: Vec<_> = builder
+        .available_formats()
+        .into_iter()
+        .map(|format| format.as_str().to_string())
+        .collect();
+    formats.sort();
+    if formats.is_empty() {
+        "none".to_string()
+    } else {
+        formats.join(", ")
+    }
 }
 
 pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -95,10 +129,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         tracing::info!("Per-listener X25519 keys enabled (no listeners with keypairs yet)");
     } else {
         for (lid, pubkey) in &listener_pubkeys {
-            tracing::info!(
-                "Listener {lid} X25519 public key: {}",
-                hex::encode(pubkey)
-            );
+            tracing::info!("Listener {lid} X25519 public key: {}", hex::encode(pubkey));
         }
     }
 
@@ -141,14 +172,32 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
     webhook_manager.start_forwarding(event_bus.subscribe());
     tracing::info!("Webhook event forwarding started");
 
-    // 9. Payload builder — loads specter.bin and template stubs from implant/build/
+    // 9. Payload builder — loads specter.bin and template stubs from configured artifact root.
+    validate_template_dir(&cfg.template_dir)?;
     let builder_config = crate::builder::BuilderConfig {
-        template_dir: std::path::PathBuf::from("implant/build"),
+        template_dir: cfg.template_dir.clone(),
     };
     let payload_builder = Arc::new(
         crate::builder::builder_init(&builder_config)
-            .expect("Failed to initialize payload builder"),
+            .map_err(|e| {
+                format!(
+                    "failed to initialize payload builder from '{}': {e}",
+                    cfg.template_dir.display()
+                )
+            })?
+            .with_module_signing_key(signing_pubkey),
     );
+    tracing::info!(
+        "Payload builder artifact root: {} (available formats: {})",
+        cfg.template_dir.display(),
+        describe_payload_artifacts(&payload_builder)
+    );
+    if !payload_builder.has_format(crate::builder::OutputFormat::RawShellcode) {
+        tracing::warn!(
+            "Payload builder artifact root '{}' has no specter.bin; raw PIC payload builds will be unavailable until the implant is built or SPECTER_TEMPLATE_DIR/--template-dir points at the artifact store",
+            cfg.template_dir.display()
+        );
+    }
 
     // 10. gRPC server with auth interceptor + gRPC-Web support
     let mut grpc_service = SpecterGrpcService::new(
@@ -174,9 +223,10 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
     }
 
     // 10. Redirector orchestrator
-    let redirector_orchestrator = Arc::new(
-        crate::redirector::RedirectorOrchestrator::new(pool.clone(), Arc::clone(&event_bus)),
-    );
+    let redirector_orchestrator = Arc::new(crate::redirector::RedirectorOrchestrator::new(
+        pool.clone(),
+        Arc::clone(&event_bus),
+    ));
     grpc_service = grpc_service.with_redirector_orchestrator(Arc::clone(&redirector_orchestrator));
 
     // CORS layer for gRPC-Web browser requests
@@ -225,7 +275,9 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
                                 tracing::error!("Failed to list operators: {e}");
                                 return (
                                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                    axum::Json(serde_json::json!({"error": "Failed to list operators"})),
+                                    axum::Json(
+                                        serde_json::json!({"error": "Failed to list operators"}),
+                                    ),
                                 );
                             }
                         };
@@ -250,7 +302,9 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
                                 tracing::warn!("mTLS auth failed: {e}");
                                 (
                                     axum::http::StatusCode::UNAUTHORIZED,
-                                    axum::Json(serde_json::json!({"error": "Authentication failed"})),
+                                    axum::Json(
+                                        serde_json::json!({"error": "Authentication failed"}),
+                                    ),
                                 )
                             }
                         }
@@ -296,10 +350,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
                 .serve(grpc_addr)
                 .await?;
         } else {
-            server
-                .add_service(grpc_web_svc)
-                .serve(grpc_addr)
-                .await?;
+            server.add_service(grpc_web_svc).serve(grpc_addr).await?;
         }
     } else {
         // Dev-mode: plain gRPC with token auth
@@ -310,9 +361,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             interceptor,
         ));
 
-        let mut server = Server::builder()
-            .accept_http1(true)
-            .layer(cors);
+        let mut server = Server::builder().accept_http1(true).layer(cors);
 
         if let Some(ref dir) = cfg.web_ui_dir {
             let router = build_web_router(dir, None);
@@ -322,10 +371,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
                 .serve(grpc_addr)
                 .await?;
         } else {
-            server
-                .add_service(grpc_web_svc)
-                .serve(grpc_addr)
-                .await?;
+            server.add_service(grpc_web_svc).serve(grpc_addr).await?;
         }
     }
 

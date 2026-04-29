@@ -108,7 +108,7 @@ fn config_generation_decryptable_by_server() {
     let ciphertext = &blob[40..40 + data_size];
 
     assert_eq!(magic, 0x53504543, "default config magic should be SPEC");
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 
     // Derive the same shared secret the server would
     let implant_pubkey = PublicKey::from(gen.implant_pubkey);
@@ -130,16 +130,27 @@ fn config_generation_decryptable_by_server() {
     use chacha20poly1305::aead::Payload;
     let aad = &blob[0..8];
     let plaintext = cipher
-        .decrypt(nonce, Payload { msg: ct_with_tag.as_slice(), aad })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ct_with_tag.as_slice(),
+                aad,
+            },
+        )
         .expect("server should be able to decrypt implant config");
 
     // Walk TLV entries to verify structure
     let mut pos = 0;
     while pos < plaintext.len() {
-        assert!(pos + 3 <= plaintext.len(), "truncated TLV at offset {pos}");
+        assert!(pos + 5 <= plaintext.len(), "truncated TLV at offset {pos}");
         let _fid = plaintext[pos];
-        let len = u16::from_le_bytes([plaintext[pos + 1], plaintext[pos + 2]]) as usize;
-        pos += 3 + len;
+        let len = u32::from_le_bytes([
+            plaintext[pos + 1],
+            plaintext[pos + 2],
+            plaintext[pos + 3],
+            plaintext[pos + 4],
+        ]) as usize;
+        pos += 5 + len;
     }
     assert_eq!(pos, plaintext.len(), "TLV has trailing bytes");
 }
@@ -234,7 +245,8 @@ fn obfuscation_with_junk_insertion_modifies_size() {
     let result = obfuscate(&blob, &settings).unwrap();
 
     // Junk replaces int3 runs, so no consecutive 0xCC pairs should remain
-    let cc_pairs = result.blob
+    let cc_pairs = result
+        .blob
         .windows(2)
         .filter(|w| w[0] == 0xCC && w[1] == 0xCC)
         .count();

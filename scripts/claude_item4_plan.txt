@@ -1,0 +1,5 @@
+SPECTER-C2 Item 4: Phase 2.1 honest evasion docs + Phase 0.3 ETW gating.
+
+Scan implant/core/include/config.h (evasion flags), evasion_core.c, evasion/etw.c, docs/evasion-playbook.md.
+
+Output a 15-line max ACTION PLAN: (1) playbook sections to add (defeats / does not defeat for ETW user-mode, indirect syscalls, sleep encryption, stack spoofing, module overload), (2) new EVASION_FLAG bit value and where to call evasion_patch_etw, (3) builder/proto/web surfaces to keep default OFF.

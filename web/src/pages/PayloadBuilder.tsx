@@ -26,6 +26,7 @@ import type {
 } from '@/gen/specter/v1/builder_pb'
 import type { ProfileInfo } from '@/gen/specter/v1/profiles_pb'
 import type { RedirectorInfo } from '@/gen/specter/v1/azure_pb'
+import type { Listener } from '@/gen/specter/v1/listeners_pb'
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -234,10 +235,11 @@ export function PayloadBuilder() {
   const [controlFlowFlattening, setControlFlowFlattening] = useState(false)
   const [xorEncryption, setXorEncryption] = useState(false)
 
-  // Evasion
-  const [moduleOverloading, setModuleOverloading] = useState(true)
+  // Evasion (opt-in — heavier / more observable techniques)
+  const [moduleOverloading, setModuleOverloading] = useState(false)
   const [pdataRegistration, setPdataRegistration] = useState(false)
   const [ntcontinueEntry, setNtcontinueEntry] = useState(false)
+  const [etwUsermodePatch, setEtwUsermodePatch] = useState(false)
 
   // Development / Debug
   const [debugMode, setDebugMode] = useState(false)
@@ -247,7 +249,7 @@ export function PayloadBuilder() {
   const [building, setBuilding] = useState(false)
   const [buildResult, setBuildResult] = useState<GeneratePayloadResponse | null>(null)
 
-  let nextChannelId = channels.length > 0 ? Math.max(...channels.map((c) => c.id)) + 1 : 1
+  const nextChannelId = channels.length > 0 ? Math.max(...channels.map((c) => c.id)) + 1 : 1
 
   const fetchData = useCallback(async () => {
     try {
@@ -270,7 +272,7 @@ export function PayloadBuilder() {
         setRedirectors(redirRes.value.redirectors.filter((r) => r.state === 'Active'))
       }
       if (listRes.status === 'fulfilled') {
-        const items = listRes.value.listeners.map((l: any) => ({
+        const items = listRes.value.listeners.map((l: Listener) => ({
           id: l.id, name: l.name, port: l.port, protocol: l.protocol,
         }))
         setListeners(items)
@@ -286,7 +288,7 @@ export function PayloadBuilder() {
     } finally {
       setLoading(false)
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedProfile, selectedListener])
 
   useEffect(() => {
     fetchData()
@@ -371,6 +373,7 @@ export function PayloadBuilder() {
           moduleOverloading,
           pdataRegistration,
           ntcontinueEntry,
+          etwUsermodePatch,
         },
         debugMode,
         skipAntiAnalysis,
@@ -387,6 +390,7 @@ export function PayloadBuilder() {
     channels,
     selectedFormat,
     selectedProfile,
+    selectedListener,
     sleepInterval,
     sleepJitter,
     killDate,
@@ -399,6 +403,7 @@ export function PayloadBuilder() {
     moduleOverloading,
     pdataRegistration,
     ntcontinueEntry,
+    etwUsermodePatch,
     debugMode,
     skipAntiAnalysis,
     proxyTarget,
@@ -885,6 +890,21 @@ export function PayloadBuilder() {
                     <div className="text-xs text-specter-text">NtContinue Entry</div>
                     <div className="text-[10px] text-specter-muted">
                       Clean initial call stack via synthetic thread context transfer
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={etwUsermodePatch}
+                    onChange={(e) => setEtwUsermodePatch(e.target.checked)}
+                    className="rounded border-specter-border"
+                  />
+                  <div>
+                    <div className="text-xs text-specter-text">ETW user-mode patch</div>
+                    <div className="text-[10px] text-specter-warning">
+                      Patches EtwEventWrite in ntdll — user-mode only; does not defeat kernel ETW-TI
                     </div>
                   </div>
                 </label>

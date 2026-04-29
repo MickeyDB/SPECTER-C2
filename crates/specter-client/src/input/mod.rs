@@ -9,8 +9,7 @@
 use std::fmt;
 
 /// The four Vim-style input modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputMode {
     /// Default mode — navigate sessions, switch panels, trigger actions.
     #[default]
@@ -22,7 +21,6 @@ pub enum InputMode {
     /// Console input — interact with the active session (type commands, view output).
     Insert,
 }
-
 
 impl fmt::Display for InputMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

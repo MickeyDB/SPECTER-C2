@@ -25,30 +25,33 @@ SECTIONS
         *(.text.entry)
         *(.text$A)
 
-        /* B: All other code */
+        /* B: All other code. GCC/MinGW function sections may be named
+           .text$symbol, so collect them before read-only/mutable data. */
         *(.text$B)
+        *(.text$*)
         *(.text .text.*)
 
         /* C: Read-only data */
-        *(.rdata .rdata.* .text$C)
+        *(.rdata .rdata.* .rdata$* .text$C)
 
-        /* D: Initialized data */
-        . = ALIGN(16);
-        *(.data .data.* .text$D)
+        /* D: Initialized data. Keep mutable state page-separated so
+           loaders can make code/rodata RX and state RW. */
+        . = ALIGN(0x1000);
+        *(.data .data.* .data$* .text$D)
 
         /* E: Uninitialized data (BSS) */
         . = ALIGN(16);
-        *(.bss .bss.* .text$E COMMON)
+        *(.bss .bss.* .bss$* .text$E COMMON)
 
         /* F: Exception handling tables for RtlAddFunctionTable */
         . = ALIGN(8);
         __pdata_start = .;
-        *(.pdata)
+        *(.pdata .pdata$*)
         __pdata_end = .;
 
         . = ALIGN(8);
         __xdata_start = .;
-        *(.xdata)
+        *(.xdata .xdata$*)
         __xdata_end = .;
     }
 

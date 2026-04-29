@@ -4,7 +4,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 
 /// Module type identifiers matching the implant's MODULE_TYPE_* constants.
@@ -185,10 +185,22 @@ impl ModuleRepository {
         let cipher = ChaCha20Poly1305::new_from_slice(&derived_key)
             .map_err(|e| format!("Cipher init error: {e}"))?;
 
-        // Build AAD from the header fields (magic + version + type + encrypted_size placeholder)
-        // We'll compute the real AAD after knowing encrypted_size
+        let encrypted_size = (12 + blob.len() + 16) as u32;
+        let mut aad = Vec::with_capacity(48);
+        aad.extend_from_slice(&MODULE_MAGIC.to_le_bytes());
+        aad.extend_from_slice(&MODULE_VERSION.to_le_bytes());
+        aad.extend_from_slice(&module_type.as_u32().to_le_bytes());
+        aad.extend_from_slice(&encrypted_size.to_le_bytes());
+        aad.extend_from_slice(ephemeral_pubkey.as_bytes());
+
         let encrypted = cipher
-            .encrypt(nonce, blob.as_slice())
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: blob.as_slice(),
+                    aad: aad.as_slice(),
+                },
+            )
             .map_err(|e| format!("Encryption error: {e}"))?;
 
         // encrypted = ciphertext || tag (chacha20poly1305 crate appends tag)
@@ -204,8 +216,6 @@ impl ModuleRepository {
         enc_payload.extend_from_slice(&nonce_bytes);
         enc_payload.extend_from_slice(ciphertext);
         enc_payload.extend_from_slice(tag);
-
-        let encrypted_size = enc_payload.len() as u32;
 
         // Sign the encrypted payload with Ed25519
         let signature = self.signing_key.sign(&enc_payload);

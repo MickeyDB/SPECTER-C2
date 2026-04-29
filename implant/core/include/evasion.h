@@ -295,6 +295,27 @@ NTSTATUS evasion_module_overload(EVASION_CONTEXT *ctx, PVOID *mapped_base,
 NTSTATUS evasion_module_overload_finalize(EVASION_CONTEXT *ctx, PVOID base,
                                            SIZE_T size);
 
+/**
+ * Finalize a copied flat PIC blob with split permissions inside a larger
+ * mapped image view: code/rodata RX up to rw_offset, copied mutable payload
+ * tail RW, and unused mapped-image remainder read-only.
+ */
+NTSTATUS evasion_module_overload_finalize_split(EVASION_CONTEXT *ctx,
+                                                PVOID base,
+                                                SIZE_T mapped_size,
+                                                SIZE_T payload_size,
+                                                SIZE_T rw_offset);
+
+/**
+ * Locate an executable section inside the mapped sacrificial image that can
+ * hold the copied PIC payload while preserving the image headers.
+ */
+NTSTATUS evasion_module_overload_find_exec_range(PVOID mapped_base,
+                                                 SIZE_T mapped_size,
+                                                 SIZE_T payload_size,
+                                                 PVOID *exec_base,
+                                                 PSIZE_T exec_size);
+
 /* ------------------------------------------------------------------ */
 /*  .pdata registration API                                            */
 /* ------------------------------------------------------------------ */

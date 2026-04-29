@@ -65,8 +65,8 @@ COPY profiles/ /opt/specter/profiles/
 # Copy YARA rules if present (use wildcard to avoid failure if missing)
 COPY rule[s]/ /opt/specter/rules/
 
-# Data and config volumes
-RUN mkdir -p /data /config && chown specter:specter /data /config
+# Data, config, and payload artifact volumes
+RUN mkdir -p /data /config /config/implant-build && chown specter:specter /data /config
 VOLUME ["/data", "/config"]
 
 # Expose gRPC and HTTPS
@@ -75,4 +75,4 @@ EXPOSE 50051 443 80
 USER specter
 
 ENTRYPOINT ["specter-server"]
-CMD ["--data-dir", "/data", "--config-dir", "/config", "--web-dir", "/opt/specter/web"]
+CMD ["--db-path", "/data/specter.db", "--web-ui-dir", "/opt/specter/web", "--template-dir", "/config/implant-build"]
