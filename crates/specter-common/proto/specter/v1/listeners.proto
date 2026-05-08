@@ -18,6 +18,7 @@ message Listener {
   string protocol = 5;
   ListenerStatus status = 6;
   google.protobuf.Timestamp created_at = 7;
+  string profile_name = 8;
 }
 
 message CreateListenerRequest {
@@ -25,6 +26,7 @@ message CreateListenerRequest {
   string bind_address = 2;
   uint32 port = 3;
   string protocol = 4;
+  string profile_name = 5;
 }
 
 message CreateListenerResponse {

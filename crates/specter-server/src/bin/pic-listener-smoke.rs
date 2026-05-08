@@ -491,7 +491,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (server_secret, server_pubkey, listener_id) =
         if let Some(listener_manager) = listener_manager.as_ref() {
             let listener = listener_manager
-                .create_listener("pic-listener-smoke", &cli.bind, port as u32, "http")
+                .create_listener("pic-listener-smoke", &cli.bind, port as u32, "http", "")
                 .await?;
             let listener_pubkey = listener_manager
                 .get_listener_pubkey(&listener.id)

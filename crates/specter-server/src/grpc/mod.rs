@@ -296,7 +296,13 @@ impl SpecterService for SpecterGrpcService {
         let req = request.into_inner();
         let listener = self
             .listener_manager
-            .create_listener(&req.name, &req.bind_address, req.port, &req.protocol)
+            .create_listener(
+                &req.name,
+                &req.bind_address,
+                req.port,
+                &req.protocol,
+                &req.profile_name,
+            )
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -306,7 +312,12 @@ impl SpecterService for SpecterGrpcService {
                 &ctx.operator_id,
                 AuditAction::ListenerCreate,
                 &listener.id,
-                &serde_json::json!({"name": req.name, "port": req.port, "protocol": req.protocol}),
+                &serde_json::json!({
+                    "name": req.name,
+                    "port": req.port,
+                    "protocol": req.protocol,
+                    "profile_name": req.profile_name,
+                }),
             )
             .await;
 
@@ -1508,6 +1519,38 @@ impl SpecterService for SpecterGrpcService {
                 ))
             })?;
         let server_pubkey = x25519_dalek::PublicKey::from(server_pubkey_bytes);
+
+        let listener_profile: Option<(String, String)> =
+            sqlx::query_as("SELECT profile_name, status FROM listeners WHERE id = ?")
+                .bind(&req.listener_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+        if let Some((bound_profile, status)) = listener_profile {
+            let requested_profile = req.profile_name.trim();
+            let bound_profile = bound_profile.trim();
+            if bound_profile.is_empty() {
+                sqlx::query("UPDATE listeners SET profile_name = ? WHERE id = ?")
+                    .bind(requested_profile)
+                    .bind(&req.listener_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+
+                if status == "RUNNING" {
+                    tracing::warn!(
+                        listener_id = %req.listener_id,
+                        profile_name = %requested_profile,
+                        "Payload generation bound a running listener to a profile; restart the listener to activate profile routes"
+                    );
+                }
+            } else if bound_profile != requested_profile {
+                return Err(Status::invalid_argument(format!(
+                    "Selected listener is bound to profile '{bound_profile}', but payload uses '{requested_profile}'"
+                )));
+            }
+        }
 
         // Obfuscation settings
         let obf_settings = if let Some(ref o) = req.obfuscation {

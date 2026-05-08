@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { specterClient } from '@/lib/client'
 import type { Listener } from '@/gen/specter/v1/listeners_pb'
+import type { ProfileInfo } from '@/gen/specter/v1/profiles_pb'
 import {
   ListenerStatus,
   CreateListenerRequestSchema,
@@ -70,6 +71,7 @@ interface CreateDialogState {
   bindAddress: string
   port: number
   protocol: string
+  profileName: string
   creating: boolean
   error: string | null
 }
@@ -79,6 +81,7 @@ const initialCreateState: CreateDialogState = {
   bindAddress: '0.0.0.0',
   port: 443,
   protocol: 'https',
+  profileName: '',
   creating: false,
   error: null,
 }
@@ -102,11 +105,13 @@ function StatusBadge({ status }: { status: ListenerStatus }) {
 
 function CreateListenerDialog({
   state,
+  profiles,
   onClose,
   onUpdate,
   onCreate,
 }: {
   state: CreateDialogState
+  profiles: ProfileInfo[]
   onClose: () => void
   onUpdate: (patch: Partial<CreateDialogState>) => void
   onCreate: () => void
@@ -175,6 +180,23 @@ function CreateListenerDialog({
             </select>
           </div>
 
+          {/* Profile */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-specter-muted">C2 Profile</label>
+            <select
+              value={state.profileName}
+              onChange={(e) => onUpdate({ profileName: e.target.value })}
+              className="w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text focus:border-specter-accent focus:outline-none"
+            >
+              <option value="">Legacy / no profile</option>
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.name}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Error */}
           {state.error && (
             <div className="rounded border border-specter-danger/30 bg-specter-danger/10 px-3 py-2 text-xs text-specter-danger">
@@ -213,6 +235,7 @@ function CreateListenerDialog({
 
 export function Listeners() {
   const [listeners, setListeners] = useState<Listener[]>([])
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
@@ -224,8 +247,12 @@ export function Listeners() {
     try {
       setLoading(true)
       setError(null)
-      const res = await specterClient.listListeners({})
-      setListeners(res.listeners)
+      const [listenerRes, profileRes] = await Promise.all([
+        specterClient.listListeners({}),
+        specterClient.listProfiles({}),
+      ])
+      setListeners(listenerRes.listeners)
+      setProfiles(profileRes.profiles)
       setLastRefresh(new Date())
     } catch {
       setError('Unable to connect to teamserver')
@@ -244,7 +271,14 @@ export function Listeners() {
     if (!searchQuery) return listeners
     const q = searchQuery.toLowerCase()
     return listeners.filter((l) => {
-      const searchable = [l.name, l.bindAddress, String(l.port), l.protocol, statusLabel(l.status)]
+      const searchable = [
+        l.name,
+        l.bindAddress,
+        String(l.port),
+        l.protocol,
+        l.profileName,
+        statusLabel(l.status),
+      ]
         .join(' ')
         .toLowerCase()
       return searchable.includes(q)
@@ -262,6 +296,7 @@ export function Listeners() {
         bindAddress: createDialog.bindAddress,
         port: createDialog.port,
         protocol: createDialog.protocol,
+        profileName: createDialog.profileName,
       })
       const res = await specterClient.createListener(req)
       if (res.listener) {
@@ -412,6 +447,7 @@ export function Listeners() {
             <span className="w-36">Bind Address</span>
             <span className="w-20">Port</span>
             <span className="w-24">Protocol</span>
+            <span className="w-44">Profile</span>
             <span className="w-24">Status</span>
             <span className="flex-1">Created</span>
             <span className="w-24 text-right">Actions</span>
@@ -450,6 +486,11 @@ export function Listeners() {
                   <span className="rounded border border-specter-border px-1.5 py-0.5 text-[10px] font-medium uppercase text-specter-muted">
                     {listener.protocol}
                   </span>
+                </span>
+
+                {/* Profile */}
+                <span className="w-44 truncate font-mono text-xs text-specter-muted">
+                  {listener.profileName || 'legacy'}
                 </span>
 
                 {/* Status */}
@@ -501,6 +542,7 @@ export function Listeners() {
       {createDialog && (
         <CreateListenerDialog
           state={createDialog}
+          profiles={profiles}
           onClose={() => setCreateDialog(null)}
           onUpdate={(patch) =>
             setCreateDialog((prev) => (prev ? { ...prev, ...patch, error: null } : null))

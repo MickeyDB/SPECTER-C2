@@ -86,6 +86,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             .await?;
     }
 
+    let has_profile_name_col: bool = sqlx::query_scalar::<_, i32>(
+        "SELECT COUNT(*) FROM pragma_table_info('listeners') WHERE name = 'profile_name'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+
+    if !has_profile_name_col {
+        sqlx::query("ALTER TABLE listeners ADD COLUMN profile_name TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+
     // Add sleep_interval and sleep_jitter columns to sessions (idempotent)
     let has_sleep_col: bool = sqlx::query_scalar::<_, i32>(
         "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'sleep_interval'",

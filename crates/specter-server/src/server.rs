@@ -147,7 +147,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             cfg.http_port
         );
         let listener = listener_manager
-            .create_listener("default-http", &cfg.bind, cfg.http_port as u32, "http")
+            .create_listener("default-http", &cfg.bind, cfg.http_port as u32, "http", "")
             .await?;
         listener_manager
             .start_listener(&listener.id)
