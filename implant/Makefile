@@ -14,11 +14,9 @@ else
 endif
 
 ifdef BAREBONE
-  BAREBONE_FLAGS = -DSPECTER_BAREBONE -ffunction-sections -fdata-sections
-  BAREBONE_LDFLAGS = --gc-sections
+  BAREBONE_FLAGS = -DSPECTER_BAREBONE
 else
   BAREBONE_FLAGS =
-  BAREBONE_LDFLAGS =
 endif
 
 ifdef BAREBONE_MODULE_OVERLOAD
@@ -49,14 +47,15 @@ CFLAGS  = -Wall -Werror -Wno-unused-function -Os -fno-stack-protector \
           -funwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \
           -falign-labels=1 -falign-loops=1 -fno-common -nostdlib -nostdinc \
-          -ffreestanding -masm=intel -std=c11 -DWIN32_LEAN_AND_MEAN \
+          -ffreestanding -ffunction-sections -fdata-sections \
+          -masm=intel -std=c11 -DWIN32_LEAN_AND_MEAN \
           -mno-stack-arg-probe $(DEV_FLAGS) $(BAREBONE_FLAGS) \
           -Icore/include
 
 LDFLAGS = -T scripts/linker.ld -nostdlib --no-dynamic-linker --image-base=0 \
           --disable-auto-import --disable-runtime-pseudo-reloc \
           --sort-section=name \
-          -Map=build/specter.map $(BAREBONE_LDFLAGS)
+          -Map=build/specter.map --gc-sections
 
 SRC_DIR   = core/src
 EVA_DIR   = core/src/evasion
