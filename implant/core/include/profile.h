@@ -197,10 +197,11 @@ const char *profile_get_uri(PROFILE_CONFIG *cfg);
 
 /**
  * Build HTTP headers string from profile into output buffer.
- * Template variables like {{timestamp}} and {{random_hex(N)}} are expanded.
+ * Template variables like {{timestamp}}, {{random_hex(N)}}, and {{data}} are expanded.
  * Returns number of bytes written (not counting NUL), or 0 on error.
  */
-DWORD profile_build_headers(PROFILE_CONFIG *cfg, char *output, DWORD max_len);
+DWORD profile_build_headers(PROFILE_CONFIG *cfg, const BYTE *data, DWORD data_len,
+                             char *output, DWORD max_len);
 
 /**
  * Embed payload data into the HTTP body template per the profile's

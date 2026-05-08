@@ -10,7 +10,7 @@ use specter_common::proto::specter::v1::specter_service_server::SpecterServiceSe
 use crate::audit::AuditLog;
 use crate::auth::ca::{derive_master_key, EmbeddedCA};
 use crate::auth::interceptor::AuthInterceptor;
-use crate::auth::mtls::{build_mtls_config, MtlsAuthInterceptor};
+use crate::auth::mtls::{build_tls_config, MtlsAuthInterceptor};
 use crate::auth::AuthService;
 use crate::campaign::CampaignManager;
 use crate::collaboration::chat::ChatService;
@@ -33,6 +33,8 @@ pub struct ServerConfig {
     pub http_port: u16,
     pub db_path: String,
     pub dev_mode: bool,
+    /// Require operator client certificates on the UI/gRPC TLS listener.
+    pub operator_mtls: bool,
     /// Optional path to the Web UI static assets directory (web/dist/).
     pub web_ui_dir: Option<String>,
     /// Directory containing payload builder artifacts such as specter.bin.
@@ -258,6 +260,15 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             .append_index_html_on_directories(true)
             .fallback(tower_http::services::ServeFile::new(index_html));
         let mut router = axum::Router::new().nest_service("/ui", serve);
+        let mtls_enabled = auth_svc.is_some();
+
+        let auth_methods_handler = move || async move {
+            axum::Json(serde_json::json!({
+                "mtls": mtls_enabled,
+                "token": true
+            }))
+        };
+        router = router.route("/auth/methods", axum::routing::get(auth_methods_handler));
 
         // Add /auth/mtls endpoint only when mTLS is active.
         // Since the TLS layer already validated the client cert, any request
@@ -320,17 +331,30 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
     };
 
     if let Some(ref ca) = ca {
-        // mTLS mode: configure TLS on the gRPC server
+        // TLS mode: always serve HTTPS with the embedded CA server cert.
+        // Client certificates are opt-in because browsers may prompt on every
+        // fresh TLS connection when the server sends CertificateRequest.
         let hostnames = vec![cfg.bind.clone(), "localhost".to_string()];
-        let (tls_config, _server_cert, _server_key) = build_mtls_config(ca, &hostnames)
-            .await
-            .map_err(|e| format!("Failed to build mTLS config: {e}"))?;
+        let (tls_config, _server_cert, _server_key) =
+            build_tls_config(ca, &hostnames, cfg.operator_mtls)
+                .await
+                .map_err(|e| format!("Failed to build TLS config: {e}"))?;
 
-        let interceptor = MtlsAuthInterceptor::new(
-            auth_service.token_store(),
-            false,
-            Some(ca.get_root_cert().to_string()),
-        );
+        if cfg.operator_mtls {
+            tracing::info!("Operator mTLS enabled: browser/client certificates are required");
+        } else {
+            tracing::info!("Operator mTLS disabled: UI/API use bearer-token auth over server TLS");
+        }
+
+        let interceptor = if cfg.operator_mtls {
+            MtlsAuthInterceptor::new(
+                auth_service.token_store(),
+                false,
+                Some(ca.get_root_cert().to_string()),
+            )
+        } else {
+            MtlsAuthInterceptor::new(auth_service.token_store(), false, None)
+        };
 
         let grpc_web_svc = tonic_web::enable(SpecterServiceServer::with_interceptor(
             grpc_service,
@@ -343,7 +367,12 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
             .layer(cors);
 
         if let Some(ref dir) = cfg.web_ui_dir {
-            let router = build_web_router(dir, Some(Arc::clone(&auth_service)));
+            let router_auth = if cfg.operator_mtls {
+                Some(Arc::clone(&auth_service))
+            } else {
+                None
+            };
+            let router = build_web_router(dir, router_auth);
             server
                 .add_routes(router.into())
                 .add_service(grpc_web_svc)

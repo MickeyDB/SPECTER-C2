@@ -29,6 +29,25 @@ export interface MtlsAuthResult {
   username?: string
 }
 
+export interface AuthMethods {
+  mtls: boolean
+  token: boolean
+}
+
+export async function getAuthMethods(baseUrl: string): Promise<AuthMethods> {
+  try {
+    const res = await fetch(`${baseUrl}/auth/methods`)
+    if (!res.ok) return { mtls: false, token: true }
+    const data = await res.json()
+    return {
+      mtls: Boolean(data.mtls),
+      token: data.token !== false,
+    }
+  } catch {
+    return { mtls: false, token: true }
+  }
+}
+
 export async function attemptMtlsAuth(baseUrl: string): Promise<MtlsAuthResult> {
   try {
     const res = await fetch(`${baseUrl}/auth/mtls`, {

@@ -20,13 +20,14 @@ pub enum MtlsError {
     Ca(#[from] super::ca::CaError),
 }
 
-/// Build a Tonic `ServerTlsConfig` for mTLS using the embedded CA.
+/// Build a Tonic `ServerTlsConfig` using the embedded CA for the server cert.
 ///
-/// The server presents its own TLS cert (signed by the CA) and requires clients
-/// to present a valid certificate also signed by the CA.
-pub async fn build_mtls_config(
+/// The server presents its own TLS cert signed by the embedded CA. Client
+/// certificates are only requested when `require_client_cert` is true.
+pub async fn build_tls_config(
     ca: &EmbeddedCA,
     hostnames: &[String],
+    require_client_cert: bool,
 ) -> Result<(ServerTlsConfig, String, String), MtlsError> {
     // Issue a server certificate
     let (server_cert_pem, server_key_pem) = ca
@@ -38,14 +39,24 @@ pub async fn build_mtls_config(
 
     let identity = Identity::from_pem(server_cert_pem.as_bytes(), server_key_pem.as_bytes());
 
-    // Parse CA cert for client verification
-    let ca_cert = tonic::transport::Certificate::from_pem(ca_cert_pem.as_bytes());
-
-    let tls_config = ServerTlsConfig::new()
-        .identity(identity)
-        .client_ca_root(ca_cert);
+    let mut tls_config = ServerTlsConfig::new().identity(identity);
+    if require_client_cert {
+        let ca_cert = tonic::transport::Certificate::from_pem(ca_cert_pem.as_bytes());
+        tls_config = tls_config.client_ca_root(ca_cert);
+    }
 
     Ok((tls_config, server_cert_pem, server_key_pem))
+}
+
+/// Build a Tonic `ServerTlsConfig` for mTLS using the embedded CA.
+///
+/// The server presents its own TLS cert signed by the CA and requires clients
+/// to present a valid certificate also signed by the CA.
+pub async fn build_mtls_config(
+    ca: &EmbeddedCA,
+    hostnames: &[String],
+) -> Result<(ServerTlsConfig, String, String), MtlsError> {
+    build_tls_config(ca, hostnames, true).await
 }
 
 /// Extract operator identity (CN and OU) from a client certificate.

@@ -29,6 +29,13 @@ struct Cli {
     #[arg(long)]
     dev_mode: bool,
 
+    /// Require operator client certificates on the UI/gRPC TLS listener.
+    ///
+    /// Leave this off for browser UI use with bearer tokens; enabling it may
+    /// make browsers show a certificate chooser on new TLS connections.
+    #[arg(long)]
+    operator_mtls: bool,
+
     /// Path to Web UI static assets directory (web/dist/)
     #[arg(long)]
     web_ui_dir: Option<String>,
@@ -138,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_port: cli.http_port,
         db_path: cli.db_path,
         dev_mode: cli.dev_mode,
+        operator_mtls: cli.operator_mtls,
         web_ui_dir: cli.web_ui_dir,
         template_dir: resolve_template_dir(cli.template_dir),
     })

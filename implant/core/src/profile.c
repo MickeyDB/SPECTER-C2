@@ -541,7 +541,23 @@ static BOOL profile_header_name_matches(const char *header, const char *name) {
     return name[i] == '\0' && header[i] == ':';
 }
 
-DWORD profile_build_headers(PROFILE_CONFIG *cfg, char *output, DWORD max_len) {
+static EMBED_POINT *profile_find_header_embed_point(PROFILE_CONFIG *cfg, const char *header) {
+    if (!cfg || !header)
+        return NULL;
+
+    for (DWORD i = 0; i < cfg->request.embed_count; i++) {
+        EMBED_POINT *ep = &cfg->request.embed_points[i];
+        if (ep->location == EMBED_HEADER_VALUE &&
+            profile_header_name_matches(header, ep->field_name)) {
+            return ep;
+        }
+    }
+
+    return NULL;
+}
+
+DWORD profile_build_headers(PROFILE_CONFIG *cfg, const BYTE *data, DWORD data_len,
+                             char *output, DWORD max_len) {
     if (!cfg || !cfg->initialized || !output || max_len == 0)
         return 0;
 
@@ -552,9 +568,20 @@ DWORD profile_build_headers(PROFILE_CONFIG *cfg, char *output, DWORD max_len) {
             continue;
         }
 
+        char encoded_data[8192];
+        const char *data_str = NULL;
+        EMBED_POINT *ep = profile_find_header_embed_point(cfg, cfg->request.headers[i]);
+        if (ep && data && data_len > 0) {
+            DWORD encoded_len = embed_encode(ep->encoding, data, data_len,
+                                             encoded_data, sizeof(encoded_data));
+            if (encoded_len == 0)
+                return 0;
+            data_str = encoded_data;
+        }
+
         /* Expand template variables in header value */
-        char expanded[PROFILE_MAX_HEADER_LEN];
-        DWORD elen = expand_template(cfg->request.headers[i], NULL,
+        char expanded[8192];
+        DWORD elen = expand_template(cfg->request.headers[i], data_str,
                                       expanded, sizeof(expanded));
         if (elen == 0) continue;
 

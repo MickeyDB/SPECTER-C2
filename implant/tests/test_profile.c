@@ -294,7 +294,7 @@ static void test_profile_build_headers(void) {
     profile_test_set_prng_seed(12345);
 
     char headers[4096];
-    DWORD hlen = profile_build_headers(&cfg, headers, sizeof(headers));
+    DWORD hlen = profile_build_headers(&cfg, NULL, 0, headers, sizeof(headers));
     ASSERT(hlen > 0, "headers built");
 
     /* Check that Content-Type header is present */
@@ -307,6 +307,21 @@ static void test_profile_build_headers(void) {
            "Authorization header with expanded random_hex");
     ASSERT(strstr(headers, "Host:") == NULL,
            "transport-owned Host header skipped");
+
+    spec_memset(&cfg, 0, sizeof(cfg));
+    cfg.initialized = TRUE;
+    spec_strcpy(cfg.request.headers[0], "X-Request-ID: {{data}}");
+    cfg.request.header_count = 1;
+    cfg.request.embed_points[0].location = EMBED_HEADER_VALUE;
+    cfg.request.embed_points[0].encoding = EMBED_ENC_HEX;
+    spec_strcpy(cfg.request.embed_points[0].field_name, "X-Request-ID");
+    cfg.request.embed_count = 1;
+
+    const BYTE test_data[] = "abc";
+    hlen = profile_build_headers(&cfg, test_data, 3, headers, sizeof(headers));
+    ASSERT(hlen > 0, "header data carrier built");
+    ASSERT(strstr(headers, "X-Request-ID: 616263\r\n") != NULL,
+           "header data carrier embeds hex data");
 }
 
 static void test_profile_embed_extract_json(void) {

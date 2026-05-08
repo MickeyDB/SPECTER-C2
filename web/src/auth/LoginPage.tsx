@@ -1,8 +1,8 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Shield, Key, Globe } from 'lucide-react'
 import { useAuth } from './useAuth'
-import { attemptMtlsAuth } from './mtls'
+import { attemptMtlsAuth, getAuthMethods } from './mtls'
 
 export function LoginPage() {
   const { loginWithToken, loginWithCert, isAuthenticating, error } = useAuth()
@@ -13,6 +13,18 @@ export function LoginPage() {
   const [username, setUsername] = useState('')
   const [token, setToken] = useState('')
   const [mtlsStatus, setMtlsStatus] = useState<'idle' | 'checking' | 'failed'>('idle')
+  const [mtlsEnabled, setMtlsEnabled] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    const baseUrl = import.meta.env.DEV ? '' : window.location.origin
+    getAuthMethods(baseUrl).then((methods) => {
+      if (active) setMtlsEnabled(methods.mtls)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const handleTokenLogin = useCallback(async (e: React.FormEvent) => {
     e.preventDefault()
@@ -48,35 +60,39 @@ export function LoginPage() {
           <p className="mt-1 text-sm text-specter-muted">Authenticate to access the C2 console</p>
         </div>
 
-        {/* mTLS Auth */}
-        <div className="rounded-lg border border-specter-border bg-specter-surface p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <Key className="h-4 w-4 text-specter-accent" />
-            <h3 className="text-sm font-medium text-specter-text">Certificate Authentication</h3>
-          </div>
-          <p className="mb-3 text-xs text-specter-muted">
-            Use your operator client certificate for mutual TLS authentication.
-          </p>
-          <button
-            onClick={handleMtlsLogin}
-            disabled={mtlsStatus === 'checking'}
-            className="w-full rounded border border-specter-accent/30 bg-specter-accent/10 px-4 py-2 text-sm text-specter-accent transition-colors hover:bg-specter-accent/20 disabled:opacity-50"
-          >
-            {mtlsStatus === 'checking' ? 'Checking certificate...' : 'Authenticate with Certificate'}
-          </button>
-          {mtlsStatus === 'failed' && (
-            <p className="mt-2 text-xs text-specter-danger">
-              Certificate authentication failed. Ensure your client certificate is installed.
-            </p>
-          )}
-        </div>
+        {mtlsEnabled && (
+          <>
+            {/* mTLS Auth */}
+            <div className="rounded-lg border border-specter-border bg-specter-surface p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Key className="h-4 w-4 text-specter-accent" />
+                <h3 className="text-sm font-medium text-specter-text">Certificate Authentication</h3>
+              </div>
+              <p className="mb-3 text-xs text-specter-muted">
+                Use your operator client certificate for mutual TLS authentication.
+              </p>
+              <button
+                onClick={handleMtlsLogin}
+                disabled={mtlsStatus === 'checking'}
+                className="w-full rounded border border-specter-accent/30 bg-specter-accent/10 px-4 py-2 text-sm text-specter-accent transition-colors hover:bg-specter-accent/20 disabled:opacity-50"
+              >
+                {mtlsStatus === 'checking' ? 'Checking certificate...' : 'Authenticate with Certificate'}
+              </button>
+              {mtlsStatus === 'failed' && (
+                <p className="mt-2 text-xs text-specter-danger">
+                  Certificate authentication failed. Ensure your client certificate is installed.
+                </p>
+              )}
+            </div>
 
-        {/* Divider */}
-        <div className="flex items-center gap-3">
-          <div className="h-px flex-1 bg-specter-border" />
-          <span className="text-xs text-specter-muted">or</span>
-          <div className="h-px flex-1 bg-specter-border" />
-        </div>
+            {/* Divider */}
+            <div className="flex items-center gap-3">
+              <div className="h-px flex-1 bg-specter-border" />
+              <span className="text-xs text-specter-muted">or</span>
+              <div className="h-px flex-1 bg-specter-border" />
+            </div>
+          </>
+        )}
 
         {/* Token Auth */}
         <form onSubmit={handleTokenLogin} className="rounded-lg border border-specter-border bg-specter-surface p-4">
