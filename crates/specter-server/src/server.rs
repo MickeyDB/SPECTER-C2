@@ -24,6 +24,7 @@ use crate::module::ModuleRepository;
 use crate::profile::ProfileStore;
 use crate::reports::ReportGenerator;
 use crate::session::SessionManager;
+use crate::socks::SocksManager;
 use crate::task::TaskDispatcher;
 
 /// Configuration parsed from CLI flags.
@@ -103,11 +104,16 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
     // 4. Managers
     let session_manager = Arc::new(SessionManager::new(pool.clone(), Arc::clone(&event_bus)));
     let task_dispatcher = Arc::new(TaskDispatcher::new(pool.clone(), Arc::clone(&event_bus)));
+    let socks_manager = Arc::new(SocksManager::new(
+        Arc::clone(&session_manager),
+        Arc::clone(&task_dispatcher),
+    ));
     let listener_manager = Arc::new(ListenerManager::new(
         pool.clone(),
         Arc::clone(&session_manager),
         Arc::clone(&task_dispatcher),
         Arc::clone(&event_bus),
+        Some(Arc::clone(&socks_manager)),
     ));
     let module_repository = Arc::new(ModuleRepository::new(pool.clone()));
     let profile_store = Arc::new(ProfileStore::new(pool.clone()));
@@ -218,6 +224,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         Arc::clone(&presence_manager),
         Arc::clone(&chat_service),
         Arc::clone(&report_generator),
+        Arc::clone(&socks_manager),
     );
 
     if let Some(ref ca) = ca {

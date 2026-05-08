@@ -35,7 +35,14 @@ async fn start_relay_creates_listener() {
         .unwrap();
 
     // Start a SOCKS relay on a random high port
-    let result = socks_mgr.start_relay(&session_id, "127.0.0.1:0").await;
+    let result = socks_mgr
+        .start_relay(
+            &session_id,
+            "127.0.0.1:0",
+            "wss://redirector.example/api/socks/ws",
+            "task-start",
+        )
+        .await;
 
     // Should succeed (port 0 lets OS pick a free port — but TcpListener::bind
     // with port 0 works; the relay just stores the requested address)
@@ -44,7 +51,45 @@ async fn start_relay_creates_listener() {
     // List should show the relay
     let relays = socks_mgr.list_relays().await;
     assert_eq!(relays.len(), 1);
-    assert_eq!(relays[0].0, session_id);
+    assert_eq!(relays[0].session_id, session_id);
+    assert_eq!(relays[0].started_task_id, "task-start");
+    assert_eq!(relays[0].transport, "beacon_fallback");
+    assert_eq!(relays[0].state, "starting");
+    assert_eq!(
+        relays[0].channel_url,
+        "wss://redirector.example/api/socks/ws"
+    );
+}
+
+#[tokio::test]
+async fn start_result_marks_relay_ready() {
+    let (session_mgr, _task_disp, socks_mgr) = setup().await;
+
+    let session_id = session_mgr
+        .register_session(
+            "WORKSTATION".into(),
+            "admin".into(),
+            1234,
+            "Windows 11".into(),
+            "High".into(),
+            "explorer.exe".into(),
+            "192.168.1.10".into(),
+            "1.2.3.4".into(),
+        )
+        .await
+        .unwrap();
+
+    socks_mgr
+        .start_relay(&session_id, "127.0.0.1:0", "", "task-start")
+        .await
+        .unwrap();
+
+    socks_mgr
+        .mark_started_task_result(&session_id, "task-start", true)
+        .await;
+
+    let relay = socks_mgr.relay_info(&session_id).await.unwrap();
+    assert_eq!(relay.state, "ready");
 }
 
 #[tokio::test]
@@ -66,12 +111,14 @@ async fn start_relay_rejects_duplicate() {
         .unwrap();
 
     socks_mgr
-        .start_relay(&session_id, "127.0.0.1:0")
+        .start_relay(&session_id, "127.0.0.1:0", "", "task-start")
         .await
         .unwrap();
 
     // Second start should fail
-    let result = socks_mgr.start_relay(&session_id, "127.0.0.1:0").await;
+    let result = socks_mgr
+        .start_relay(&session_id, "127.0.0.1:0", "", "task-start-2")
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("already active"));
 }
@@ -95,7 +142,7 @@ async fn stop_relay_removes_from_list() {
         .unwrap();
 
     socks_mgr
-        .start_relay(&session_id, "127.0.0.1:0")
+        .start_relay(&session_id, "127.0.0.1:0", "", "task-start")
         .await
         .unwrap();
 
@@ -104,6 +151,39 @@ async fn stop_relay_removes_from_list() {
 
     let relays = socks_mgr.list_relays().await;
     assert_eq!(relays.len(), 0);
+}
+
+#[tokio::test]
+async fn stop_relay_releases_bind_port() {
+    let (session_mgr, _task_disp, socks_mgr) = setup().await;
+
+    let session_id = session_mgr
+        .register_session(
+            "WORKSTATION".into(),
+            "admin".into(),
+            1234,
+            "Windows 11".into(),
+            "High".into(),
+            "explorer.exe".into(),
+            "192.168.1.10".into(),
+            "1.2.3.4".into(),
+        )
+        .await
+        .unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    socks_mgr
+        .start_relay(&session_id, &bind_addr.to_string(), "", "task-start")
+        .await
+        .unwrap();
+
+    socks_mgr.stop_relay(&session_id).await.unwrap();
+
+    let rebound = tokio::net::TcpListener::bind(bind_addr).await;
+    assert!(rebound.is_ok(), "port should be released after stop");
 }
 
 #[tokio::test]

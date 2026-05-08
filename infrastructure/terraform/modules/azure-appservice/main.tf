@@ -86,6 +86,7 @@ resource "azurerm_linux_web_app" "redirector" {
   app_settings = {
     "BACKEND_URL"                      = var.backend_url
     "URI_PATTERN"                      = var.uri_pattern
+    "INTERACTIVE_URI_PATTERN"          = var.interactive_uri_pattern
     "HEADER_NAME"                      = var.header_name
     "HEADER_PATTERN"                   = var.header_pattern
     "DECOY_RESPONSE"                   = var.decoy_response

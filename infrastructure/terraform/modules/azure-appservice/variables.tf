@@ -41,6 +41,12 @@ variable "uri_pattern" {
   default     = "^/api/v[0-9]+/"
 }
 
+variable "interactive_uri_pattern" {
+  description = "URI regex pattern for interactive WebSocket channels such as SOCKS"
+  type        = string
+  default     = "^/api/socks/[^/]+/ws$"
+}
+
 variable "header_name" {
   description = "HTTP header name for C2 traffic identification"
   type        = string

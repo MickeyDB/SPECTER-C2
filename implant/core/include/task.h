@@ -30,6 +30,7 @@
 /* Module bus tasks */
 #define TASK_TYPE_MODULE     10  /* PIC/COFF module via bus             */
 #define TASK_TYPE_BOF        11  /* BOF/COFF execution via bus          */
+#define TASK_TYPE_SOCKS_DATA 12  /* SOCKS_MSG frame for running module  */
 
 /* Task status constants */
 #define TASK_STATUS_COMPLETE 0

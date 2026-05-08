@@ -30,6 +30,7 @@ use crate::profile::compiler::ListenerProfile;
 use crate::profile::schema::*;
 use crate::profile::{compile_listener_config, parse_profile, transform_decode, transform_encode};
 use crate::session::SessionManager;
+use crate::socks::SocksManager;
 use crate::task::TaskDispatcher;
 use checkin_processor::{
     parse_plaintext_checkin, process_checkin, CheckinOptions, ParsedCheckin, SessionBinding,
@@ -43,6 +44,7 @@ pub struct HttpState {
     pub task_dispatcher: Arc<TaskDispatcher>,
     pub event_bus: Arc<EventBus>,
     pub module_repository: Option<Arc<ModuleRepository>>,
+    pub socks_manager: Option<Arc<SocksManager>>,
     pub server_secret: Arc<StaticSecret>,
     pub server_pubkey: Arc<PublicKey>,
     pub listener_profile: Option<Arc<ListenerProfile>>,
@@ -57,6 +59,10 @@ pub fn build_router(state: HttpState) -> Router {
         .route("/api/beacon", post(beacon_handler))
         .route("/api/health", get(health_handler))
         .route("/api/ws", get(ws_handler::ws_upgrade_handler))
+        .route(
+            "/api/socks/:session_id/ws",
+            get(ws_handler::socks_session_ws_handler),
+        )
         .route(
             "/api/sessions/:session_id/ws",
             get(ws_handler::operator_session_ws_handler),
@@ -811,6 +817,7 @@ pub struct ListenerManager {
     pool: SqlitePool,
     session_manager: Arc<SessionManager>,
     task_dispatcher: Arc<TaskDispatcher>,
+    socks_manager: Option<Arc<SocksManager>>,
     #[allow(dead_code)]
     event_bus: Arc<EventBus>,
     active: Mutex<HashMap<String, ActiveListener>>,
@@ -822,11 +829,13 @@ impl ListenerManager {
         session_manager: Arc<SessionManager>,
         task_dispatcher: Arc<TaskDispatcher>,
         event_bus: Arc<EventBus>,
+        socks_manager: Option<Arc<SocksManager>>,
     ) -> Self {
         Self {
             pool,
             session_manager,
             task_dispatcher,
+            socks_manager,
             event_bus,
             active: Mutex::new(HashMap::new()),
         }
@@ -984,6 +993,7 @@ impl ListenerManager {
             task_dispatcher: Arc::clone(&self.task_dispatcher),
             event_bus: Arc::clone(&self.event_bus),
             module_repository: None,
+            socks_manager: self.socks_manager.as_ref().map(Arc::clone),
             server_secret: Arc::new(secret),
             server_pubkey: Arc::new(pubkey),
             listener_profile: listener_profile.map(Arc::new),

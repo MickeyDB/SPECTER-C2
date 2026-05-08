@@ -207,15 +207,36 @@ describe('Modules with data', () => {
     })
 
     const deployButtons = screen.getAllByText('Deploy')
+    fireEvent.click(deployButtons[2])
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('Deploy: screenshot')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('Target Sessions')).toBeInTheDocument()
+    expect(screen.getByText('Action')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Screenshot')).toBeInTheDocument()
+    expect(screen.getByText('Interval')).toBeInTheDocument()
+    expect(screen.getByText('Count')).toBeInTheDocument()
+    expect(screen.getByText('Execute')).toBeInTheDocument()
+  })
+
+  it('disables deployment for modules without a typed argument schema', async () => {
+    renderModules()
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('whoami')).toBeInTheDocument()
+    })
+
+    const deployButtons = screen.getAllByText('Deploy')
     fireEvent.click(deployButtons[0])
 
     await vi.waitFor(() => {
       expect(screen.getByText('Deploy: whoami')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('Target Sessions')).toBeInTheDocument()
-    expect(screen.getByText('Arguments')).toBeInTheDocument()
-    expect(screen.getByText('Execute')).toBeInTheDocument()
+    expect(screen.getByText(/No argument schema is registered/)).toBeInTheDocument()
+    expect(screen.getByText('Execute')).toBeDisabled()
   })
 
   it('shows sessions in deploy dialog', async () => {

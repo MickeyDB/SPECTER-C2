@@ -106,6 +106,76 @@ const KNOWN_COMMANDS = [
   'socks', 'portfwd', 'exit', 'tasks', 'clear',
 ]
 
+const GLOBAL_HISTORY_KEY = 'specter-history-global'
+
+function sessionHistoryKey(sessionId: string) {
+  return `specter-history-${sessionId}`
+}
+
+function loadCommandHistory(sessionId: string): string[] {
+  const keys = sessionId ? [sessionHistoryKey(sessionId), GLOBAL_HISTORY_KEY] : [GLOBAL_HISTORY_KEY]
+  for (const key of keys) {
+    const saved = localStorage.getItem(key)
+    if (!saved) continue
+    try {
+      const parsed = JSON.parse(saved)
+      if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === 'string')
+    } catch {
+      /* ignore invalid JSON */
+    }
+  }
+  return []
+}
+
+function normalizeSocksChannelUrl(raw: string | undefined, sessionId: string): string {
+  const trimmed = raw?.trim()
+  if (!trimmed) return ''
+  const candidate = trimmed
+    .replace(/^https:\/\//i, 'wss://')
+    .replace(/^http:\/\//i, 'ws://')
+
+  try {
+    const url = new URL(candidate)
+    if (url.pathname === '' || url.pathname === '/') {
+      url.pathname = `/api/socks/${sessionId}/ws`
+    }
+    return url.toString()
+  } catch {
+    return candidate
+  }
+}
+
+function parseSocksStartArgs(input: string, sessionId: string) {
+  const tokens = input.split(/\s+/).filter(Boolean).slice(1)
+  let bindAddress = '127.0.0.1:1080'
+  let throttleMs = 250
+  let channelUrl = ''
+
+  for (const token of tokens) {
+    if (/^(wss?|https?):\/\//i.test(token)) {
+      channelUrl = normalizeSocksChannelUrl(token, sessionId)
+    } else if (/^\d+$/.test(token)) {
+      throttleMs = Number.parseInt(token, 10)
+    } else {
+      bindAddress = token
+    }
+  }
+
+  return {
+    bindAddress,
+    throttleMs: Number.isFinite(throttleMs) ? throttleMs : 250,
+    channelUrl,
+  }
+}
+
+function saveCommandHistory(sessionId: string, history: string[]) {
+  const compact = history.slice(-200)
+  localStorage.setItem(GLOBAL_HISTORY_KEY, JSON.stringify(compact))
+  if (sessionId) {
+    localStorage.setItem(sessionHistoryKey(sessionId), JSON.stringify(compact))
+  }
+}
+
 // ── Terminal Hook ──────────────────────────────────────────────────────
 
 function useXterm(
@@ -126,17 +196,9 @@ function useXterm(
 
   // Load saved history from localStorage on mount
   useEffect(() => {
-    if (!sessionId) return
-    const saved = localStorage.getItem(`specter-history-${sessionId}`)
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved)
-        if (Array.isArray(parsed)) {
-          commandHistoryRef.current = parsed
-          historyIndexRef.current = parsed.length
-        }
-      } catch { /* ignore invalid JSON */ }
-    }
+    const parsed = loadCommandHistory(sessionId)
+    commandHistoryRef.current = parsed
+    historyIndexRef.current = parsed.length
   }, [sessionId])
 
   useEffect(() => {
@@ -204,14 +266,9 @@ function useXterm(
         term.writeln('')
         const cmd = currentLine.trim()
         if (cmd) {
-          commandHistoryRef.current = [...commandHistoryRef.current, cmd]
+          commandHistoryRef.current = [...commandHistoryRef.current, cmd].slice(-200)
           historyIndexRef.current = commandHistoryRef.current.length
-          if (sessionId) {
-            localStorage.setItem(
-              `specter-history-${sessionId}`,
-              JSON.stringify(commandHistoryRef.current),
-            )
-          }
+          saveCommandHistory(sessionId, commandHistoryRef.current)
 
           if (cmd === 'clear') {
             term.clear()
@@ -369,7 +426,8 @@ function writeHelp(term: XTerminal) {
     '  pwd                        — Print working directory',
     '',
     '\x1b[33mShell:\x1b[0m',
-    '  <any command>              — Execute via cmd.exe (e.g., whoami, ipconfig)',
+    '  shell <command>            — Execute via cmd.exe',
+    '  powershell <command>       — Execute via PowerShell when supported',
     '',
     '\x1b[33mFile:\x1b[0m',
     '  upload <local> <remote>    — Upload file to target',
@@ -378,6 +436,9 @@ function writeHelp(term: XTerminal) {
     '\x1b[33mModules:\x1b[0m',
     '  module_load <name> [args]  — Load and execute a module',
     '  bof <name> [args]          — Load and execute a BOF',
+    '  socks start [bind] [ms] [ws-url]',
+    '                            — Start SOCKS relay; ws-url may be a redirector channel',
+    '  socks list|status|stop     — Inspect or stop SOCKS relay',
     '',
     '\x1b[33mLocal:\x1b[0m',
     '  help / ?                   — Show this help',
@@ -389,7 +450,7 @@ function writeHelp(term: XTerminal) {
 
 const BUILTIN_TASKS = new Set([
   'sleep', 'kill', 'exit', 'cd', 'pwd', 'upload', 'download', 'upload_chunk',
-  'download_chunk', 'module_load', 'bof',
+  'download_chunk', 'bof', 'shell', 'powershell',
 ])
 
 // ── Sidebar Component ──────────────────────────────────────────────────
@@ -714,6 +775,85 @@ export function SessionInteract() {
         return
       }
 
+      if (command === 'socks') {
+        const term = termRef.current
+        const [subcommandRaw] = args.split(/\s+/).filter(Boolean)
+        const subcommand = (subcommandRaw ?? 'list').toLowerCase()
+
+        try {
+          if (subcommand === 'start') {
+            const { bindAddress, throttleMs, channelUrl } = parseSocksStartArgs(args, id)
+            const res = await specterClient.startSocksRelay({
+              sessionId: id,
+              bindAddress,
+              throttleMs,
+              channelUrl,
+            })
+            if (term) {
+              const relay = res.relay
+              term.writeln(`\x1b[32m[socks]\x1b[0m started ${relay?.bindAddress ?? bindAddress} task=${relay?.startedTaskId ?? 'queued'}`)
+              term.writeln(`\x1b[32m[socks]\x1b[0m state=${relay?.state || 'starting'} transport=${relay?.transport || 'beacon_fallback'} channel=${relay?.channelUrl || channelUrl || 'not configured'}`)
+              writePrompt(term)
+            }
+            fetchTasks()
+            return
+          }
+
+          if (subcommand === 'stop') {
+            const res = await specterClient.stopSocksRelay({ sessionId: id })
+            if (term) {
+              term.writeln(`\x1b[32m[socks]\x1b[0m stop sent task=${res.stopTaskId || 'interactive_channel'}`)
+              writePrompt(term)
+            }
+            fetchTasks()
+            return
+          }
+
+          if (subcommand === 'status') {
+            const res = await specterClient.socksStatus({ sessionId: id })
+            if (term) {
+              if (res.relay) {
+                term.writeln(`\x1b[32m[socks]\x1b[0m state=${res.relay.state || 'unknown'} transport=${res.relay.transport || 'unknown'} bind=${res.relay.bindAddress}`)
+                if (res.relay.channelUrl) term.writeln(`\x1b[32m[socks]\x1b[0m channel=${res.relay.channelUrl}`)
+              } else {
+                term.writeln('\x1b[32m[socks]\x1b[0m no active relay for this session')
+              }
+              writePrompt(term)
+            }
+            fetchTasks()
+            return
+          }
+
+          if (subcommand === 'list') {
+            const res = await specterClient.listSocksRelays({ sessionId: id })
+            if (term) {
+              if (res.relays.length === 0) {
+                term.writeln('\x1b[32m[socks]\x1b[0m no active relays for this session')
+                } else {
+                  res.relays.forEach((relay) => {
+                  term.writeln(`\x1b[32m[socks]\x1b[0m ${relay.bindAddress} state=${relay.state || 'unknown'} transport=${relay.transport || 'unknown'} task=${relay.startedTaskId}`)
+                  if (relay.channelUrl) term.writeln(`\x1b[32m[socks]\x1b[0m channel=${relay.channelUrl}`)
+                })
+              }
+              writePrompt(term)
+            }
+            return
+          }
+
+          if (term) {
+            term.writeln('\x1b[31m[socks]\x1b[0m usage: socks start [127.0.0.1:1080] [throttle_ms] [wss://redirector/api/socks/<session>/ws] | stop | status | list')
+            writePrompt(term)
+          }
+        } catch (err) {
+          if (term) {
+            const message = err instanceof Error ? err.message : 'SOCKS command failed'
+            term.writeln(`\x1b[31m[socks]\x1b[0m ${message}`)
+            writePrompt(term)
+          }
+        }
+        return
+      }
+
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'command', command: trimmed, operator_id: '' }))
@@ -724,13 +864,25 @@ export function SessionInteract() {
       let taskType: string
       let taskArgs: string
 
+      if (command === 'module_load' || command === 'load_module') {
+        const term = termRef.current
+        if (term) {
+          term.writeln('\x1b[31m[error]\x1b[0m module_load needs server-side packaging; use the Modules page or a module-specific command')
+          writePrompt(term)
+        }
+        return
+      }
+
       if (BUILTIN_TASKS.has(command)) {
         taskType = command
         taskArgs = args
       } else {
-        // Everything else is a shell command
-        taskType = 'shell'
-        taskArgs = trimmed // full command string
+        const term = termRef.current
+        if (term) {
+          term.writeln(`\x1b[31m[error]\x1b[0m unknown command '${command}'. Use 'shell ${trimmed}' to run an OS command explicitly`)
+          writePrompt(term)
+        }
+        return
       }
 
       try {

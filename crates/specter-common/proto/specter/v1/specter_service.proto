@@ -15,6 +15,7 @@ import "specter/v1/builder.proto";
 import "specter/v1/azure.proto";
 import "specter/v1/collaboration.proto";
 import "specter/v1/reports.proto";
+import "specter/v1/socks.proto";
 
 // Unified event message for the SubscribeEvents stream.
 message Event {
@@ -82,6 +83,12 @@ service SpecterService {
   rpc ListModules(ListModulesRequest) returns (ListModulesResponse);
   rpc GetModuleInfo(GetModuleInfoRequest) returns (GetModuleInfoResponse);
   rpc LoadModule(LoadModuleRequest) returns (LoadModuleResponse);
+
+  // SOCKS relay RPCs
+  rpc StartSocksRelay(StartSocksRelayRequest) returns (StartSocksRelayResponse);
+  rpc StopSocksRelay(StopSocksRelayRequest) returns (StopSocksRelayResponse);
+  rpc ListSocksRelays(ListSocksRelaysRequest) returns (ListSocksRelaysResponse);
+  rpc SocksStatus(SocksStatusRequest) returns (SocksStatusResponse);
 
   // Builder RPCs
   rpc GeneratePayload(GeneratePayloadRequest) returns (GeneratePayloadResponse);

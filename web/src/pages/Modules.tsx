@@ -25,10 +25,39 @@ import { LoadModuleRequestSchema } from '@/gen/specter/v1/modules_pb'
 interface DeployDialogState {
   module: ModuleInfo
   selectedSessions: string[]
-  args: string
+  args: Record<string, string | number | boolean>
   deploying: boolean
   result: { success: boolean; message: string } | null
 }
+
+type ModuleArgKind = 'string' | 'int32' | 'bool' | 'bytes_hex'
+
+interface ModuleArgField {
+  key: string
+  label: string
+  kind: ModuleArgKind
+  required?: boolean
+  placeholder?: string
+  defaultValue?: string | number | boolean
+  min?: number
+  max?: number
+}
+
+interface ModuleSubcommand {
+  value: string
+  label: string
+  fields: ModuleArgField[]
+}
+
+interface ModuleArgSchema {
+  moduleName: string
+  subcommands: ModuleSubcommand[]
+}
+
+type EncodedModuleArg =
+  | { type: 'string'; value: string }
+  | { type: 'int32'; value: number }
+  | { type: 'bytes'; value: Uint8Array }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -65,6 +94,279 @@ const moduleTypeIcon: Record<string, typeof Cpu> = {
   pic: Cpu,
   coff: FileCode,
   bof: FileCode,
+}
+
+const MODULE_ARG_SCHEMAS: Record<string, ModuleArgSchema> = {
+  socks5: {
+    moduleName: 'socks5',
+    subcommands: [
+      {
+        value: 'start',
+        label: 'Start relay',
+        fields: [
+          { key: 'throttle_ms', label: 'Throttle', kind: 'int32', defaultValue: 250, min: 10, max: 5000 },
+          { key: 'channel_url', label: 'WebSocket channel URL', kind: 'string', placeholder: 'wss://redirector.example/api/socks/<session>/ws' },
+        ],
+      },
+      { value: 'status', label: 'Request status', fields: [] },
+      { value: 'stop', label: 'Stop relay', fields: [] },
+    ],
+  },
+  token: {
+    moduleName: 'token',
+    subcommands: [
+      { value: 'list', label: 'List process tokens', fields: [] },
+      { value: 'revert', label: 'Revert token', fields: [] },
+      {
+        value: 'steal',
+        label: 'Steal by PID',
+        fields: [{ key: 'pid', label: 'PID', kind: 'int32', required: true, min: 1 }],
+      },
+      {
+        value: 'make',
+        label: 'Make network token',
+        fields: [
+          { key: 'domain', label: 'Domain', kind: 'string', required: true, placeholder: '.' },
+          { key: 'user', label: 'Username', kind: 'string', required: true },
+          { key: 'pass', label: 'Password', kind: 'string', required: true },
+        ],
+      },
+    ],
+  },
+  lateral: {
+    moduleName: 'lateral',
+    subcommands: [
+      {
+        value: 'wmi',
+        label: 'WMI process create',
+        fields: [
+          { key: 'target', label: 'Target host', kind: 'string', required: true },
+          { key: 'command', label: 'Command', kind: 'string', required: true },
+        ],
+      },
+      {
+        value: 'scm',
+        label: 'SCM service create',
+        fields: [
+          { key: 'target', label: 'Target host', kind: 'string', required: true },
+          { key: 'payload_path', label: 'Payload path', kind: 'string', required: true, placeholder: 'C:\\Windows\\Temp\\svc.exe' },
+        ],
+      },
+      {
+        value: 'dcom',
+        label: 'DCOM launch',
+        fields: [
+          { key: 'target', label: 'Target host', kind: 'string', required: true },
+          { key: 'payload', label: 'Payload', kind: 'string', required: true },
+        ],
+      },
+      {
+        value: 'schtask',
+        label: 'Scheduled task',
+        fields: [
+          { key: 'target', label: 'Target host', kind: 'string', required: true },
+          { key: 'payload_path', label: 'Payload path', kind: 'string', required: true, placeholder: 'C:\\Windows\\Temp\\task.exe' },
+        ],
+      },
+    ],
+  },
+  inject: {
+    moduleName: 'inject',
+    subcommands: [
+      {
+        value: 'createthread',
+        label: 'CreateThread',
+        fields: [
+          { key: 'pid', label: 'PID', kind: 'int32', required: true, min: 1 },
+          { key: 'shellcode', label: 'Shellcode hex', kind: 'bytes_hex', required: true },
+        ],
+      },
+      {
+        value: 'apc',
+        label: 'APC queue',
+        fields: [
+          { key: 'pid', label: 'PID', kind: 'int32', required: true, min: 1 },
+          { key: 'tid', label: 'TID', kind: 'int32', required: true, min: 1 },
+          { key: 'shellcode', label: 'Shellcode hex', kind: 'bytes_hex', required: true },
+        ],
+      },
+      {
+        value: 'hijack',
+        label: 'Thread hijack',
+        fields: [
+          { key: 'pid', label: 'PID', kind: 'int32', required: true, min: 1 },
+          { key: 'tid', label: 'TID', kind: 'int32', required: true, min: 1 },
+          { key: 'shellcode', label: 'Shellcode hex', kind: 'bytes_hex', required: true },
+        ],
+      },
+      {
+        value: 'stomp',
+        label: 'Module stomp',
+        fields: [
+          { key: 'pid', label: 'PID', kind: 'int32', required: true, min: 1 },
+          { key: 'dll_name', label: 'DLL name', kind: 'string', required: true, placeholder: 'amsi.dll' },
+          { key: 'shellcode', label: 'Shellcode hex', kind: 'bytes_hex', required: true },
+        ],
+      },
+    ],
+  },
+  exfil: {
+    moduleName: 'exfil',
+    subcommands: [
+      {
+        value: 'file',
+        label: 'Single file',
+        fields: [
+          { key: 'path', label: 'Remote path', kind: 'string', required: true },
+          { key: 'chunk_size', label: 'Chunk size', kind: 'int32', defaultValue: 65536, min: 1024 },
+          { key: 'throttle_ms', label: 'Throttle', kind: 'int32', defaultValue: 100, min: 0 },
+        ],
+      },
+      {
+        value: 'directory',
+        label: 'Directory match',
+        fields: [
+          { key: 'dir', label: 'Directory', kind: 'string', required: true },
+          { key: 'pattern', label: 'Pattern', kind: 'string', required: true, defaultValue: '*' },
+          { key: 'recursive', label: 'Recursive', kind: 'bool', defaultValue: false },
+          { key: 'chunk_size', label: 'Chunk size', kind: 'int32', defaultValue: 65536, min: 1024 },
+          { key: 'throttle_ms', label: 'Throttle', kind: 'int32', defaultValue: 100, min: 0 },
+        ],
+      },
+    ],
+  },
+  collect: {
+    moduleName: 'collect',
+    subcommands: [
+      {
+        value: 'keylog',
+        label: 'Keylog',
+        fields: [{ key: 'duration_sec', label: 'Duration', kind: 'int32', defaultValue: 60, min: 1, max: 3600 }],
+      },
+      {
+        value: 'screenshot',
+        label: 'Screenshot',
+        fields: [
+          { key: 'interval_sec', label: 'Interval', kind: 'int32', defaultValue: 5, min: 1 },
+          { key: 'count', label: 'Count', kind: 'int32', defaultValue: 1, min: 1, max: 100 },
+        ],
+      },
+    ],
+  },
+  smoke: {
+    moduleName: 'smoke',
+    subcommands: [{ value: 'run', label: 'Run smoke check', fields: [] }],
+  },
+}
+
+function schemaForModule(moduleName: string): ModuleArgSchema | null {
+  const name = moduleName.toLowerCase()
+  if (MODULE_ARG_SCHEMAS[name]) return MODULE_ARG_SCHEMAS[name]
+  if (name === 'keylog' || name === 'screenshot') return MODULE_ARG_SCHEMAS.collect
+  return null
+}
+
+function initialArgsForModule(moduleName: string): Record<string, string | number | boolean> {
+  const schema = schemaForModule(moduleName)
+  if (!schema) return {}
+  const name = moduleName.toLowerCase()
+  const preferredSubcommand = name === 'screenshot' || name === 'keylog' ? name : schema.subcommands[0].value
+  const subcommand =
+    schema.subcommands.find((item) => item.value === preferredSubcommand) ?? schema.subcommands[0]
+  const args: Record<string, string | number | boolean> = { subcommand: subcommand.value }
+  for (const field of subcommand.fields) {
+    args[field.key] = field.defaultValue ?? (field.kind === 'bool' ? false : field.kind === 'int32' ? 0 : '')
+  }
+  return args
+}
+
+function hexToBytes(input: string): Uint8Array {
+  const hex = input.replace(/[\s:,-]/g, '')
+  if (!hex) return new Uint8Array()
+  if (hex.length % 2 !== 0 || /[^0-9a-f]/i.test(hex)) {
+    throw new Error('Hex data must contain complete byte pairs')
+  }
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  return out
+}
+
+function encodeModuleArgs(args: EncodedModuleArg[]): Uint8Array {
+  const chunks: Uint8Array[] = []
+  const header = new Uint8Array(4)
+  new DataView(header.buffer).setUint32(0, args.length, true)
+  chunks.push(header)
+
+  for (const arg of args) {
+    const data =
+      arg.type === 'string'
+        ? new Uint8Array([...new TextEncoder().encode(arg.value), 0])
+        : arg.type === 'int32'
+          ? (() => {
+              const bytes = new Uint8Array(4)
+              new DataView(bytes.buffer).setUint32(0, arg.value >>> 0, true)
+              return bytes
+            })()
+          : arg.value
+    const meta = new Uint8Array(8)
+    const view = new DataView(meta.buffer)
+    view.setUint32(0, arg.type === 'string' ? 0 : arg.type === 'int32' ? 1 : 2, true)
+    view.setUint32(4, data.length, true)
+    chunks.push(meta, data)
+  }
+
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.length
+  }
+  return out
+}
+
+function buildModuleArgs(moduleName: string, values: Record<string, string | number | boolean>): Uint8Array {
+  const schema = schemaForModule(moduleName)
+  if (!schema) throw new Error(`No argument schema registered for module '${moduleName}'`)
+
+  const subcommandValue = String(values.subcommand ?? schema.subcommands[0].value)
+  const subcommand = schema.subcommands.find((item) => item.value === subcommandValue)
+  if (!subcommand) throw new Error(`Unsupported ${schema.moduleName} action '${subcommandValue}'`)
+
+  const args: EncodedModuleArg[] = [{ type: 'string', value: subcommand.value }]
+  for (const field of subcommand.fields) {
+    const raw = values[field.key] ?? field.defaultValue ?? ''
+    if (field.required && (raw === '' || raw === 0 || raw === false)) {
+      throw new Error(`${field.label} is required`)
+    }
+
+    if (field.kind === 'string') {
+      args.push({ type: 'string', value: String(raw) })
+    } else if (field.kind === 'int32') {
+      const value = Number(raw)
+      if (!Number.isInteger(value) || value < 0) throw new Error(`${field.label} must be a positive integer`)
+      if (field.min !== undefined && value < field.min) throw new Error(`${field.label} must be at least ${field.min}`)
+      if (field.max !== undefined && value > field.max) throw new Error(`${field.label} must be at most ${field.max}`)
+      args.push({ type: 'int32', value })
+    } else if (field.kind === 'bool') {
+      args.push({ type: 'int32', value: raw === true ? 1 : 0 })
+    } else {
+      const bytes = hexToBytes(String(raw))
+      if (field.required && bytes.length === 0) throw new Error(`${field.label} is required`)
+      args.push({ type: 'bytes', value: bytes })
+    }
+  }
+
+  const dcomMethod = schema.moduleName === 'lateral' && subcommand.value === 'dcom'
+    ? String(values.method ?? 'mmc')
+    : null
+  if (dcomMethod) {
+    args.push({ type: 'string', value: dcomMethod })
+  }
+
+  return encodeModuleArgs(args)
 }
 
 // ── Components ─────────────────────────────────────────────────────────
@@ -175,12 +477,15 @@ function DeployDialog({
   sessions: SessionInfo[]
   onClose: () => void
   onToggleSession: (id: string) => void
-  onArgsChange: (v: string) => void
+  onArgsChange: (key: string, value: string | number | boolean) => void
   onExecute: () => void
 }) {
   const activeSessions = sessions.filter(
     (s) => s.status === SessionStatus.ACTIVE || s.status === SessionStatus.NEW
   )
+  const schema = schemaForModule(state.module.name)
+  const subcommandValue = String(state.args.subcommand ?? schema?.subcommands[0]?.value ?? '')
+  const subcommand = schema?.subcommands.find((item) => item.value === subcommandValue)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -230,17 +535,86 @@ function DeployDialog({
             </span>
           </div>
 
-          {/* Arguments */}
-          <div>
-            <label className="text-xs font-medium text-specter-muted">Arguments</label>
-            <textarea
-              value={state.args}
-              onChange={(e) => onArgsChange(e.target.value)}
-              placeholder="Enter module arguments..."
-              rows={3}
-              className="mt-1.5 w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none font-mono"
-            />
-          </div>
+          {/* Module-specific arguments */}
+          {schema ? (
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium text-specter-muted">Action</label>
+                <select
+                  value={subcommandValue}
+                  onChange={(e) => {
+                    const next = schema.subcommands.find((item) => item.value === e.target.value)
+                    onArgsChange('subcommand', e.target.value)
+                    if (next) {
+                      next.fields.forEach((field) => {
+                        onArgsChange(field.key, field.defaultValue ?? (field.kind === 'bool' ? false : field.kind === 'int32' ? 0 : ''))
+                      })
+                    }
+                  }}
+                  className="mt-1.5 w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text focus:border-specter-accent focus:outline-none"
+                >
+                  {schema.subcommands.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {subcommand?.fields.map((field) => (
+                <div key={field.key}>
+                  <label className="text-xs font-medium text-specter-muted">{field.label}</label>
+                  {field.kind === 'bool' ? (
+                    <label className="mt-1.5 flex items-center gap-2 rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(state.args[field.key])}
+                        onChange={(e) => onArgsChange(field.key, e.target.checked)}
+                      />
+                      Enabled
+                    </label>
+                  ) : field.kind === 'bytes_hex' ? (
+                    <textarea
+                      value={String(state.args[field.key] ?? '')}
+                      onChange={(e) => onArgsChange(field.key, e.target.value)}
+                      rows={3}
+                      placeholder="Hex bytes, for example: 90 90 cc"
+                      className="mt-1.5 w-full rounded border border-specter-border bg-specter-surface px-3 py-2 font-mono text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
+                    />
+                  ) : (
+                    <input
+                      type={field.kind === 'int32' ? 'number' : field.key === 'pass' ? 'password' : 'text'}
+                      value={String(state.args[field.key] ?? field.defaultValue ?? '')}
+                      min={field.min}
+                      max={field.max}
+                      placeholder={field.placeholder}
+                      onChange={(e) => onArgsChange(field.key, field.kind === 'int32' ? Number(e.target.value) : e.target.value)}
+                      className="mt-1.5 w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
+                    />
+                  )}
+                </div>
+              ))}
+
+              {schema.moduleName === 'lateral' && subcommandValue === 'dcom' && (
+                <div>
+                  <label className="text-xs font-medium text-specter-muted">DCOM method</label>
+                  <select
+                    value={String(state.args.method ?? 'mmc')}
+                    onChange={(e) => onArgsChange('method', e.target.value)}
+                    className="mt-1.5 w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text focus:border-specter-accent focus:outline-none"
+                  >
+                    <option value="mmc">MMC20.Application</option>
+                    <option value="shell">ShellWindows</option>
+                    <option value="windows">ShellBrowserWindow</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded border border-specter-danger/30 bg-specter-danger/10 px-3 py-2 text-xs text-specter-danger">
+              No argument schema is registered for this module. Deployment is disabled until the module exposes a typed argument schema.
+            </div>
+          )}
 
           {/* Result */}
           {state.result && (
@@ -266,7 +640,7 @@ function DeployDialog({
           </button>
           <button
             onClick={onExecute}
-            disabled={state.selectedSessions.length === 0 || state.deploying}
+            disabled={!schema || state.selectedSessions.length === 0 || state.deploying}
             className="flex items-center gap-1.5 rounded bg-specter-accent px-3 py-1.5 text-xs text-specter-bg font-medium transition-colors hover:bg-specter-accent/90 disabled:opacity-50"
           >
             {state.deploying ? (
@@ -371,7 +745,7 @@ export function Modules() {
     setDeployState({
       module,
       selectedSessions: [],
-      args: '',
+      args: initialArgsForModule(module.name),
       deploying: false,
       result: null,
     })
@@ -387,6 +761,10 @@ export function Modules() {
     })
   }, [])
 
+  const handleArgChange = useCallback((key: string, value: string | number | boolean) => {
+    setDeployState((prev) => (prev ? { ...prev, args: { ...prev.args, [key]: value }, result: null } : null))
+  }, [])
+
   const handleExecute = useCallback(async () => {
     if (!deployState) return
 
@@ -394,11 +772,12 @@ export function Modules() {
 
     try {
       const results: string[] = []
+      const encodedArgs = buildModuleArgs(deployState.module.name, deployState.args)
       for (const sessionId of deployState.selectedSessions) {
         const req = create(LoadModuleRequestSchema, {
           sessionId,
           moduleName: deployState.module.name,
-          arguments: new TextEncoder().encode(deployState.args),
+          arguments: encodedArgs,
         })
         const res = await specterClient.loadModule(req)
         results.push(
@@ -582,9 +961,7 @@ export function Modules() {
           sessions={sessions}
           onClose={() => setDeployState(null)}
           onToggleSession={handleToggleSession}
-          onArgsChange={(v) =>
-            setDeployState((prev) => (prev ? { ...prev, args: v, result: null } : null))
-          }
+          onArgsChange={handleArgChange}
           onExecute={handleExecute}
         />
       )}
