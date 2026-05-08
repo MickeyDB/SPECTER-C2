@@ -93,6 +93,72 @@ async fn start_result_marks_relay_ready() {
 }
 
 #[tokio::test]
+async fn prepare_start_rejects_active_relay_without_requeue() {
+    let (session_mgr, _task_disp, socks_mgr) = setup().await;
+
+    let session_id = session_mgr
+        .register_session(
+            "WORKSTATION".into(),
+            "admin".into(),
+            1234,
+            "Windows 11".into(),
+            "High".into(),
+            "explorer.exe".into(),
+            "192.168.1.10".into(),
+            "1.2.3.4".into(),
+        )
+        .await
+        .unwrap();
+
+    socks_mgr
+        .start_relay(&session_id, "127.0.0.1:0", "", "task-start")
+        .await
+        .unwrap();
+
+    let err = socks_mgr.prepare_start(&session_id).await.unwrap_err();
+    assert!(err.contains("already active"));
+    assert!(err.contains("state=starting"));
+}
+
+#[tokio::test]
+async fn prepare_start_replaces_degraded_relay() {
+    let (session_mgr, _task_disp, socks_mgr) = setup().await;
+
+    let session_id = session_mgr
+        .register_session(
+            "WORKSTATION".into(),
+            "admin".into(),
+            1234,
+            "Windows 11".into(),
+            "High".into(),
+            "explorer.exe".into(),
+            "192.168.1.10".into(),
+            "1.2.3.4".into(),
+        )
+        .await
+        .unwrap();
+
+    socks_mgr
+        .start_relay(&session_id, "127.0.0.1:0", "", "task-start")
+        .await
+        .unwrap();
+    socks_mgr
+        .mark_started_task_result(&session_id, "task-start", false)
+        .await;
+
+    socks_mgr.prepare_start(&session_id).await.unwrap();
+    assert!(socks_mgr.relay_info(&session_id).await.is_none());
+
+    socks_mgr
+        .start_relay(&session_id, "127.0.0.1:0", "", "task-retry")
+        .await
+        .unwrap();
+    let relay = socks_mgr.relay_info(&session_id).await.unwrap();
+    assert_eq!(relay.started_task_id, "task-retry");
+    assert_eq!(relay.state, "starting");
+}
+
+#[tokio::test]
 async fn start_relay_rejects_duplicate() {
     let (session_mgr, _task_disp, socks_mgr) = setup().await;
 

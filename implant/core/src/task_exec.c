@@ -140,6 +140,7 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
 
     /* Module bus tasks */
     char s_module_load[] = {'m','o','d','u','l','e','_','l','o','a','d',0};
+    char s_load_module[] = {'l','o','a','d','_','m','o','d','u','l','e',0};
     char s_bof_load[]    = {'b','o','f','_','l','o','a','d',0};
     char s_bof[]         = {'b','o','f',0};
     char s_socks_data[]  = {'s','o','c','k','s','_','d','a','t','a',0};
@@ -161,6 +162,7 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
 
     /* Module bus */
     if (streq_n(type_str, len, s_module_load)) return TASK_TYPE_MODULE;
+    if (streq_n(type_str, len, s_load_module)) return TASK_TYPE_MODULE;
     if (streq_n(type_str, len, s_bof_load))    return TASK_TYPE_BOF;
     if (streq_n(type_str, len, s_bof))         return TASK_TYPE_BOF;
     if (streq_n(type_str, len, s_socks_data))  return TASK_TYPE_SOCKS_DATA;

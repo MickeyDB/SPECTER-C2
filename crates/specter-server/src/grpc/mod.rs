@@ -1298,6 +1298,11 @@ impl SpecterService for SpecterGrpcService {
         } else {
             req.bind_address.trim().to_string()
         };
+        self.socks_manager
+            .prepare_start(&req.session_id)
+            .await
+            .map_err(Status::failed_precondition)?;
+
         let throttle_ms = if req.throttle_ms == 0 {
             250
         } else {

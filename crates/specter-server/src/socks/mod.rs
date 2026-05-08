@@ -74,6 +74,10 @@ impl SocksRelayState {
             Self::Stopped => "stopped",
         }
     }
+
+    fn is_replaceable(self) -> bool {
+        matches!(self, Self::Degraded | Self::Stopped)
+    }
 }
 
 /// Tracks the SOCKS5 relay state for one implant session.
@@ -598,6 +602,32 @@ impl SocksManager {
         }
     }
 
+    /// Ensure a new SOCKS start can proceed without queueing a module task that
+    /// is already doomed by local relay state. Failed starts leave a degraded
+    /// relay visible for diagnostics; the next start is allowed to replace it.
+    pub async fn prepare_start(&self, session_id: &str) -> Result<(), String> {
+        let existing = {
+            let relays = self.relays.read().await;
+            relays.get(session_id).cloned()
+        };
+
+        let Some(existing) = existing else {
+            return Ok(());
+        };
+
+        let state = *existing.relay.state.read().await;
+        if !state.is_replaceable() {
+            return Err(format!(
+                "SOCKS relay already active for session {session_id} (state={})",
+                state.as_str()
+            ));
+        }
+
+        let _ = existing.relay.stop().await;
+        self.relays.write().await.remove(session_id);
+        Ok(())
+    }
+
     /// Start a SOCKS5 relay for a session on the given bind address.
     pub async fn start_relay(
         &self,
@@ -608,9 +638,11 @@ impl SocksManager {
     ) -> Result<(), String> {
         {
             let relays = self.relays.read().await;
-            if relays.contains_key(session_id) {
+            if let Some(existing) = relays.get(session_id) {
+                let state = *existing.relay.state.read().await;
                 return Err(format!(
-                    "SOCKS relay already active for session {session_id}"
+                    "SOCKS relay already active for session {session_id} (state={})",
+                    state.as_str()
                 ));
             }
         }

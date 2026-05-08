@@ -107,9 +107,14 @@ const KNOWN_COMMANDS = [
 ]
 
 const GLOBAL_HISTORY_KEY = 'specter-history-global'
+const MAX_TRANSCRIPT_LINES = 1000
 
 function sessionHistoryKey(sessionId: string) {
   return `specter-history-${sessionId}`
+}
+
+function sessionTranscriptKey(sessionId: string) {
+  return `specter-transcript-${sessionId}`
 }
 
 function loadCommandHistory(sessionId: string): string[] {
@@ -125,6 +130,40 @@ function loadCommandHistory(sessionId: string): string[] {
     }
   }
   return []
+}
+
+function loadTerminalTranscript(sessionId: string): string[] {
+  if (!sessionId) return []
+  const saved = localStorage.getItem(sessionTranscriptKey(sessionId))
+  if (!saved) return []
+  try {
+    const parsed = JSON.parse(saved)
+    if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === 'string')
+  } catch {
+    /* ignore invalid JSON */
+  }
+  return []
+}
+
+function appendTerminalTranscript(sessionId: string, lines: string[]) {
+  if (!sessionId || lines.length === 0) return
+  const next = [...loadTerminalTranscript(sessionId), ...lines].slice(-MAX_TRANSCRIPT_LINES)
+  localStorage.setItem(sessionTranscriptKey(sessionId), JSON.stringify(next))
+}
+
+function clearTerminalTranscript(sessionId: string) {
+  if (!sessionId) return
+  localStorage.removeItem(sessionTranscriptKey(sessionId))
+}
+
+function writePersistedLine(term: XTerminal, sessionId: string, line: string) {
+  term.writeln(line)
+  appendTerminalTranscript(sessionId, [line])
+}
+
+function writePersistedLines(term: XTerminal, sessionId: string, lines: string[]) {
+  lines.forEach((line) => term.writeln(line))
+  appendTerminalTranscript(sessionId, lines)
 }
 
 function normalizeSocksChannelUrl(raw: string | undefined, sessionId: string): string {
@@ -255,6 +294,12 @@ function useXterm(
     term.writeln('\x1b[32m║\x1b[0m  SPECTER C2 — Session Console            \x1b[32m║\x1b[0m')
     term.writeln('\x1b[32m╚══════════════════════════════════════════╝\x1b[0m')
     term.writeln('')
+    const transcript = loadTerminalTranscript(sessionId)
+    if (transcript.length > 0) {
+      term.clear()
+      transcript.forEach((line) => term.writeln(line))
+      term.writeln('')
+    }
     writePrompt(term)
 
     let currentLine = ''
@@ -272,11 +317,14 @@ function useXterm(
 
           if (cmd === 'clear') {
             term.clear()
+            clearTerminalTranscript(sessionId)
             writePrompt(term)
           } else if (cmd === 'help' || cmd === '?') {
+            appendTerminalTranscript(sessionId, [`\x1b[32mspecter>\x1b[0m ${cmd}`])
             onCommandRef.current(cmd)
             writePrompt(term)
           } else {
+            appendTerminalTranscript(sessionId, [`\x1b[32mspecter>\x1b[0m ${cmd}`])
             // Server command — don't write prompt yet.
             // The prompt will be written when the result arrives.
             onCommandRef.current(cmd)
@@ -386,26 +434,31 @@ function writePrompt(term: XTerminal) {
   term.write('\x1b[32mspecter>\x1b[0m ')
 }
 
-function writeTaskResult(term: XTerminal, taskType: string, status: string, resultText: string) {
+function writeTaskResult(term: XTerminal, taskType: string, status: string, resultText: string, sessionId = '') {
   const typeTag = taskType || 'task'
+  const lines: string[] = []
 
   if (status === 'failed') {
     const errMsg = resultText || 'Task failed'
-    term.writeln(`\x1b[31m[${typeTag}] [FAILED] ${errMsg}\x1b[0m`)
+    lines.push(`\x1b[31m[${typeTag}] [FAILED] ${errMsg}\x1b[0m`)
   } else if (resultText) {
     const trimmed = resultText.replace(/\s+$/, '')
-    const lines = trimmed.split('\n')
-    lines.forEach((line, i) => {
+    trimmed.split('\n').forEach((line, i) => {
       if (i === 0) {
-        term.writeln(`\x1b[32m[${typeTag}]\x1b[0m ${line}`)
+        lines.push(`\x1b[32m[${typeTag}]\x1b[0m ${line}`)
       } else {
-        term.writeln(`        ${line}`)
+        lines.push(`        ${line}`)
       }
     })
   } else {
-    term.writeln(`\x1b[32m[${typeTag}]\x1b[0m OK`)
+    lines.push(`\x1b[32m[${typeTag}]\x1b[0m OK`)
   }
 
+  if (sessionId) {
+    writePersistedLines(term, sessionId, lines)
+  } else {
+    lines.forEach((line) => term.writeln(line))
+  }
   writePrompt(term)
 }
 
@@ -415,7 +468,7 @@ function sessionWebSocketUrl(sessionId: string) {
   return `${protocol}//${host}/api/sessions/${encodeURIComponent(sessionId)}/ws`
 }
 
-function writeHelp(term: XTerminal) {
+function writeHelp(term: XTerminal, sessionId = '') {
   const lines = [
     '\x1b[1mSPECTER C2 — Session Commands\x1b[0m',
     '',
@@ -445,7 +498,11 @@ function writeHelp(term: XTerminal) {
     '  clear                      — Clear terminal',
     '',
   ]
-  lines.forEach((l) => term.writeln(l))
+  if (sessionId) {
+    writePersistedLines(term, sessionId, lines)
+  } else {
+    lines.forEach((l) => term.writeln(l))
+  }
 }
 
 const BUILTIN_TASKS = new Set([
@@ -718,7 +775,7 @@ export function SessionInteract() {
       try {
         msg = JSON.parse(event.data) as OperatorWsMessage
       } catch {
-        terminal.writeln('\x1b[31m[ws]\x1b[0m Invalid server frame')
+        writePersistedLine(terminal, id, '\x1b[31m[ws]\x1b[0m Invalid server frame')
         writePrompt(terminal)
         return
       }
@@ -729,12 +786,12 @@ export function SessionInteract() {
       }
       if (msg.type === 'result') {
         displayedTaskIds.current.add(msg.task_id)
-        writeTaskResult(terminal, msg.task_type, msg.status, msg.result)
+        writeTaskResult(terminal, msg.task_type, msg.status, msg.result, id)
         fetchTasks()
         return
       }
       if (msg.type === 'error') {
-        terminal.writeln(`\x1b[31m[ws]\x1b[0m ${msg.message}`)
+        writePersistedLine(terminal, id, `\x1b[31m[ws]\x1b[0m ${msg.message}`)
         writePrompt(terminal)
       }
     }
@@ -762,12 +819,13 @@ export function SessionInteract() {
       // Handle local-only commands (Fix 4 + Fix 9)
       if (command === 'help' || command === '?') {
         const term = termRef.current
-        if (term) writeHelp(term)
+        if (term) writeHelp(term, id)
         return
       }
       if (command === 'clear') {
         const term = termRef.current
         if (term) term.clear()
+        clearTerminalTranscript(id)
         return
       }
       if (command === 'exit') {
@@ -791,8 +849,10 @@ export function SessionInteract() {
             })
             if (term) {
               const relay = res.relay
-              term.writeln(`\x1b[32m[socks]\x1b[0m started ${relay?.bindAddress ?? bindAddress} task=${relay?.startedTaskId ?? 'queued'}`)
-              term.writeln(`\x1b[32m[socks]\x1b[0m state=${relay?.state || 'starting'} transport=${relay?.transport || 'beacon_fallback'} channel=${relay?.channelUrl || channelUrl || 'not configured'}`)
+              writePersistedLines(term, id, [
+                `\x1b[32m[socks]\x1b[0m started ${relay?.bindAddress ?? bindAddress} task=${relay?.startedTaskId ?? 'queued'}`,
+                `\x1b[32m[socks]\x1b[0m state=${relay?.state || 'starting'} transport=${relay?.transport || 'beacon_fallback'} channel=${relay?.channelUrl || channelUrl || 'not configured'}`,
+              ])
               writePrompt(term)
             }
             fetchTasks()
@@ -802,7 +862,7 @@ export function SessionInteract() {
           if (subcommand === 'stop') {
             const res = await specterClient.stopSocksRelay({ sessionId: id })
             if (term) {
-              term.writeln(`\x1b[32m[socks]\x1b[0m stop sent task=${res.stopTaskId || 'interactive_channel'}`)
+              writePersistedLine(term, id, `\x1b[32m[socks]\x1b[0m stop sent task=${res.stopTaskId || 'interactive_channel'}`)
               writePrompt(term)
             }
             fetchTasks()
@@ -812,12 +872,14 @@ export function SessionInteract() {
           if (subcommand === 'status') {
             const res = await specterClient.socksStatus({ sessionId: id })
             if (term) {
+              const lines: string[] = []
               if (res.relay) {
-                term.writeln(`\x1b[32m[socks]\x1b[0m state=${res.relay.state || 'unknown'} transport=${res.relay.transport || 'unknown'} bind=${res.relay.bindAddress}`)
-                if (res.relay.channelUrl) term.writeln(`\x1b[32m[socks]\x1b[0m channel=${res.relay.channelUrl}`)
+                lines.push(`\x1b[32m[socks]\x1b[0m state=${res.relay.state || 'unknown'} transport=${res.relay.transport || 'unknown'} bind=${res.relay.bindAddress}`)
+                if (res.relay.channelUrl) lines.push(`\x1b[32m[socks]\x1b[0m channel=${res.relay.channelUrl}`)
               } else {
-                term.writeln('\x1b[32m[socks]\x1b[0m no active relay for this session')
+                lines.push('\x1b[32m[socks]\x1b[0m no active relay for this session')
               }
+              writePersistedLines(term, id, lines)
               writePrompt(term)
             }
             fetchTasks()
@@ -827,27 +889,29 @@ export function SessionInteract() {
           if (subcommand === 'list') {
             const res = await specterClient.listSocksRelays({ sessionId: id })
             if (term) {
+              const lines: string[] = []
               if (res.relays.length === 0) {
-                term.writeln('\x1b[32m[socks]\x1b[0m no active relays for this session')
+                lines.push('\x1b[32m[socks]\x1b[0m no active relays for this session')
                 } else {
                   res.relays.forEach((relay) => {
-                  term.writeln(`\x1b[32m[socks]\x1b[0m ${relay.bindAddress} state=${relay.state || 'unknown'} transport=${relay.transport || 'unknown'} task=${relay.startedTaskId}`)
-                  if (relay.channelUrl) term.writeln(`\x1b[32m[socks]\x1b[0m channel=${relay.channelUrl}`)
+                  lines.push(`\x1b[32m[socks]\x1b[0m ${relay.bindAddress} state=${relay.state || 'unknown'} transport=${relay.transport || 'unknown'} task=${relay.startedTaskId}`)
+                  if (relay.channelUrl) lines.push(`\x1b[32m[socks]\x1b[0m channel=${relay.channelUrl}`)
                 })
               }
+              writePersistedLines(term, id, lines)
               writePrompt(term)
             }
             return
           }
 
           if (term) {
-            term.writeln('\x1b[31m[socks]\x1b[0m usage: socks start [127.0.0.1:1080] [throttle_ms] [wss://redirector/api/socks/<session>/ws] | stop | status | list')
+            writePersistedLine(term, id, '\x1b[31m[socks]\x1b[0m usage: socks start [127.0.0.1:1080] [throttle_ms] [wss://redirector/api/socks/<session>/ws] | stop | status | list')
             writePrompt(term)
           }
         } catch (err) {
           if (term) {
             const message = err instanceof Error ? err.message : 'SOCKS command failed'
-            term.writeln(`\x1b[31m[socks]\x1b[0m ${message}`)
+            writePersistedLine(term, id, `\x1b[31m[socks]\x1b[0m ${message}`)
             writePrompt(term)
           }
         }
@@ -867,7 +931,7 @@ export function SessionInteract() {
       if (command === 'module_load' || command === 'load_module') {
         const term = termRef.current
         if (term) {
-          term.writeln('\x1b[31m[error]\x1b[0m module_load needs server-side packaging; use the Modules page or a module-specific command')
+          writePersistedLine(term, id, '\x1b[31m[error]\x1b[0m module_load needs server-side packaging; use the Modules page or a module-specific command')
           writePrompt(term)
         }
         return
@@ -879,7 +943,7 @@ export function SessionInteract() {
       } else {
         const term = termRef.current
         if (term) {
-          term.writeln(`\x1b[31m[error]\x1b[0m unknown command '${command}'. Use 'shell ${trimmed}' to run an OS command explicitly`)
+          writePersistedLine(term, id, `\x1b[31m[error]\x1b[0m unknown command '${command}'. Use 'shell ${trimmed}' to run an OS command explicitly`)
           writePrompt(term)
         }
         return
@@ -900,7 +964,8 @@ export function SessionInteract() {
       } catch {
         const term = termRef.current
         if (term) {
-          term.writeln(`\x1b[31m[error]\x1b[0m Failed to queue task`)
+          writePersistedLine(term, id, `\x1b[31m[error]\x1b[0m Failed to queue task`)
+          writePrompt(term)
         }
       }
     },
@@ -966,7 +1031,7 @@ export function SessionInteract() {
 
         const resultText = task.result ? new TextDecoder().decode(task.result) : ''
         const status = task.status === TaskStatus.FAILED ? 'failed' : 'complete'
-        writeTaskResult(terminal, task.taskType, status, resultText)
+        writeTaskResult(terminal, task.taskType, status, resultText, id)
       }
     })
   }, [tasks, termRef])
