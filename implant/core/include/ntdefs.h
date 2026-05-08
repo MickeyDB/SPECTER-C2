@@ -15,6 +15,7 @@
 /* ------------------------------------------------------------------ */
 
 #define STATUS_SUCCESS              ((NTSTATUS)0x00000000)
+#define STATUS_TIMEOUT              ((NTSTATUS)0x00000102)
 #define STATUS_UNSUCCESSFUL         ((NTSTATUS)0xC0000001)
 #define STATUS_NOT_IMPLEMENTED      ((NTSTATUS)0xC0000002)
 #define STATUS_INVALID_HANDLE       ((NTSTATUS)0xC0000008)

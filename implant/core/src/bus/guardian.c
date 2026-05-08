@@ -395,7 +395,11 @@ BOOL guardian_wait(LOADED_MODULE *mod, DWORD timeout_ms) {
         HASH_NTWAITFORSINGLEOBJECT,
         slot->thread, (ULONG)FALSE, &wait_time);
 
-    if (NT_SUCCESS(status)) {
+    if (status == STATUS_TIMEOUT) {
+        return FALSE;
+    }
+
+    if (status == STATUS_SUCCESS) {
         /* Thread exited — if not already crashed, mark completed */
         if (mod->status == MODULE_STATUS_RUNNING)
             mod->status = MODULE_STATUS_COMPLETED;
