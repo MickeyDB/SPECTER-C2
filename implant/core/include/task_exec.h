@@ -23,6 +23,7 @@
 #define HASH_WRITEFILE          0xF5DC98F0  /* "WriteFile"           */
 #define HASH_CREATEFILEA        0x99707E5A  /* "CreateFileA"         */
 #define HASH_GETFILESIZE        0xAC749580  /* "GetFileSize"         */
+#define HASH_SETFILEPOINTER     0x06D4E052  /* "SetFilePointer"      */
 #define HASH_CLOSEHANDLE        0x2EAC8647  /* "CloseHandle"         */
 #define HASH_WAITFORSINGLEOBJ   0xDA18E23A  /* "WaitForSingleObject" */
 #define HASH_GETEXITCODEPROCESS 0x58A06379  /* "GetExitCodeProcess"  */
@@ -134,6 +135,12 @@ typedef HANDLE (__attribute__((ms_abi)) *fn_CreateFileA)(
 typedef DWORD (__attribute__((ms_abi)) *fn_GetFileSize)(
     HANDLE hFile,
     PDWORD lpFileSizeHigh);
+
+typedef DWORD (__attribute__((ms_abi)) *fn_SetFilePointer)(
+    HANDLE hFile,
+    LONG lDistanceToMove,
+    PLONG lpDistanceToMoveHigh,
+    DWORD dwMoveMethod);
 
 typedef BOOL (__attribute__((ms_abi)) *fn_CloseHandle)(HANDLE hObject);
 

@@ -7,17 +7,30 @@ param(
     [int]$TimeoutMs = 45000,
     [switch]$LoaderProtectRx,
     [switch]$LoaderSplitProtect,
+    [switch]$LoaderDetachThread,
     [string]$LoaderRwOffset = "",
     [switch]$Barebone,
     [switch]$BareboneModules,
+    [switch]$LegacyOnlyTasking,
     [switch]$ProfileMode,
+    [int]$MinBeaconCheckins = 0,
     [switch]$ModuleSmoke,
     [string]$ModuleBlob = "implant\build\modules\template.bin",
     [string]$ModuleName = "template",
     [string]$ModuleArgs = "ping",
     [int]$ModuleDispatchDelayMs = 0,
     [int]$HoldAfterTaskCompleteMs = 0,
+    [int]$PostCleanupScannerGraceMs = 90000,
     [int]$MinResultBytes = 0,
+    [switch]$LabCleanSleepEntry,
+    [switch]$LabBenignSleep,
+    [switch]$LabOffThreadWait,
+    [switch]$LabCallbackTick,
+    [switch]$BuilderEquivalent,
+    [ValidateSet("raw", "dotnet", "service")]
+    [string]$ArtifactFormat = "raw",
+    [switch]$StubDetachedHold,
+    [switch]$ServiceScm,
     [switch]$EvasionModuleOverload,
     [switch]$EvasionPdataRegister,
     [switch]$EvasionNtContinueEntry,
@@ -25,7 +38,9 @@ param(
     [switch]$EvasionModulePatchOnly,
     [int]$ScanDelayMs = 0,
     [switch]$ScanAfterFirstCheckin,
-    [int]$ScanDelayAfterCheckinMs = 2500
+    [int]$ScanDelayAfterCheckinMs = 2500,
+    [ValidateSet("single", "resident-only", "module-active", "post-cleanup")]
+    [string]$EvidenceWindow = "single"
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +52,8 @@ New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 New-Item -ItemType Directory -Force -Path $ScanRoot | Out-Null
 
 if (-not $OutputPath) {
-    $OutputPath = Join-Path $EvidenceDir "phase2-memory-scanner-evidence-$(Get-Date -Format 'yyyyMMdd-HHmmss').md"
+    $WindowSuffix = if ($EvidenceWindow -eq "single") { "" } else { "-$EvidenceWindow" }
+    $OutputPath = Join-Path $EvidenceDir "phase2-memory-scanner$WindowSuffix-evidence-$(Get-Date -Format 'yyyyMMdd-HHmmss').md"
 }
 
 function Get-FirstCommand {
@@ -53,7 +69,7 @@ function Get-FirstCommand {
 function Invoke-NativeCapture {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string[]]$Arguments = @(),
         [Parameter(Mandatory = $true)][string]$StdoutPath,
         [Parameter(Mandatory = $true)][string]$StderrPath,
         [string]$WorkingDirectory = $RepoRoot
@@ -187,14 +203,33 @@ function Get-RegexValueOrUnknown {
     return $Match.Matches[0].Groups[1].Value
 }
 
-function Find-LiveLoader {
-    param([Parameter(Mandatory = $true)][datetime]$StartedAfter)
+function Get-FirstPatternLineOrUnknown {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Pattern
+    )
+
+    if (-not (Test-Path $Path)) { return "unknown" }
+    $Match = Select-String -Path $Path -Pattern $Pattern | Select-Object -First 1
+    if (-not $Match) { return "unknown" }
+    return $Match.Line.Trim()
+}
+
+function Find-LivePayloadProcess {
+    param(
+        [Parameter(Mandatory = $true)][datetime]$StartedAfter,
+        [Parameter(Mandatory = $true)][string[]]$ProcessNames
+    )
 
     $Deadline = (Get-Date).AddSeconds(60)
     while ((Get-Date) -lt $Deadline) {
-        $Candidates = @(Get-Process -Name "pic_loader" -ErrorAction SilentlyContinue | Where-Object {
-            try { $_.StartTime -ge $StartedAfter } catch { $false }
-        } | Sort-Object StartTime -Descending)
+        $Candidates = @()
+        foreach ($ProcessName in $ProcessNames) {
+            $Candidates += @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | Where-Object {
+                try { $_.StartTime -ge $StartedAfter } catch { $false }
+            })
+        }
+        $Candidates = @($Candidates | Sort-Object StartTime -Descending)
         if ($Candidates.Count -gt 0) {
             return $Candidates[0]
         }
@@ -252,6 +287,18 @@ if (-not $Python) { throw "Python not found" }
 if ($LoaderProtectRx -and $LoaderSplitProtect) {
     throw "-LoaderProtectRx and -LoaderSplitProtect are mutually exclusive"
 }
+if ($ArtifactFormat -ne "raw" -and ($LoaderProtectRx -or $LoaderSplitProtect -or $LoaderDetachThread)) {
+    throw "Loader protection/detach switches only apply to -ArtifactFormat raw"
+}
+if ($ServiceScm -and $ArtifactFormat -ne "service") {
+    throw "-ServiceScm requires -ArtifactFormat service"
+}
+if ($EvidenceWindow -eq "resident-only" -and $ModuleSmoke) {
+    throw "-EvidenceWindow resident-only must run without -ModuleSmoke"
+}
+if (($EvidenceWindow -eq "module-active" -or $EvidenceWindow -eq "post-cleanup") -and -not $ModuleSmoke) {
+    throw "-EvidenceWindow $EvidenceWindow requires -ModuleSmoke"
+}
 
 $CleanOut = Join-Path $ScanRoot "make-clean.stdout.log"
 $CleanErr = Join-Path $ScanRoot "make-clean.stderr.log"
@@ -271,6 +318,18 @@ if ($Barebone -or $BareboneModules) {
     if ($BareboneModules) {
         $MakeArgs += "BAREBONE_MODULES=1"
     }
+    if ($LabCleanSleepEntry) {
+        $MakeArgs += "CLEAN_SLEEP_ENTRY=1"
+    }
+    if ($LabBenignSleep) {
+        $MakeArgs += "BENIGN_SLEEP=1"
+    }
+    if ($LabOffThreadWait) {
+        $MakeArgs += "OFFTHREAD_WAIT=1"
+    }
+    if ($LabCallbackTick) {
+        $MakeArgs += "CALLBACK_TICK=1"
+    }
     if ($EvasionModuleOverload) {
         $MakeArgs += "BAREBONE_MODULE_OVERLOAD=1"
     }
@@ -288,16 +347,34 @@ if ($Build.ExitCode -ne 0) {
     throw "implant DEV build failed: $($Build.ExitCode). See $BuildOut and $BuildErr"
 }
 
-$LoaderBuildOut = Join-Path $ScanRoot "pic-loader-build.stdout.log"
-$LoaderBuildErr = Join-Path $ScanRoot "pic-loader-build.stderr.log"
-$LoaderBuild = Invoke-NativeCapture `
-    -FilePath "make" `
-    -Arguments @("pic-loader") `
-    -WorkingDirectory (Join-Path $RepoRoot "implant") `
-    -StdoutPath $LoaderBuildOut `
-    -StderrPath $LoaderBuildErr
-if ($LoaderBuild.ExitCode -ne 0) {
-    throw "pic-loader build failed: $($LoaderBuild.ExitCode). See $LoaderBuildOut and $LoaderBuildErr"
+if ($ArtifactFormat -eq "raw") {
+    $LoaderBuildOut = Join-Path $ScanRoot "pic-loader-build.stdout.log"
+    $LoaderBuildErr = Join-Path $ScanRoot "pic-loader-build.stderr.log"
+    $LoaderBuild = Invoke-NativeCapture `
+        -FilePath "make" `
+        -Arguments @("pic-loader") `
+        -WorkingDirectory (Join-Path $RepoRoot "implant") `
+        -StdoutPath $LoaderBuildOut `
+        -StderrPath $LoaderBuildErr
+    if ($LoaderBuild.ExitCode -ne 0) {
+        throw "pic-loader build failed: $($LoaderBuild.ExitCode). See $LoaderBuildOut and $LoaderBuildErr"
+    }
+} else {
+    $StubsBuildOut = Join-Path $ScanRoot "stubs-build.stdout.log"
+    $StubsBuildErr = Join-Path $ScanRoot "stubs-build.stderr.log"
+    $StubsArgs = @()
+    if ($StubDetachedHold -or $LabCallbackTick) {
+        $StubsArgs += "DETACHED_HOLD=1"
+    }
+    $StubsBuild = Invoke-NativeCapture `
+        -FilePath "make" `
+        -Arguments $StubsArgs `
+        -WorkingDirectory (Join-Path $RepoRoot "implant\stubs") `
+        -StdoutPath $StubsBuildOut `
+        -StderrPath $StubsBuildErr
+    if ($StubsBuild.ExitCode -ne 0) {
+        throw "stub template build failed: $($StubsBuild.ExitCode). See $StubsBuildOut and $StubsBuildErr"
+    }
 }
 
 if ($ModuleSmoke) {
@@ -314,10 +391,16 @@ if ($ModuleSmoke) {
     }
 }
 
-$Payload = Join-Path $EvidenceDir "pic-listener-smoke-memory.bin"
+$PayloadExtension = if ($ArtifactFormat -eq "raw") { "bin" } else { "exe" }
+$Payload = Join-Path $EvidenceDir "pic-listener-smoke-memory.$PayloadExtension"
 $Db = Join-Path $EvidenceDir "pic-listener-smoke-memory.db"
 $LoaderLog = Join-Path $EvidenceDir "pic-listener-smoke-memory.loader.log"
 $Loader = Join-Path $RepoRoot "implant\build\tests\pic_loader.exe"
+$PayloadProcessNames = if ($ArtifactFormat -eq "raw") {
+    @("pic_loader")
+} else {
+    @([System.IO.Path]::GetFileNameWithoutExtension($Payload))
+}
 $CargoOut = Join-Path $ScanRoot "pic-listener-smoke.stdout.log"
 $CargoErr = Join-Path $ScanRoot "pic-listener-smoke.stderr.log"
 
@@ -326,18 +409,30 @@ $CargoArgs = @(
     "--pic", "implant/build/specter.bin",
     "--loader", $Loader,
     "--out", $Payload,
+    "--artifact-format", $ArtifactFormat,
     "--db", $Db,
     "--loader-log", $LoaderLog,
     "--timeout-ms", "$TimeoutMs",
+    "--min-beacon-checkins", "$MinBeaconCheckins",
     "--hold-after-register-ms", "$HoldAfterRegisterMs"
 )
-if ($Barebone) {
+if ($Barebone -or $LegacyOnlyTasking) {
     $CargoArgs += "--legacy-only"
+}
+if ($BuilderEquivalent) {
+    $CargoArgs += "--builder-equivalent"
 }
 if ($ProfileMode) {
     $CargoArgs += "--profile-mode"
 }
+if ($ServiceScm) {
+    $CargoArgs += "--service-scm"
+}
 if ($ModuleSmoke) {
+    $CargoHoldAfterTaskCompleteMs = $HoldAfterTaskCompleteMs
+    if ($EvidenceWindow -eq "post-cleanup") {
+        $CargoHoldAfterTaskCompleteMs = [Math]::Max($HoldAfterTaskCompleteMs + $PostCleanupScannerGraceMs, 20000)
+    }
     $CargoArgs += "--module-smoke"
     $CargoArgs += "--module-blob"
     $CargoArgs += $ModuleBlob
@@ -348,7 +443,7 @@ if ($ModuleSmoke) {
     $CargoArgs += "--module-dispatch-delay-ms"
     $CargoArgs += "$ModuleDispatchDelayMs"
     $CargoArgs += "--hold-after-task-complete-ms"
-    $CargoArgs += "$HoldAfterTaskCompleteMs"
+    $CargoArgs += "$CargoHoldAfterTaskCompleteMs"
     $CargoArgs += "--min-result-bytes"
     $CargoArgs += "$MinResultBytes"
 }
@@ -362,6 +457,9 @@ if ($LoaderSplitProtect) {
     $CargoArgs += "--loader-split-protect"
     $CargoArgs += "--loader-rw-offset"
     $CargoArgs += $LoaderRwOffset
+}
+if ($LoaderDetachThread -or $LabCallbackTick) {
+    $CargoArgs += "--loader-detach-thread"
 }
 if ($EvasionModuleOverload) {
     $CargoArgs += "--evasion-module-overload"
@@ -390,7 +488,7 @@ $Cargo = Start-Process `
     -PassThru `
     -WindowStyle Hidden
 
-$LoaderProcess = Find-LiveLoader -StartedAfter $StartedAt
+$LoaderProcess = Find-LivePayloadProcess -StartedAfter $StartedAt -ProcessNames $PayloadProcessNames
 if (-not $LoaderProcess) {
     try {
         if (-not $Cargo.HasExited) { Stop-Process -Id $Cargo.Id -Force }
@@ -399,11 +497,22 @@ if (-not $LoaderProcess) {
     $PayloadSize = if (Test-Path $Payload) { (Get-Item $Payload).Length } else { 0 }
     $SmokeStdout = if (Test-Path $CargoOut) { Get-Content -Path $CargoOut -Raw } else { "" }
     $SmokeStatus = if ($SmokeStdout -match "PIC listener smoke: PASS") { "PASS" } else { "FAILED_BEFORE_SCAN" }
+    $ArtifactSource = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke artifact source: ([^\r\n]+)"
+    $BuilderTransformsEnabled = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke builder transforms enabled: ([^\r\n]+)"
+    $BuilderConfigBlobSize = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke builder config blob size: ([^\r\n]+)"
+    $BuilderOutputSha256 = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke builder output SHA256: ([^\r\n]+)"
+    $SmokeArtifactFormat = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke artifact format: ([^\r\n]+)"
+    $SmokeLaunchMode = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke launch mode: ([^\r\n]+)"
+    $ObservedBeaconCheckins = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "beacon_checkins=(\d+)"
+    if ($ObservedBeaconCheckins -eq "unknown") {
+        $ObservedBeaconCheckins = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke beacon check-ins: (\d+)"
+    }
 
     $Lines = New-Object System.Collections.Generic.List[string]
     $Lines.Add("# Phase 2 Memory Scanner Evidence")
     $Lines.Add("")
     $Lines.Add("- Date: $(Get-Date -Format o)")
+    $Lines.Add("- Evidence window: $EvidenceWindow")
     $Lines.Add("- Loader PID: not available")
     $Lines.Add("- Scan window start: $($StartedAt.ToString('o'))")
     $Lines.Add("- Scan window end: $($EndedAt.ToString('o'))")
@@ -411,10 +520,27 @@ if (-not $LoaderProcess) {
     $Lines.Add("- Smoke timeout: $TimeoutMs ms")
     $Lines.Add("- Loader protect RX: $($LoaderProtectRx.IsPresent)")
     $Lines.Add("- Loader split protect: $($LoaderSplitProtect.IsPresent)")
+    $Lines.Add("- Loader detach thread: $($LoaderDetachThread.IsPresent -or $LabCallbackTick.IsPresent)")
     if ($LoaderSplitProtect) { $Lines.Add("- Loader RW offset: $LoaderRwOffset") }
     $Lines.Add("- Barebone build: $($Barebone.IsPresent)")
     $Lines.Add("- Barebone modules build: $($BareboneModules.IsPresent)")
+    $Lines.Add("- Lab clean sleep entry: $($LabCleanSleepEntry.IsPresent)")
+    $Lines.Add("- Lab benign sleep: $($LabBenignSleep.IsPresent)")
+    $Lines.Add("- Lab off-thread wait: $($LabOffThreadWait.IsPresent)")
+    $Lines.Add("- Lab callback tick: $($LabCallbackTick.IsPresent)")
+    $Lines.Add("- Artifact source: $ArtifactSource")
+    $Lines.Add("- Artifact format: $SmokeArtifactFormat")
+    $Lines.Add("- Artifact launch mode: $SmokeLaunchMode")
+    $Lines.Add("- Service SCM launch: $($ServiceScm.IsPresent)")
+    $Lines.Add("- Builder-equivalent requested: $($BuilderEquivalent.IsPresent)")
+    $Lines.Add("- Legacy-only tasking: $($Barebone.IsPresent -or $LegacyOnlyTasking.IsPresent)")
+    $Lines.Add("- Stub detached hold: $($StubDetachedHold.IsPresent -or ($LabCallbackTick.IsPresent -and $ArtifactFormat -ne 'raw'))")
+    $Lines.Add("- Builder transform enabled: $BuilderTransformsEnabled")
+    $Lines.Add("- Builder config blob size: $BuilderConfigBlobSize")
+    $Lines.Add("- Builder output SHA256: $BuilderOutputSha256")
     $Lines.Add("- Profile mode: $($ProfileMode.IsPresent)")
+    $Lines.Add("- Minimum beacon check-ins: $MinBeaconCheckins")
+    $Lines.Add("- Observed beacon check-ins: $ObservedBeaconCheckins")
     $Lines.Add("- Module smoke: $($ModuleSmoke.IsPresent)")
     if ($ModuleSmoke) {
         $Lines.Add("- Module blob: $ModuleBlob")
@@ -422,6 +548,10 @@ if (-not $LoaderProcess) {
         $Lines.Add("- Module args: $ModuleArgs")
         $Lines.Add("- Module dispatch delay: $ModuleDispatchDelayMs ms")
         $Lines.Add("- Hold after task complete: $HoldAfterTaskCompleteMs ms")
+        if ($EvidenceWindow -eq "post-cleanup") {
+            $Lines.Add("- Smoke hold after task complete: $CargoHoldAfterTaskCompleteMs ms")
+            $Lines.Add("- Post-cleanup scanner grace: $PostCleanupScannerGraceMs ms")
+        }
         $Lines.Add("- Minimum result bytes: $MinResultBytes")
     }
     $Lines.Add("- Evasion module overload: $($EvasionModuleOverload.IsPresent)")
@@ -469,16 +599,113 @@ if (-not $LoaderProcess) {
 }
 
 $FirstCheckinObserved = $false
-if ($ScanAfterFirstCheckin) {
-    $FirstCheckinObserved = Wait-FilePattern `
-        -Path $LoaderLog `
-        -Pattern "comms_init OK|checkin: complete" `
-        -TimeoutMs ([Math]::Min($TimeoutMs, 30000))
-    if ($ScanDelayAfterCheckinMs -gt 0) {
-        Start-Sleep -Milliseconds $ScanDelayAfterCheckinMs
+$ModuleDispatchObserved = $false
+$CleanupObserved = $false
+$BeaconCheckinsObservedBeforeScan = $false
+
+function Wait-BeaconCheckins {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$Minimum,
+        [int]$TimeoutMs = 30000
+    )
+
+    if ($Minimum -le 1) { return $true }
+    $Pattern = "PIC listener smoke beacon check-ins: $Minimum|beacon_checkins=$Minimum"
+    return Wait-FilePattern -Path $Path -Pattern $Pattern -TimeoutMs $TimeoutMs
+}
+
+switch ($EvidenceWindow) {
+    "resident-only" {
+        $FirstCheckinPath = if ($ArtifactFormat -eq "raw") { $LoaderLog } else { $CargoOut }
+        $FirstCheckinPattern = if ($ArtifactFormat -eq "raw") { "comms_init OK|checkin: complete" } else { "PIC listener smoke session registered|PIC listener smoke: PASS" }
+        $FirstCheckinObserved = Wait-FilePattern `
+            -Path $FirstCheckinPath `
+            -Pattern $FirstCheckinPattern `
+            -TimeoutMs ([Math]::Min($TimeoutMs, 30000))
+        if (-not $FirstCheckinObserved) {
+            throw "resident-only window did not observe first check-in before scan"
+        }
+        $BeaconCheckinsObservedBeforeScan = Wait-BeaconCheckins `
+            -Path $CargoOut `
+            -Minimum $MinBeaconCheckins `
+            -TimeoutMs ([Math]::Min($TimeoutMs, 60000))
+        if (-not $BeaconCheckinsObservedBeforeScan) {
+            throw "resident-only window did not observe $MinBeaconCheckins beacon check-ins before scan"
+        }
+        if ($ScanDelayAfterCheckinMs -gt 0) {
+            Start-Sleep -Milliseconds $ScanDelayAfterCheckinMs
+        }
     }
-} elseif ($ScanDelayMs -gt 0) {
-    Start-Sleep -Milliseconds $ScanDelayMs
+    "module-active" {
+        $ModuleDispatchObserved = Wait-FilePattern `
+            -Path $CargoOut `
+            -Pattern "PIC listener smoke queued module task" `
+            -TimeoutMs ([Math]::Min($TimeoutMs, 30000))
+        if (-not $ModuleDispatchObserved) {
+            throw "module-active window did not observe module dispatch before scan"
+        }
+        $BeaconCheckinsObservedBeforeScan = Wait-BeaconCheckins `
+            -Path $CargoOut `
+            -Minimum $MinBeaconCheckins `
+            -TimeoutMs ([Math]::Min($TimeoutMs, 60000))
+        if (-not $BeaconCheckinsObservedBeforeScan) {
+            throw "module-active window did not observe $MinBeaconCheckins beacon check-ins before scan"
+        }
+        if ($ScanDelayMs -gt 0) {
+            Start-Sleep -Milliseconds $ScanDelayMs
+        }
+    }
+    "post-cleanup" {
+        $ModuleDispatchObserved = Wait-FilePattern `
+            -Path $CargoOut `
+            -Pattern "PIC listener smoke queued module task" `
+            -TimeoutMs ([Math]::Min($TimeoutMs, 30000))
+        if (-not $ModuleDispatchObserved) {
+            throw "post-cleanup window did not observe module dispatch before cleanup wait"
+        }
+        $CleanupPath = if ($ArtifactFormat -eq "raw") { $LoaderLog } else { $CargoOut }
+        $CleanupPattern = if ($ArtifactFormat -eq "raw") { "module cleanup generation" } else { "PIC listener smoke task complete: .* status=complete" }
+        $CleanupObserved = Wait-FilePattern `
+            -Path $CleanupPath `
+            -Pattern $CleanupPattern `
+            -TimeoutMs $TimeoutMs
+        if (-not $CleanupObserved) {
+            throw "post-cleanup window did not observe module cleanup generation before scan"
+        }
+        $BeaconCheckinsObservedBeforeScan = Wait-BeaconCheckins `
+            -Path $CargoOut `
+            -Minimum $MinBeaconCheckins `
+            -TimeoutMs ([Math]::Min($TimeoutMs, 60000))
+        if (-not $BeaconCheckinsObservedBeforeScan) {
+            throw "post-cleanup window did not observe $MinBeaconCheckins beacon check-ins before scan"
+        }
+        if ($HoldAfterTaskCompleteMs -gt 0) {
+            Start-Sleep -Milliseconds $HoldAfterTaskCompleteMs
+        }
+    }
+    default {
+        if ($ScanAfterFirstCheckin) {
+            $FirstCheckinPath = if ($ArtifactFormat -eq "raw") { $LoaderLog } else { $CargoOut }
+            $FirstCheckinPattern = if ($ArtifactFormat -eq "raw") { "comms_init OK|checkin: complete" } else { "PIC listener smoke session registered|PIC listener smoke: PASS" }
+            $FirstCheckinObserved = Wait-FilePattern `
+                -Path $FirstCheckinPath `
+                -Pattern $FirstCheckinPattern `
+                -TimeoutMs ([Math]::Min($TimeoutMs, 30000))
+            if ($ScanDelayAfterCheckinMs -gt 0) {
+                Start-Sleep -Milliseconds $ScanDelayAfterCheckinMs
+            }
+            $BeaconCheckinsObservedBeforeScan = Wait-BeaconCheckins `
+                -Path $CargoOut `
+                -Minimum $MinBeaconCheckins `
+                -TimeoutMs ([Math]::Min($TimeoutMs, 60000))
+            if (-not $BeaconCheckinsObservedBeforeScan) {
+                throw "single window did not observe $MinBeaconCheckins beacon check-ins before scan"
+            }
+        } elseif ($ScanDelayMs -gt 0) {
+            Start-Sleep -Milliseconds $ScanDelayMs
+        }
+    }
 }
 
 $PidText = [string]$LoaderProcess.Id
@@ -523,13 +750,56 @@ if (-not $CargoWaited) {
 
 $EndedAt = Get-Date
 $PayloadSize = if (Test-Path $Payload) { (Get-Item $Payload).Length } else { 0 }
+$PayloadSha256 = if (Test-Path $Payload) { (Get-FileHash -Algorithm SHA256 -Path $Payload).Hash.ToLowerInvariant() } else { "unknown" }
 $SmokeStdout = if (Test-Path $CargoOut) { Get-Content -Path $CargoOut -Raw } else { "" }
 $SmokeStatus = if ($SmokeStdout -match "PIC listener smoke: PASS") { "PASS" } else { "UNKNOWN" }
 if ($SmokeStatus -eq "PASS" -and $CargoExitCode -eq "unknown") {
     $CargoExitCode = "unknown (smoke PASS observed)"
 }
+$ArtifactSource = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke artifact source: ([^\r\n]+)"
+$BuilderTransformsEnabled = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke builder transforms enabled: ([^\r\n]+)"
+$BuilderConfigBlobSize = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke builder config blob size: ([^\r\n]+)"
+$BuilderOutputSha256 = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke builder output SHA256: ([^\r\n]+)"
+$SmokeArtifactFormat = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke artifact format: ([^\r\n]+)"
+$SmokeLaunchMode = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke launch mode: ([^\r\n]+)"
+$ObservedBeaconCheckins = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "beacon_checkins=(\d+)"
+if ($ObservedBeaconCheckins -eq "unknown") {
+    $ObservedBeaconCheckins = Get-RegexValueOrUnknown -Path $CargoOut -Pattern "PIC listener smoke beacon check-ins: (\d+)"
+}
 $PeSieveReport = Join-Path $PeSieveDir "process_$PidText\scan_report.json"
+if (-not (Test-Path $PeSieveReport)) {
+    $PeSieveStdout = Join-Path $ScanRoot "pe-sieve.stdout.log"
+    if (Test-Path $PeSieveStdout) {
+        $PeSieveStdoutText = Get-Content -Path $PeSieveStdout -Raw
+        $JsonStart = $PeSieveStdoutText.IndexOf('{')
+        if ($JsonStart -ge 0) {
+            $PeSieveStdoutReport = Join-Path $ScanRoot "pe-sieve-stdout-scan-report.json"
+            try {
+                $PeSieveStdoutJson = $PeSieveStdoutText.Substring($JsonStart) | ConvertFrom-Json
+                if ($PeSieveStdoutJson.scan_report) {
+                    $PeSieveStdoutJson.scan_report | ConvertTo-Json -Depth 32 | Set-Content -Path $PeSieveStdoutReport
+                    $PeSieveReport = $PeSieveStdoutReport
+                }
+            } catch {}
+        }
+    }
+}
 $HollowsSummary = Join-Path $HollowsDir "summary.json"
+if (-not (Test-Path $HollowsSummary)) {
+    $HollowsStdout = Join-Path $ScanRoot "hollows-hunter.stdout.log"
+    if (Test-Path $HollowsStdout) {
+        $HollowsStdoutText = Get-Content -Path $HollowsStdout -Raw
+        $JsonStart = $HollowsStdoutText.IndexOf('{')
+        if ($JsonStart -ge 0) {
+            $HollowsStdoutSummary = Join-Path $ScanRoot "hollows-hunter-stdout-summary.json"
+            try {
+                $HollowsStdoutText.Substring($JsonStart) | ConvertFrom-Json |
+                    ConvertTo-Json -Depth 32 | Set-Content -Path $HollowsStdoutSummary
+                $HollowsSummary = $HollowsStdoutSummary
+            } catch {}
+        }
+    }
+}
 $PeSieveModified = Get-JsonValueOrUnknown -Path $PeSieveReport -Accessor { param($Json) $Json.scanned.modified.total }
 $PeSieveShellcode = Get-JsonValueOrUnknown -Path $PeSieveReport -Accessor { param($Json) $Json.scanned.modified.implanted_shc }
 $PeSieveHdrModified = Get-JsonValueOrUnknown -Path $PeSieveReport -Accessor { param($Json) $Json.scanned.modified.hdr_modified }
@@ -546,14 +816,24 @@ $PeSieveThreadState = Get-PeSieveScanValueOrUnknown -Path $PeSieveReport -Kind "
 $PeSieveThreadWaitReason = Get-PeSieveScanValueOrUnknown -Path $PeSieveReport -Kind "thread_scan" -Accessor { param($Scan) $Scan.thread_info.wait_reason }
 $PeSieveThreadLastSyscall = Get-PeSieveScanValueOrUnknown -Path $PeSieveReport -Kind "thread_scan" -Accessor { param($Scan) $Scan.thread_info.last_sysc }
 $PeSieveThreadFrames = Get-PeSieveScanValueOrUnknown -Path $PeSieveReport -Kind "thread_scan" -Accessor { param($Scan) $Scan.thread_info.callstack.frames_count }
+$PeSieveSuspiciousAddress = Get-PeSieveScanValueOrUnknown -Path $PeSieveReport -Kind "thread_scan" -Accessor { param($Scan) $Scan.susp_addr }
 $PeSieveModuleSize = Get-PeSieveScanValueOrUnknown -Path $PeSieveReport -Kind "thread_scan" -Accessor { param($Scan) $Scan.module_size }
 $PeSieveProtection = Get-PeSieveScanValueOrUnknown -Path $PeSieveReport -Kind "thread_scan" -Accessor { param($Scan) $Scan.protection }
 $HollowsSuspicious = Get-JsonValueOrUnknown -Path $HollowsSummary -Accessor { param($Json) $Json.suspicious_count }
+$MarkerCfgInitDone = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: cfg_init_done"
+$MarkerSleepInit = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: sleep_init_(done|skipped)"
+$MarkerCommsSetupDone = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: comms_setup_done"
+$MarkerInitDone = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: init_done"
+$MarkerFirstCheckinDone = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: first_checkin_done"
+$MarkerSleepScheduled = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: sleep_scheduled"
+$MarkerCallbackTickEntered = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: callback_tick_entered"
+$MarkerSleepEntered = Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern "phase2 marker: sleep_entered"
 
 $Lines = New-Object System.Collections.Generic.List[string]
 $Lines.Add("# Phase 2 Memory Scanner Evidence")
 $Lines.Add("")
 $Lines.Add("- Date: $(Get-Date -Format o)")
+$Lines.Add("- Evidence window: $EvidenceWindow")
 $Lines.Add("- Loader PID: $PidText")
 $Lines.Add("- Scan window start: $($StartedAt.ToString('o'))")
 $Lines.Add("- Scan window end: $($EndedAt.ToString('o'))")
@@ -561,10 +841,28 @@ $Lines.Add("- Hold after register: $HoldAfterRegisterMs ms")
 $Lines.Add("- Smoke timeout: $TimeoutMs ms")
 $Lines.Add("- Loader protect RX: $($LoaderProtectRx.IsPresent)")
 $Lines.Add("- Loader split protect: $($LoaderSplitProtect.IsPresent)")
+$Lines.Add("- Loader detach thread: $($LoaderDetachThread.IsPresent -or $LabCallbackTick.IsPresent)")
 if ($LoaderSplitProtect) { $Lines.Add("- Loader RW offset: $LoaderRwOffset") }
 $Lines.Add("- Barebone build: $($Barebone.IsPresent)")
 $Lines.Add("- Barebone modules build: $($BareboneModules.IsPresent)")
+$Lines.Add("- Lab clean sleep entry: $($LabCleanSleepEntry.IsPresent)")
+$Lines.Add("- Lab benign sleep: $($LabBenignSleep.IsPresent)")
+$Lines.Add("- Lab off-thread wait: $($LabOffThreadWait.IsPresent)")
+$Lines.Add("- Lab callback tick: $($LabCallbackTick.IsPresent)")
+$Lines.Add("- Artifact source: $ArtifactSource")
+$Lines.Add("- Artifact format: $SmokeArtifactFormat")
+$Lines.Add("- Artifact launch mode: $SmokeLaunchMode")
+$Lines.Add("- Service SCM launch: $($ServiceScm.IsPresent)")
+$Lines.Add("- Builder-equivalent requested: $($BuilderEquivalent.IsPresent)")
+$Lines.Add("- Legacy-only tasking: $($Barebone.IsPresent -or $LegacyOnlyTasking.IsPresent)")
+$Lines.Add("- Stub detached hold: $($StubDetachedHold.IsPresent -or ($LabCallbackTick.IsPresent -and $ArtifactFormat -ne 'raw'))")
+$Lines.Add("- Builder transform enabled: $BuilderTransformsEnabled")
+$Lines.Add("- Builder config blob size: $BuilderConfigBlobSize")
+$Lines.Add("- Builder output SHA256: $BuilderOutputSha256")
 $Lines.Add("- Profile mode: $($ProfileMode.IsPresent)")
+$Lines.Add("- Minimum beacon check-ins: $MinBeaconCheckins")
+$Lines.Add("- Observed beacon check-ins: $ObservedBeaconCheckins")
+$Lines.Add("- Beacon check-ins observed before scan: $BeaconCheckinsObservedBeforeScan")
 $Lines.Add("- Module smoke: $($ModuleSmoke.IsPresent)")
 if ($ModuleSmoke) {
     $Lines.Add("- Module blob: $ModuleBlob")
@@ -572,6 +870,10 @@ if ($ModuleSmoke) {
     $Lines.Add("- Module args: $ModuleArgs")
     $Lines.Add("- Module dispatch delay: $ModuleDispatchDelayMs ms")
     $Lines.Add("- Hold after task complete: $HoldAfterTaskCompleteMs ms")
+    if ($EvidenceWindow -eq "post-cleanup") {
+        $Lines.Add("- Smoke hold after task complete: $CargoHoldAfterTaskCompleteMs ms")
+        $Lines.Add("- Post-cleanup scanner grace: $PostCleanupScannerGraceMs ms")
+    }
     $Lines.Add("- Minimum result bytes: $MinResultBytes")
 }
 $Lines.Add("- Evasion module overload: $($EvasionModuleOverload.IsPresent)")
@@ -583,11 +885,24 @@ $Lines.Add("- Scan delay: $ScanDelayMs ms")
 $Lines.Add("- Scan after first check-in: $($ScanAfterFirstCheckin.IsPresent)")
 $Lines.Add("- Scan delay after check-in: $ScanDelayAfterCheckinMs ms")
 $Lines.Add("- First check-in observed before scan: $FirstCheckinObserved")
+$Lines.Add("- Module dispatch observed before scan: $ModuleDispatchObserved")
+$Lines.Add("- Cleanup generation observed before scan: $CleanupObserved")
 $Lines.Add("- Smoke status: $SmokeStatus")
 $Lines.Add("- Smoke exit code: $CargoExitCode")
 $Lines.Add("- Payload: $Payload ($PayloadSize bytes)")
+$Lines.Add("- Payload SHA256: $PayloadSha256")
+$Lines.Add("- Map file: $(Join-Path $RepoRoot 'implant\build\specter.map')")
 $Lines.Add("- Loader log: $LoaderLog")
 $Lines.Add("- Raw scan root: $ScanRoot")
+$Lines.Add("- Marker cfg_init_done: $MarkerCfgInitDone")
+$Lines.Add("- Marker sleep_init: $MarkerSleepInit")
+$Lines.Add("- Marker comms_setup_done: $MarkerCommsSetupDone")
+$Lines.Add("- Marker init_done: $MarkerInitDone")
+$Lines.Add("- Marker first_checkin_done: $MarkerFirstCheckinDone")
+$Lines.Add("- Marker initial_thread_released: $(Get-FirstPatternLineOrUnknown -Path $LoaderLog -Pattern 'phase2 marker: initial_thread_released')")
+$Lines.Add("- Marker sleep_scheduled: $MarkerSleepScheduled")
+$Lines.Add("- Marker callback_tick_entered: $MarkerCallbackTickEntered")
+$Lines.Add("- Marker sleep_entered: $MarkerSleepEntered")
 $Lines.Add("")
 $Lines.Add("## Scanner Runs")
 $Lines.Add("")
@@ -616,6 +931,7 @@ $Lines.Add("- PE-sieve thread last syscall: $PeSieveThreadLastSyscall")
 $Lines.Add("- PE-sieve thread frames: $PeSieveThreadFrames")
 $Lines.Add("- PE-sieve thread indicators: $PeSieveIndicators")
 $Lines.Add("- PE-sieve dump is_shellcode: $PeSieveThreadShellcode")
+$Lines.Add("- PE-sieve suspicious address: $PeSieveSuspiciousAddress")
 $Lines.Add("- PE-sieve suspicious module size: $PeSieveModuleSize")
 $Lines.Add("- PE-sieve suspicious protection: $PeSieveProtection")
 $Lines.Add("- HollowsHunter suspicious process count: $HollowsSuspicious")

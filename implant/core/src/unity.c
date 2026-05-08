@@ -40,6 +40,9 @@
 #if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULE_OVERLOAD)
 #include "evasion/modoverload.c"
 #endif
+#if !defined(SPECTER_BAREBONE) || defined(SPECTER_LAB_CLEAN_SLEEP_ENTRY)
+#include "evasion/ntcontinue_entry.c"
+#endif
 #ifndef SPECTER_BAREBONE
 #include "evasion/stackspoof.c"
 #include "evasion/hooks.c"
@@ -47,7 +50,6 @@
 #include "evasion/memguard.c"
 #include "evasion/antianalysis.c"
 #include "evasion/pdata_reg.c"
-#include "evasion/ntcontinue_entry.c"
 #endif
 
 #if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULES)

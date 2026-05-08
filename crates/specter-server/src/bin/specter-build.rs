@@ -16,8 +16,8 @@
 
 use clap::Parser;
 use specter_server::builder::{
-    scan_payload, BuilderConfig, ChannelConfig, EvasionFlags, ObfuscationSettings, OutputFormat,
-    PayloadBuilder, SleepConfig,
+    scan_payload, BuilderConfig, ChannelConfig, EvasionFlags, LabBuildOptions, ObfuscationSettings,
+    OutputFormat, PayloadBuilder, SleepConfig,
 };
 use specter_server::profile::schema::Profile;
 use std::path::PathBuf;
@@ -113,6 +113,10 @@ struct Cli {
     /// Jitter percent
     #[arg(long, default_value_t = 15)]
     jitter: u32,
+
+    /// Require lab-built callback tick PIC plus detached-holder PE stubs.
+    #[arg(long)]
+    lab_callback_tick_detached_holder: bool,
 }
 
 fn parse_format(s: &str) -> OutputFormat {
@@ -247,6 +251,17 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    let lab_options = LabBuildOptions {
+        callback_tick_detached_holder: cli.lab_callback_tick_detached_holder,
+    };
+    if let Err(e) = builder.validate_lab_options(format, lab_options) {
+        eprintln!("[-] Lab option validation failed: {e}");
+        std::process::exit(1);
+    }
+    if cli.lab_callback_tick_detached_holder {
+        println!("[+] Lab mode: callback_tick_detached_holder");
+    }
 
     // Create minimal profile and config
     let profile = test_profile();

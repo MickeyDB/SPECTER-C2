@@ -189,6 +189,11 @@ void cfg_test_set_pic_base(PVOID base);
  * Set the system time returned by cfg_check_killdate for testing.
  */
 void cfg_test_set_system_time(QWORD time);
+
+/**
+ * Return the current decrypt buffer ceiling for config-size budget tests.
+ */
+DWORD cfg_test_get_decrypt_max(void);
 #endif
 
 #endif /* CONFIG_H */

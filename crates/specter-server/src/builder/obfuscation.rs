@@ -675,8 +675,8 @@ fn build_xor_decrypt_stub() -> Vec<u8> {
     // 0x17: test ecx, ecx               [85 C9]
     code.extend_from_slice(&[0x85, 0xC9]);
 
-    // 0x19: jz .done (offset +17 -> 0x2C) [74 11]
-    code.extend_from_slice(&[0x74, 0x11]);
+    // 0x19: jz .done (offset +18 -> 0x2D) [74 12]
+    code.extend_from_slice(&[0x74, 0x12]);
 
     // 0x1B: movzx eax, byte [rsi+rdx]   [0F B6 04 16]
     code.extend_from_slice(&[0x0F, 0xB6, 0x04, 0x16]);

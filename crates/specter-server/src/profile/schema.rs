@@ -10,6 +10,24 @@ pub struct Profile {
     pub http: HttpConfig,
     pub timing: TimingConfig,
     pub transform: TransformChain,
+    #[serde(default)]
+    pub lab: LabConfig,
+}
+
+/// Lab-only payload behavior. These fields are intent/validation metadata;
+/// the implant and PE stubs must still be built with matching compile-time knobs.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LabConfig {
+    #[serde(default)]
+    pub resident_wait: LabResidentWaitConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LabResidentWaitConfig {
+    #[serde(default)]
+    pub callback_tick: bool,
+    #[serde(default)]
+    pub detached_holder: bool,
 }
 
 /// TLS fingerprint configuration for JA3 targeting.

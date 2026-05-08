@@ -134,6 +134,18 @@ pub fn validate_profile(profile: &Profile) -> Result<Vec<Warning>, ProfileError>
         ));
     }
 
+    if profile.lab.resident_wait.detached_holder && !profile.lab.resident_wait.callback_tick {
+        return Err(ProfileError::Validation(
+            "lab.resident_wait.detached_holder requires lab.resident_wait.callback_tick".into(),
+        ));
+    }
+    if profile.lab.resident_wait.callback_tick {
+        warnings.push(Warning {
+            field: "lab.resident_wait.callback_tick".into(),
+            message: "lab-only resident wait mode requested; payload templates must be built with CALLBACK_TICK=1 and matching detached holder stubs".into(),
+        });
+    }
+
     // Validate error_rate if set.
     if let Some(rate) = profile.http.response.error_rate_percent {
         if !(0.0..=100.0).contains(&rate) {
@@ -253,6 +265,51 @@ transform: {}
         let profile = parse_profile(yaml).unwrap();
         let err = validate_profile(&profile).unwrap_err();
         assert!(err.to_string().contains("jitter_percent"));
+    }
+
+    #[test]
+    fn test_validate_lab_detached_holder_requires_callback_tick() {
+        let yaml = r#"
+name: lab-bad
+tls: { cipher_suites: [] }
+http:
+  request:
+    uri_patterns: ["/test"]
+  response: {}
+timing:
+  callback_interval: 10
+transform: {}
+lab:
+  resident_wait:
+    detached_holder: true
+"#;
+        let profile = parse_profile(yaml).unwrap();
+        let err = validate_profile(&profile).unwrap_err();
+        assert!(err.to_string().contains("detached_holder requires"));
+    }
+
+    #[test]
+    fn test_validate_lab_callback_tick_warns() {
+        let yaml = r#"
+name: lab-good
+tls: { cipher_suites: [] }
+http:
+  request:
+    uri_patterns: ["/test"]
+  response: {}
+timing:
+  callback_interval: 10
+transform: {}
+lab:
+  resident_wait:
+    callback_tick: true
+    detached_holder: true
+"#;
+        let profile = parse_profile(yaml).unwrap();
+        let warnings = validate_profile(&profile).unwrap();
+        assert!(warnings
+            .iter()
+            .any(|w| w.field == "lab.resident_wait.callback_tick"));
     }
 
     #[test]

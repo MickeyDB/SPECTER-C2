@@ -18,6 +18,7 @@ import {
   ChannelEndpointSchema,
   SleepSettingsSchema,
   ObfuscationConfigSchema,
+  LabBuildConfigSchema,
 } from '@/gen/specter/v1/builder_pb'
 import type {
   FormatDescription,
@@ -244,6 +245,7 @@ export function PayloadBuilder() {
   // Development / Debug
   const [debugMode, setDebugMode] = useState(false)
   const [skipAntiAnalysis, setSkipAntiAnalysis] = useState(false)
+  const [labCallbackTickDetachedHolder, setLabCallbackTickDetachedHolder] = useState(false)
 
   // Build state
   const [building, setBuilding] = useState(false)
@@ -314,6 +316,9 @@ export function PayloadBuilder() {
     []
   )
 
+  const showStagerUrl = selectedFormat === 'ps1_stager' || selectedFormat === 'hta_stager'
+  const labDetachedHolderAvailable = selectedFormat !== 'raw' && !showStagerUrl
+
   const handleGenerate = useCallback(async () => {
     const validChannels = channels.filter((c) => c.address.trim())
     if (validChannels.length === 0) {
@@ -375,6 +380,10 @@ export function PayloadBuilder() {
           ntcontinueEntry,
           etwUsermodePatch,
         },
+        lab: create(LabBuildConfigSchema, {
+          callbackTickDetachedHolder:
+            labCallbackTickDetachedHolder && labDetachedHolderAvailable,
+        }),
         debugMode,
         skipAntiAnalysis,
       })
@@ -406,6 +415,8 @@ export function PayloadBuilder() {
     etwUsermodePatch,
     debugMode,
     skipAntiAnalysis,
+    labCallbackTickDetachedHolder,
+    labDetachedHolderAvailable,
     proxyTarget,
     serviceName,
     stagerUrl,
@@ -414,7 +425,6 @@ export function PayloadBuilder() {
   const selectedFormatInfo = formats.find((f) => f.name === selectedFormat)
   const showProxyTarget = selectedFormat === 'dll'
   const showServiceName = selectedFormat === 'service_exe'
-  const showStagerUrl = selectedFormat === 'ps1_stager' || selectedFormat === 'hta_stager'
 
   return (
     <div className="flex flex-col gap-6">
@@ -948,6 +958,29 @@ export function PayloadBuilder() {
                   </div>
                 </label>
               </div>
+            </section>
+
+            {/* Lab Builds */}
+            <section className="rounded-lg border border-specter-warning/30 bg-specter-warning/5 p-4">
+              <div className="mb-3 flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5 text-specter-warning" />
+                <h2 className="text-xs font-medium text-specter-text">Lab Builds</h2>
+              </div>
+              <label className="flex items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={labCallbackTickDetachedHolder}
+                  disabled={!labDetachedHolderAvailable}
+                  onChange={(e) => setLabCallbackTickDetachedHolder(e.target.checked)}
+                  className="rounded border-specter-border disabled:opacity-50"
+                />
+                <div>
+                  <div className="text-xs text-specter-text">Callback Tick + Detached Holder</div>
+                  <div className="text-[10px] text-specter-warning">
+                    Requires CALLBACK_TICK=1 implant and DETACHED_HOLD=1 PE stubs
+                  </div>
+                </div>
+              </label>
             </section>
 
             {/* Generate Button */}

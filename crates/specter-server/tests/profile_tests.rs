@@ -1,4 +1,5 @@
 use axum::http::{HeaderMap, Uri};
+use base64::{engine::general_purpose, Engine as _};
 use specter_server::db;
 use specter_server::listener::{extract_embedded_data, format_profile_response};
 use specter_server::profile::{
@@ -303,6 +304,22 @@ fn extract_embedded_data_from_json_body() {
 }
 
 #[test]
+fn extract_embedded_data_decodes_embed_encoding() {
+    let yaml = load_profile_yaml("generic-https");
+    let profile = parse_profile(&yaml).unwrap();
+    let body = br#"{"data": "ZW5jb2RlZF9wYXlsb2FkX2RhdGE="}"#;
+
+    let extracted = extract_embedded_data(
+        body,
+        &profile.http.request,
+        &HeaderMap::new(),
+        &Uri::from_static("/"),
+    );
+    assert!(extracted.is_some());
+    assert_eq!(extracted.unwrap(), b"encoded_payload_data");
+}
+
+#[test]
 fn extract_embedded_data_returns_none_for_missing_field() {
     let profile = parse_profile(minimal_yaml()).unwrap();
     let body = br#"{"other_field": "value"}"#;
@@ -376,6 +393,56 @@ async fn format_response_embeds_data_in_template() {
 }
 
 // ── Profile Store Tests ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn format_response_expands_dynamic_template_markers() {
+    let yaml = load_profile_yaml("generic-https");
+    let profile = parse_profile(&yaml).unwrap();
+    let data = b"encoded_payload_data";
+
+    let response = format_profile_response(data, &profile.http.response);
+    let resp = axum::response::IntoResponse::into_response(response);
+    let body_bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+
+    let embedded = json["data"].as_str().unwrap();
+    let decoded = general_purpose::STANDARD.decode(embedded).unwrap();
+    assert_eq!(decoded, b"encoded_payload_data");
+    assert!(json["ts"].as_i64().is_some());
+    assert!(!body_str.contains("{{"));
+}
+
+#[tokio::test]
+async fn checked_in_response_templates_are_valid_and_extractable() {
+    for profile_name in ["generic-https", "slack-webhook"] {
+        let yaml = load_profile_yaml(profile_name);
+        let profile = parse_profile(&yaml).unwrap();
+        let data = b"encoded_payload_data";
+
+        let response = format_profile_response(data, &profile.http.response);
+        let resp = axum::response::IntoResponse::into_response(response);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+
+        let field_name = profile.http.response.data_embed_points[0]
+            .field_name
+            .as_deref()
+            .unwrap();
+        let embedded = json[field_name].as_str().unwrap();
+        let decoded = general_purpose::STANDARD.decode(embedded).unwrap();
+        assert_eq!(decoded, b"encoded_payload_data");
+        assert!(
+            !body_str.contains("{{"),
+            "{profile_name} left template markers in response: {body_str}"
+        );
+    }
+}
 
 #[tokio::test]
 async fn profile_store_create_and_get() {

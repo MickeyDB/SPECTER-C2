@@ -472,6 +472,11 @@ static DWORD cmd_createthread(MODULE_BUS_API *api, const MODULE_ARGS *args)
         MODULE_OUTPUT_ERROR(api, "inject createthread: usage: createthread <pid> <shellcode>");
         return MODULE_ERR_ARGS;
     }
+    if (!api->proc_open || !api->proc_close || !api->proc_write ||
+        !api->resolve) {
+        MODULE_OUTPUT_ERROR(api, "inject createthread: missing required bus API");
+        return MODULE_ERR_INTERNAL;
+    }
 
     /* Validate target: accessible x64 process */
     if (!validate_target(api, pid,  &hProc,
@@ -551,6 +556,11 @@ static DWORD cmd_apc(MODULE_BUS_API *api, const MODULE_ARGS *args)
     if (pid == 0 || tid == 0 || !shellcode || sc_len == 0) {
         MODULE_OUTPUT_ERROR(api, "inject apc: usage: apc <pid> <tid> <shellcode>");
         return MODULE_ERR_ARGS;
+    }
+    if (!api->proc_open || !api->proc_close || !api->proc_write ||
+        !api->resolve) {
+        MODULE_OUTPUT_ERROR(api, "inject apc: missing required bus API");
+        return MODULE_ERR_INTERNAL;
     }
 
     /* Validate target */
@@ -659,6 +669,11 @@ static DWORD cmd_hijack(MODULE_BUS_API *api, const MODULE_ARGS *args)
     if (pid == 0 || tid == 0 || !shellcode || sc_len == 0) {
         MODULE_OUTPUT_ERROR(api, "inject hijack: usage: hijack <pid> <tid> <shellcode>");
         return MODULE_ERR_ARGS;
+    }
+    if (!api->proc_open || !api->proc_close || !api->proc_write ||
+        !api->resolve) {
+        MODULE_OUTPUT_ERROR(api, "inject hijack: missing required bus API");
+        return MODULE_ERR_INTERNAL;
     }
 
     /* Validate target */
@@ -807,6 +822,11 @@ static DWORD cmd_stomp(MODULE_BUS_API *api, const MODULE_ARGS *args)
     if (pid == 0 || !dll_name || !shellcode || sc_len == 0) {
         MODULE_OUTPUT_ERROR(api, "inject stomp: usage: stomp <pid> <dll_name> <shellcode>");
         return MODULE_ERR_ARGS;
+    }
+    if (!api->proc_open || !api->proc_close || !api->proc_read ||
+        !api->proc_write || !api->resolve) {
+        MODULE_OUTPUT_ERROR(api, "inject stomp: missing required bus API");
+        return MODULE_ERR_INTERNAL;
     }
 
     /* Validate target */

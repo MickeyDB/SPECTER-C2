@@ -72,6 +72,9 @@ static inline BOOL module_parse_args(const BYTE *blob, DWORD blob_len,
 {
     DWORD i, offset;
 
+    if (!out)
+        return FALSE;
+
     spec_memset(out, 0, sizeof(MODULE_ARGS));
 
     if (!blob || blob_len < 4)
@@ -86,7 +89,7 @@ static inline BOOL module_parse_args(const BYTE *blob, DWORD blob_len,
 
     for (i = 0; i < out->count; i++) {
         /* Need at least 8 bytes for type + len */
-        if (offset + 8 > blob_len)
+        if (offset > blob_len || blob_len - offset < 8)
             return FALSE;
 
         out->args[i].type = *(const DWORD *)(blob + offset);
@@ -96,7 +99,7 @@ static inline BOOL module_parse_args(const BYTE *blob, DWORD blob_len,
         offset += 4;
 
         /* Validate data fits in blob */
-        if (offset + out->args[i].len > blob_len)
+        if (out->args[i].len > blob_len - offset)
             return FALSE;
 
         out->args[i].data = (BYTE *)(blob + offset);
@@ -104,6 +107,37 @@ static inline BOOL module_parse_args(const BYTE *blob, DWORD blob_len,
     }
 
     return TRUE;
+}
+
+static inline BOOL module_arg_has_nul(const MODULE_ARG *arg)
+{
+    DWORD i;
+
+    if (!arg || !arg->data || arg->len == 0)
+        return FALSE;
+
+    for (i = 0; i < arg->len; i++) {
+        if (arg->data[i] == 0)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static inline BOOL module_arg_has_wide_nul(const MODULE_ARG *arg)
+{
+    DWORD i;
+
+    if (!arg || !arg->data || arg->len < sizeof(WCHAR))
+        return FALSE;
+    if ((arg->len % sizeof(WCHAR)) != 0)
+        return FALSE;
+
+    for (i = 0; i + sizeof(WCHAR) <= arg->len; i += sizeof(WCHAR)) {
+        const WCHAR *w = (const WCHAR *)(arg->data + i);
+        if (*w == 0)
+            return TRUE;
+    }
+    return FALSE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,9 +150,13 @@ static inline BOOL module_parse_args(const BYTE *blob, DWORD blob_len,
  */
 static inline const char *module_arg_string(const MODULE_ARGS *args, DWORD idx)
 {
+    if (!args)
+        return NULL;
     if (idx >= args->count)
         return NULL;
     if (args->args[idx].type != ARG_TYPE_STRING)
+        return NULL;
+    if (!module_arg_has_nul(&args->args[idx]))
         return NULL;
     return (const char *)args->args[idx].data;
 }
@@ -130,6 +168,8 @@ static inline const char *module_arg_string(const MODULE_ARGS *args, DWORD idx)
 static inline DWORD module_arg_int32(const MODULE_ARGS *args, DWORD idx,
                                      DWORD default_val)
 {
+    if (!args)
+        return default_val;
     if (idx >= args->count)
         return default_val;
     if (args->args[idx].type != ARG_TYPE_INT32)
@@ -147,6 +187,10 @@ static inline DWORD module_arg_int32(const MODULE_ARGS *args, DWORD idx,
 static inline const BYTE *module_arg_bytes(const MODULE_ARGS *args, DWORD idx,
                                            DWORD *out_len)
 {
+    if (out_len)
+        *out_len = 0;
+    if (!args)
+        return NULL;
     if (idx >= args->count)
         return NULL;
     if (args->args[idx].type != ARG_TYPE_BYTES)
@@ -162,9 +206,13 @@ static inline const BYTE *module_arg_bytes(const MODULE_ARGS *args, DWORD idx,
  */
 static inline const WCHAR *module_arg_wstring(const MODULE_ARGS *args, DWORD idx)
 {
+    if (!args)
+        return NULL;
     if (idx >= args->count)
         return NULL;
     if (args->args[idx].type != ARG_TYPE_WSTRING)
+        return NULL;
+    if (!module_arg_has_wide_nul(&args->args[idx]))
         return NULL;
     return (const WCHAR *)args->args[idx].data;
 }
@@ -180,7 +228,11 @@ static inline const WCHAR *module_arg_wstring(const MODULE_ARGS *args, DWORD idx
  */
 static inline DWORD module_args_begin(BYTE *buf, DWORD buf_len, DWORD count)
 {
+    if (!buf)
+        return 0;
     if (buf_len < 4)
+        return 0;
+    if (count > MODULE_MAX_ARGS)
         return 0;
     *(DWORD *)buf = count;
     return 4;
@@ -193,7 +245,13 @@ static inline DWORD module_args_begin(BYTE *buf, DWORD buf_len, DWORD count)
 static inline DWORD module_args_append(BYTE *buf, DWORD buf_len, DWORD offset,
                                        DWORD type, const BYTE *data, DWORD data_len)
 {
-    if (offset + 8 + data_len > buf_len)
+    if (!buf)
+        return 0;
+    if (offset > buf_len || buf_len - offset < 8)
+        return 0;
+    if (data_len > buf_len - offset - 8)
+        return 0;
+    if (data_len > 0 && !data)
         return 0;
     *(DWORD *)(buf + offset) = type;
     offset += 4;

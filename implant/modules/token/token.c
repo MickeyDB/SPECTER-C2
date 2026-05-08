@@ -299,6 +299,10 @@ static DWORD cmd_steal(MODULE_BUS_API *api, const MODULE_ARGS *args)
         MODULE_OUTPUT_ERROR(api, "token steal: missing or invalid PID");
         return MODULE_ERR_ARGS;
     }
+    if (!api->token_steal || !api->token_impersonate) {
+        MODULE_OUTPUT_ERROR(api, "token steal: missing required bus API");
+        return MODULE_ERR_INTERNAL;
+    }
 
     /* Use bus token_steal: opens process, opens token, duplicates */
     token = api->token_steal(pid);
@@ -344,6 +348,10 @@ static DWORD cmd_make(MODULE_BUS_API *api, const MODULE_ARGS *args)
         MODULE_OUTPUT_ERROR(api, "token make: usage: make <domain> <user> <pass>");
         return MODULE_ERR_ARGS;
     }
+    if (!api->token_make || !api->token_impersonate) {
+        MODULE_OUTPUT_ERROR(api, "token make: missing required bus API");
+        return MODULE_ERR_INTERNAL;
+    }
 
     /* Use bus token_make: calls LogonUserW with LOGON32_LOGON_NEW_CREDENTIALS */
     token = api->token_make(user, pass, domain);
@@ -377,6 +385,11 @@ static DWORD cmd_make(MODULE_BUS_API *api, const MODULE_ARGS *args)
 
 static DWORD cmd_revert(MODULE_BUS_API *api, const MODULE_ARGS *args)
 {
+    if (!api->token_revert) {
+        MODULE_OUTPUT_ERROR(api, "token revert: missing required bus API");
+        return MODULE_ERR_INTERNAL;
+    }
+
     if (!api->token_revert()) {
         MODULE_OUTPUT_ERROR(api, "token revert: failed");
         return MODULE_ERR_ACCESS;
@@ -409,6 +422,12 @@ static DWORD cmd_list(MODULE_BUS_API *api, const MODULE_ARGS *args)
     char out[TOKEN_LIST_BUF_SIZE];
     DWORD off = 0;
     DWORD proc_count = 0;
+
+    if (!api->resolve || !api->mem_alloc || !api->mem_free ||
+        !api->proc_open || !api->proc_close) {
+        MODULE_OUTPUT_ERROR(api, "token list: missing required bus API");
+        return MODULE_ERR_INTERNAL;
+    }
 
     /* Resolve required APIs */
     pNtQuerySystemInformation = (FN_NtQuerySystemInformation)

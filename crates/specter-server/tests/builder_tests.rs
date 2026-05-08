@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use specter_server::builder::{
-    format_raw, generate_config, list_formats, obfuscate, scan_payload, ChannelConfig,
-    ObfuscationSettings, SleepConfig,
+    format_raw, generate_config, generate_config_with_evasion_magic_layout_and_module_key,
+    list_formats, obfuscate, scan_payload, ChannelConfig, EvasionFlags, ObfuscationSettings,
+    PicLayoutMetadata, SleepConfig, CONFIG_DECRYPT_MAX_BUDGET,
 };
 use specter_server::profile::parse_profile;
 
@@ -153,6 +154,46 @@ fn config_generation_decryptable_by_server() {
         pos += 5 + len;
     }
     assert_eq!(pos, plaintext.len(), "TLV has trailing bytes");
+}
+
+#[test]
+fn config_generation_stays_within_implant_decrypt_budget() {
+    let (_secret, pubkey) = server_keypair();
+    let gen = generate_config_with_evasion_magic_layout_and_module_key(
+        &test_profile(),
+        &pubkey,
+        &test_channels(),
+        &SleepConfig::default(),
+        None,
+        EvasionFlags {
+            module_overloading: true,
+            pdata_registration: true,
+            ntcontinue_entry: true,
+            etw_usermode_patch: true,
+            module_preserve_headers: true,
+            module_patch_only: true,
+        },
+        &[],
+        true,
+        true,
+        0x53504543,
+        false,
+        Some(PicLayoutMetadata {
+            module_overload_rw_offset: 0x9000,
+            pdata_offset: 0x4b240,
+            pdata_count: 32,
+        }),
+        Some([0xA5; 32]),
+    )
+    .unwrap();
+
+    let blob = &gen.config_blob;
+    assert!(blob.len() >= 40, "config blob too small");
+    let data_size = u32::from_le_bytes([blob[8], blob[9], blob[10], blob[11]]) as usize;
+    assert!(
+        data_size <= CONFIG_DECRYPT_MAX_BUDGET,
+        "config TLV payload {data_size} exceeds implant decrypt budget {CONFIG_DECRYPT_MAX_BUDGET}"
+    );
 }
 
 // ---------------------------------------------------------------------------

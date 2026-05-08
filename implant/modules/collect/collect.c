@@ -64,6 +64,7 @@ void *spec_memcpy(void *dst, const void *src, SIZE_T n)
 
 /* Screenshot */
 #define SCREENSHOT_MAX_COUNT    100
+#define SCREENSHOT_MAX_INTERVAL 3600
 #define SCREENSHOT_DEFAULT_COUNT    1
 #define SCREENSHOT_DEFAULT_INTERVAL 5         /* 5 seconds default      */
 #define BMP_HEADER_SIZE         54            /* BITMAPFILEHEADER + BITMAPINFOHEADER */
@@ -708,6 +709,8 @@ static DWORD cmd_screenshot(MODULE_BUS_API *api, const MODULE_ARGS *args)
     /* arg[0]="screenshot", arg[1]=interval_sec, arg[2]=count */
     interval_sec = module_arg_int32(args, 1, SCREENSHOT_DEFAULT_INTERVAL);
     count        = module_arg_int32(args, 2, SCREENSHOT_DEFAULT_COUNT);
+    if (interval_sec > SCREENSHOT_MAX_INTERVAL)
+        interval_sec = SCREENSHOT_MAX_INTERVAL;
     if (count > SCREENSHOT_MAX_COUNT) count = SCREENSHOT_MAX_COUNT;
     if (count == 0) count = 1;
 

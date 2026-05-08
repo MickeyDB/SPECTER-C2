@@ -7,6 +7,12 @@ use crate::commands::{build_task_args, parse_command, validate_command};
 use crate::input::InputMode;
 use crate::ui::palette::{build_palette_items, PaletteCategory};
 
+pub struct QueuedTaskRequest {
+    pub session_id: String,
+    pub task_type: String,
+    pub args: Vec<u8>,
+}
+
 pub enum EventResult {
     Continue,
     Quit,
@@ -16,6 +22,8 @@ pub enum EventResult {
         task_type: String,
         args: Vec<u8>,
     },
+    /// Multiple tasks should be queued in order.
+    QueueTasks(Vec<QueuedTaskRequest>),
     /// Generate a report for a campaign.
     GenerateReport {
         campaign_id: String,
@@ -709,6 +717,7 @@ fn handle_console_submit(app: &mut App) -> EventResult {
     };
 
     const MAX_TRANSFER_BYTES: usize = 1024 * 1024;
+    const TRANSFER_CHUNK_BYTES: usize = 768 * 1024;
 
     let args = if parsed.name == "upload" {
         let local = &parsed.args[0];
@@ -724,13 +733,30 @@ fn handle_console_submit(app: &mut App) -> EventResult {
             }
         };
         if file_bytes.len() > MAX_TRANSFER_BYTES {
-            app.console_append(ConsoleLine::new(
-                LineKind::Error,
-                format!(
-                    "File exceeds implant transfer limit ({MAX_TRANSFER_BYTES} bytes): '{local}'"
+            let mut tasks = Vec::new();
+            let total_chunks = file_bytes.len().div_ceil(TRANSFER_CHUNK_BYTES);
+            for (idx, chunk) in file_bytes.chunks(TRANSFER_CHUNK_BYTES).enumerate() {
+                let offset = idx * TRANSFER_CHUNK_BYTES;
+                let is_last = if idx + 1 == total_chunks { 1 } else { 0 };
+                let b64 = base64::engine::general_purpose::STANDARD.encode(chunk);
+                let args = format!("{remote}\n{offset}\n{is_last}\n{b64}").into_bytes();
+                tasks.push(QueuedTaskRequest {
+                    session_id: session_id.clone(),
+                    task_type: "upload_chunk".to_string(),
+                    args,
+                });
+            }
+            app.console_append(
+                ConsoleLine::new(
+                    LineKind::TaskQueued,
+                    format!(
+                    "Chunked upload queued: {local} -> {remote} ({} bytes, {total_chunks} chunks)",
+                    file_bytes.len()
                 ),
-            ));
-            return EventResult::Continue;
+                )
+                .with_session(session_id),
+            );
+            return EventResult::QueueTasks(tasks);
         }
         let b64 = base64::engine::general_purpose::STANDARD.encode(file_bytes);
         format!("{remote}\n{b64}").into_bytes()
@@ -1246,6 +1272,36 @@ mod tests {
                 ..
             } if session_id == "session-abc" && task_type == "whoami"
         ));
+    }
+
+    #[test]
+    fn test_large_upload_queues_ordered_chunks() {
+        let local =
+            std::env::temp_dir().join(format!("specter-upload-chunk-{}.bin", std::process::id()));
+        let data = vec![0x41; 1024 * 1024 + 17];
+        std::fs::write(&local, &data).unwrap();
+
+        let mut app = App::new("test".into());
+        app.console_focused = true;
+        app.input_mode = InputMode::Insert;
+        app.active_session_id = Some("session-abc".to_string());
+        app.console_input = format!("upload {} C:\\Temp\\big.bin", local.display());
+        app.console_cursor = app.console_input.len();
+
+        let result = handle_key_event(press(KeyCode::Enter), &mut app);
+        let EventResult::QueueTasks(tasks) = result else {
+            panic!("large upload should queue chunk tasks");
+        };
+
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().all(|task| task.session_id == "session-abc"));
+        assert!(tasks.iter().all(|task| task.task_type == "upload_chunk"));
+        assert!(String::from_utf8_lossy(&tasks[0].args).starts_with("C:\\Temp\\big.bin\n0\n0\n"));
+        assert!(
+            String::from_utf8_lossy(&tasks[1].args).starts_with("C:\\Temp\\big.bin\n786432\n1\n")
+        );
+
+        let _ = std::fs::remove_file(local);
     }
 
     #[test]

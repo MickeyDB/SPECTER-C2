@@ -168,13 +168,14 @@ int main(int argc, char **argv)
     size_t code_len;
 
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <payload.bin> [--timeout-ms N] [--protect-rx] [--split-protect --rw-offset HEX]\n", argv[0]);
+        fprintf(stderr, "usage: %s <payload.bin> [--timeout-ms N] [--protect-rx] [--split-protect --rw-offset HEX] [--detach-thread]\n", argv[0]);
         return 2;
     }
 
     timeout_ms = parse_timeout(argc, argv);
     protect_rx = has_flag(argc, argv, "--protect-rx");
     split_protect = has_flag(argc, argv, "--split-protect");
+    int detach_thread = has_flag(argc, argv, "--detach-thread");
     rw_offset = parse_size_arg(argc, argv, "--rw-offset", 0);
     GetSystemInfo(&sysinfo);
     page_size = (size_t)sysinfo.dwPageSize;
@@ -252,6 +253,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "[pic-loader] CreateThread failed: %lu\n", GetLastError());
         VirtualFree(mem, 0, MEM_RELEASE);
         return 1;
+    }
+
+    if (detach_thread) {
+        fprintf(stdout, "[pic-loader] detached payload thread; holding process for %lu ms\n",
+                (unsigned long)timeout_ms);
+        fflush(stdout);
+        CloseHandle(thread);
+        Sleep(timeout_ms);
+        VirtualFree(mem, 0, MEM_RELEASE);
+        return 0;
     }
 
     wait_rc = WaitForSingleObject(thread, timeout_ms);

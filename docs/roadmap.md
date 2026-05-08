@@ -65,6 +65,14 @@
 - [x] Listener accepts **binary TLV** check-ins on profile path (`specter-server` listener)
 - [ ] Execute lab checklist: **`docs/phase1.3-redirector-validation.md`** (profile + redirector + ≥5 callbacks); record evidence in doc template
 
+### 1.3a Transport / Builder / Profile Matrix
+- [x] Local transport/profile/redirector matrix: `scripts/transport-builder-profile-matrix.ps1`, latest PASS `target/local-evidence/transport-builder-profile-matrix-20260508-051223.md`
+- [x] Builder matrix covers raw no-obfuscate/default/XOR marker scans plus .NET/service wrapper build checks
+- [x] Wrapper runtime matrix covers direct EXE and Windows SCM service execution, latest PASS `target/local-evidence/wrapper-runtime-matrix-20260506-111657.md`
+- [x] Checked-in profile fixture matrix covers `profiles/generic-https.yaml` and `profiles/slack-webhook.yaml` through direct profile listener and local reverse-proxy redirector tasking, latest PASS `target/local-evidence/profile-fixture-matrix-20260508-042823.md`
+- [x] Default profile-enabled raw task/module smokes and XOR-wrapped raw task/module smokes now pass through the profile-aware listener path in `pic-listener-smoke`
+- [ ] External/provider redirector validation remains under `docs/phase1.3-redirector-validation.md`
+
 ### 1.4 Hash validation
 - [x] `implant/scripts/audit_hashes.py` in CI — **fails build** on mismatch (`.github/workflows/ci.yml`)
 - [ ] Optional: compile-time / DEV-build embedded hash self-check
@@ -116,11 +124,14 @@
 - [x] PIC size baseline script (`scripts/pic-size-baseline.ps1`): full DEV PIC 317,260 bytes; 296,780 bytes over 20 KiB target
 - [x] Barebone PIC build profile (`make DEV=1 BAREBONE=1`): encrypted legacy HTTP beacon + built-in tasks, no module bus/profile/TLS/advanced sleep/evasion; 69,328-byte PIC and listener smoke PASS
 - [x] Barebone memory scanner evidence: page-aligned 71,857-byte configured payload passes beacon smoke with split RX/RW protections but remains PE-sieve/HollowsHunter detectable; this keeps backed execution or streamed-stage work on the critical path
-- [ ] `BAREBONE_MODULES=1` resident-stage proof: minimal module package load/execute/result path without full module bus extras; measure size and scanner posture before/during/after module execution
+- [x] `BAREBONE_MODULES=1` resident-stage proof: clean build is 125,784-byte PIC / 126,170-byte configured payload; template module load/execute/result path PASS; resident-only, module-active, and post-cleanup scanner windows remain PE-sieve/HollowsHunter visible (`phase2-memory-scanner-resident-only-evidence-20260508-050045.md`, `phase2-memory-scanner-module-active-evidence-20260508-050151.md`, `phase2-memory-scanner-post-cleanup-evidence-20260508-045932.md`)
 - [x] Junk code: **no net blob size change** (INT3 padding replacement only) — `test_junk_code_replaces_int3_padding` / `test_junk_code_no_int3_passthrough`
 - [x] String encryption key rotation — scripted verification in `scripts/phase2-telemetry-evidence.ps1`
 - [x] API hash salt randomization — scripted verification in `scripts/phase2-telemetry-evidence.ps1`
-- [ ] Optional outer polymorphic XOR layer
+- [x] Local builder/runtime matrix covers raw no-obfuscate/default/XOR marker scans plus .NET/service wrapper build and runtime checks (`docs/transport-builder-profile-validation.md`)
+- [x] Wrapper resident memory evidence captured for .NET/EXE and service EXE: both remain scanner-visible (`phase2-memory-scanner-resident-only-evidence-20260508-043505.md`, `phase2-memory-scanner-resident-only-evidence-20260508-043545.md`)
+- [x] Wrapper module-task/post-cleanup evidence captured for .NET/EXE and service EXE with default profile-enabled tasking: both complete the template module and remain scanner-visible after cleanup (`phase2-memory-scanner-post-cleanup-evidence-20260508-045517.md`, `phase2-memory-scanner-post-cleanup-evidence-20260508-045558.md`)
+- [x] Optional outer XOR layer runtime behavior: raw builder scan, raw task smoke, and raw module smoke PASS; fixed the XOR decrypt stub `jz` target and wired raw-only final payload wrapping in the builder
 
 ---
 
@@ -128,13 +139,14 @@
 
 ### 3.1 File transfer (upload/download)
 - [x] **Minimal inline** upload/download (implant `task_exec.c`; TUI encodes upload; TUI saves download to `specter-<id>-<name>` in cwd)
-- [ ] **Chunked** transfer for **> 1 MiB** (depends on stable TLV + server task framing)
+- [x] **Chunk tasking primitives** for **> 1 MiB**: TUI splits large uploads into ordered `upload_chunk` tasks; implant supports bounded `upload_chunk` / `download_chunk` handlers with offset-based file access
+- [ ] **Chunked transfer evidence**: real implant >1 MiB upload/download smoke with reassembly verification and saved artifact hash
 - [ ] **Web UI:** native file picker + save-as download in session view *(today: `prompt()` for paths in `SessionInteract.tsx`; not full parity with TUI base64 upload)*
 
 ### 3.2 Interactive shell
-- [ ] WebSocket session (server `ws_handler` → session)
+- [x] WebSocket session command stream (server `ws_handler` queues session tasks and streams queued/result/error frames)
 - [ ] Implant: persistent `cmd.exe` + pipes *(or documented module strategy)*
-- [ ] Web: xterm.js ↔ WebSocket
+- [x] Web: xterm.js uses operator WebSocket when available, with gRPC queue/poll fallback
 
 ### 3.3 Process injection
 - [x] Module: `implant/modules/inject/inject.c`

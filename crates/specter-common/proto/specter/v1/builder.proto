@@ -33,6 +33,8 @@ message GeneratePayloadRequest {
   bool debug_mode = 12;
   // Skip VM/sandbox anti-analysis checks at runtime.
   bool skip_anti_analysis = 13;
+  // Lab-only build options. Defaults off; requests must match lab-built templates.
+  LabBuildConfig lab = 14;
 }
 
 message ChannelEndpoint {
@@ -64,6 +66,13 @@ message EvasionConfig {
   bool ntcontinue_entry = 3;
   // Patch EtwEventWrite in user-mode ntdll (opt-in; does NOT defeat kernel ETW-TI).
   bool etw_usermode_patch = 4;
+}
+
+// Lab-only payload build options. These do not transform compiled code; the
+// server validates that the selected templates were built with matching knobs.
+message LabBuildConfig {
+  // Requires CALLBACK_TICK=1 PIC plus DETACHED_HOLD=1 PE stubs.
+  bool callback_tick_detached_holder = 1;
 }
 
 message YaraWarning {

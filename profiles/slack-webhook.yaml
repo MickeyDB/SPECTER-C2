@@ -92,11 +92,11 @@ http:
         value: max-age=31536000; includeSubDomains; preload
       - name: Cache-Control
         value: no-cache, no-store, must-revalidate
-    body_template: '{"ok":true,"channel":"C{{random_hex(9)}}","message":{"text":"{{data}}","type":"message","subtype":"bot_message","ts":"{{timestamp}}.000000"}}'
+    body_template: '{"ok":true,"channel":"C{{random_hex(9)}}","data":"{{data}}","message":{"text":"{{data}}","type":"message","subtype":"bot_message","ts":"{{timestamp}}.000000"}}'
     error_rate_percent: 2.0
     data_embed_points:
       - location: json_field
-        field_name: message.text
+        field_name: data
         encoding: base64
 
 timing:

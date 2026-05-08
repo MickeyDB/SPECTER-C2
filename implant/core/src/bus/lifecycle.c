@@ -312,6 +312,16 @@ DWORD modmgr_poll(MODULE_MANAGER *mgr, BYTE *results_out, DWORD *results_len) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  modmgr_cleanup_generation                                          */
+/* ------------------------------------------------------------------ */
+
+DWORD modmgr_cleanup_generation(MODULE_MANAGER *mgr) {
+    if (!mgr)
+        return 0;
+    return mgr->cleanup_generation;
+}
+
+/* ------------------------------------------------------------------ */
 /*  modmgr_cleanup — securely wipe a module slot                       */
 /* ------------------------------------------------------------------ */
 
@@ -368,6 +378,7 @@ void modmgr_cleanup(MODULE_MANAGER *mgr, DWORD slot) {
     /* Step 4: Mark slot as wiped and zero the module structure */
     spec_memset(mod, 0, sizeof(LOADED_MODULE));
     mod->status = MODULE_STATUS_WIPED;
+    mgr->cleanup_generation++;
 
     /* Decrement active count */
     if (mgr->active_count > 0)

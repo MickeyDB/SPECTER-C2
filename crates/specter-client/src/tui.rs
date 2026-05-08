@@ -76,6 +76,18 @@ pub async fn run(
                         } => {
                             queue_task_async(client, app, session_id, task_type, args).await;
                         }
+                        EventResult::QueueTasks(tasks) => {
+                            for task in tasks {
+                                queue_task_async(
+                                    client,
+                                    app,
+                                    task.session_id,
+                                    task.task_type,
+                                    task.args,
+                                )
+                                .await;
+                            }
+                        }
                         EventResult::GenerateReport {
                             campaign_id,
                             format,

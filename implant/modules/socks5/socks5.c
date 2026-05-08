@@ -100,6 +100,7 @@ void *spec_memcpy(void *dst, const void *src, SIZE_T n)
 #define RECV_BUF_SIZE           4096
 #define MAX_CHUNK_SIZE          3072   /* per-check-in chunk limit      */
 #define DEFAULT_THROTTLE_MS     50     /* inter-chunk throttle (ms)     */
+#define MAX_THROTTLE_MS         60000  /* bound malformed wait args     */
 #define CONN_TIMEOUT_MS         10000  /* connect timeout               */
 
 /* Connection state */
@@ -199,6 +200,9 @@ static BOOL send_msg(MODULE_BUS_API *api, WORD conn_id, BYTE msg_type,
     BYTE buf[SOCKS_MSG_HDR_SIZE + MAX_CHUNK_SIZE];
     SOCKS_MSG *hdr;
     DWORD total;
+
+    if (payload_len > MAX_CHUNK_SIZE)
+        return FALSE;
 
     total = SOCKS_MSG_HDR_SIZE + payload_len;
     if (total > sizeof(buf))
@@ -406,7 +410,7 @@ static void process_message(MODULE_BUS_API *api, SOCKS5_STATE *state,
 
     msg = (const SOCKS_MSG *)data;
 
-    if (SOCKS_MSG_HDR_SIZE + msg->payload_len > data_len)
+    if (msg->payload_len > data_len - SOCKS_MSG_HDR_SIZE)
         return;
 
     payload = data + SOCKS_MSG_HDR_SIZE;
@@ -487,6 +491,10 @@ static DWORD cmd_start(MODULE_BUS_API *api, const MODULE_ARGS *args)
 
     /* Optional throttle argument (ms between poll cycles) */
     throttle = module_arg_int32(args, 1, DEFAULT_THROTTLE_MS);
+    if (throttle == 0)
+        throttle = DEFAULT_THROTTLE_MS;
+    if (throttle > MAX_THROTTLE_MS)
+        throttle = MAX_THROTTLE_MS;
     state.throttle_ms = throttle;
     state.running     = TRUE;
 
@@ -494,6 +502,11 @@ static DWORD cmd_start(MODULE_BUS_API *api, const MODULE_ARGS *args)
     if (!fn_sleep) {
         MODULE_OUTPUT_ERROR(api, "socks5: failed to resolve Sleep");
         return MODULE_ERR_RESOLVE;
+    }
+    if (!api->file_read || !api->net_connect || !api->net_send ||
+        !api->net_recv || !api->net_close) {
+        MODULE_OUTPUT_ERROR(api, "socks5: missing required bus API");
+        return MODULE_ERR_INTERNAL;
     }
 
     MODULE_OUTPUT_TEXT(api, "socks5: proxy started");
@@ -523,12 +536,14 @@ static DWORD cmd_start(MODULE_BUS_API *api, const MODULE_ARGS *args)
             /* Process all messages in the inbox buffer.
              * Messages are concatenated: [hdr+payload][hdr+payload]... */
             offset = 0;
-            while (offset + SOCKS_MSG_HDR_SIZE <= inbox_len) {
+            while (offset <= inbox_len &&
+                   inbox_len - offset >= SOCKS_MSG_HDR_SIZE) {
                 const SOCKS_MSG *hdr = (const SOCKS_MSG *)(inbox + offset);
-                DWORD msg_total = SOCKS_MSG_HDR_SIZE + hdr->payload_len;
+                DWORD msg_total;
 
-                if (offset + msg_total > inbox_len)
+                if (hdr->payload_len > inbox_len - offset - SOCKS_MSG_HDR_SIZE)
                     break;
+                msg_total = SOCKS_MSG_HDR_SIZE + hdr->payload_len;
 
                 /* Check for stop signal (CLOSE with conn_id 0) */
                 if (hdr->msg_type == MSG_CLOSE && hdr->conn_id == 0) {

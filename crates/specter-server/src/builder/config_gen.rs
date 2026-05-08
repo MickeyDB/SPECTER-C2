@@ -137,6 +137,8 @@ impl EvasionFlags {
 /// Default config magic used when no per-build magic is provided.
 pub const DEFAULT_CONFIG_MAGIC: u32 = 0x53504543; // "SPEC" little-endian
 pub const CONFIG_BLOB_VERSION: u32 = 2;
+/// Must stay in sync with CONFIG_DECRYPT_MAX in implant/core/src/config.c.
+pub const CONFIG_DECRYPT_MAX_BUDGET: usize = 8192;
 
 pub fn generate_config(
     profile: &Profile,

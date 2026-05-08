@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file specter/v1/builder.proto.
  */
 export const file_specter_v1_builder: GenFile = /*@__PURE__*/
-  fileDesc("ChhzcGVjdGVyL3YxL2J1aWxkZXIucHJvdG8SCnNwZWN0ZXIudjEijwMKFkdlbmVyYXRlUGF5bG9hZFJlcXVlc3QSDgoGZm9ybWF0GAEgASgJEhQKDHByb2ZpbGVfbmFtZRgCIAEoCRItCghjaGFubmVscxgDIAMoCzIbLnNwZWN0ZXIudjEuQ2hhbm5lbEVuZHBvaW50EigKBXNsZWVwGAQgASgLMhkuc3BlY3Rlci52MS5TbGVlcFNldHRpbmdzEhEKCWtpbGxfZGF0ZRgFIAEoAxIyCgtvYmZ1c2NhdGlvbhgGIAEoCzIdLnNwZWN0ZXIudjEuT2JmdXNjYXRpb25Db25maWcSFAoMcHJveHlfdGFyZ2V0GAcgASgJEhQKDHNlcnZpY2VfbmFtZRgIIAEoCRISCgpzdGFnZXJfdXJsGAkgASgJEioKB2V2YXNpb24YCiABKAsyGS5zcGVjdGVyLnYxLkV2YXNpb25Db25maWcSEwoLbGlzdGVuZXJfaWQYCyABKAkSEgoKZGVidWdfbW9kZRgMIAEoCBIaChJza2lwX2FudGlfYW5hbHlzaXMYDSABKAgiMAoPQ2hhbm5lbEVuZHBvaW50EgwKBGtpbmQYASABKAkSDwoHYWRkcmVzcxgCIAEoCSI+Cg1TbGVlcFNldHRpbmdzEhUKDWludGVydmFsX3NlY3MYASABKAQSFgoOaml0dGVyX3BlcmNlbnQYAiABKA0iugEKEU9iZnVzY2F0aW9uQ29uZmlnEhkKEXN0cmluZ19lbmNyeXB0aW9uGAEgASgIEh4KFmFwaV9oYXNoX3JhbmRvbWl6YXRpb24YAiABKAgSGwoTanVua19jb2RlX2luc2VydGlvbhgDIAEoCBIUCgxqdW5rX2RlbnNpdHkYBCABKA0SHwoXY29udHJvbF9mbG93X2ZsYXR0ZW5pbmcYBSABKAgSFgoOeG9yX2VuY3J5cHRpb24YBiABKAgifQoNRXZhc2lvbkNvbmZpZxIaChJtb2R1bGVfb3ZlcmxvYWRpbmcYASABKAgSGgoScGRhdGFfcmVnaXN0cmF0aW9uGAIgASgIEhgKEG50Y29udGludWVfZW50cnkYAyABKAgSGgoSZXR3X3VzZXJtb2RlX3BhdGNoGAQgASgIIkEKC1lhcmFXYXJuaW5nEhEKCXJ1bGVfbmFtZRgBIAEoCRIRCgluYW1lc3BhY2UYAiABKAkSDAoEdGFncxgDIAMoCSK0AQoXR2VuZXJhdGVQYXlsb2FkUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBIQCghidWlsZF9pZBgCIAEoCRIWCg5pbXBsYW50X3B1YmtleRgDIAEoDBIPCgdwYXlsb2FkGAQgASgMEg4KBmZvcm1hdBgFIAEoCRIuCg15YXJhX3dhcm5pbmdzGAYgAygLMhcuc3BlY3Rlci52MS5ZYXJhV2FybmluZxINCgVlcnJvchgHIAEoCSIUChJMaXN0Rm9ybWF0c1JlcXVlc3QiYAoRRm9ybWF0RGVzY3JpcHRpb24SDAoEbmFtZRgBIAEoCRIRCglleHRlbnNpb24YAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSFQoNb3BzZWNfd2FybmluZxgEIAEoCCJFChNMaXN0Rm9ybWF0c1Jlc3BvbnNlEi4KB2Zvcm1hdHMYASADKAsyHS5zcGVjdGVyLnYxLkZvcm1hdERlc2NyaXB0aW9uIikKFUdldEJ1aWxkU3RhdHVzUmVxdWVzdBIQCghidWlsZF9pZBgBIAEoCSKJAQoWR2V0QnVpbGRTdGF0dXNSZXNwb25zZRIQCghidWlsZF9pZBgBIAEoCRIOCgZzdGF0dXMYAiABKAkSDgoGZm9ybWF0GAMgASgJEi4KCmNyZWF0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg0KBWVycm9yGAUgASgJYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("ChhzcGVjdGVyL3YxL2J1aWxkZXIucHJvdG8SCnNwZWN0ZXIudjEiuAMKFkdlbmVyYXRlUGF5bG9hZFJlcXVlc3QSDgoGZm9ybWF0GAEgASgJEhQKDHByb2ZpbGVfbmFtZRgCIAEoCRItCghjaGFubmVscxgDIAMoCzIbLnNwZWN0ZXIudjEuQ2hhbm5lbEVuZHBvaW50EigKBXNsZWVwGAQgASgLMhkuc3BlY3Rlci52MS5TbGVlcFNldHRpbmdzEhEKCWtpbGxfZGF0ZRgFIAEoAxIyCgtvYmZ1c2NhdGlvbhgGIAEoCzIdLnNwZWN0ZXIudjEuT2JmdXNjYXRpb25Db25maWcSFAoMcHJveHlfdGFyZ2V0GAcgASgJEhQKDHNlcnZpY2VfbmFtZRgIIAEoCRISCgpzdGFnZXJfdXJsGAkgASgJEioKB2V2YXNpb24YCiABKAsyGS5zcGVjdGVyLnYxLkV2YXNpb25Db25maWcSEwoLbGlzdGVuZXJfaWQYCyABKAkSEgoKZGVidWdfbW9kZRgMIAEoCBIaChJza2lwX2FudGlfYW5hbHlzaXMYDSABKAgSJwoDbGFiGA4gASgLMhouc3BlY3Rlci52MS5MYWJCdWlsZENvbmZpZyIwCg9DaGFubmVsRW5kcG9pbnQSDAoEa2luZBgBIAEoCRIPCgdhZGRyZXNzGAIgASgJIj4KDVNsZWVwU2V0dGluZ3MSFQoNaW50ZXJ2YWxfc2VjcxgBIAEoBBIWCg5qaXR0ZXJfcGVyY2VudBgCIAEoDSK6AQoRT2JmdXNjYXRpb25Db25maWcSGQoRc3RyaW5nX2VuY3J5cHRpb24YASABKAgSHgoWYXBpX2hhc2hfcmFuZG9taXphdGlvbhgCIAEoCBIbChNqdW5rX2NvZGVfaW5zZXJ0aW9uGAMgASgIEhQKDGp1bmtfZGVuc2l0eRgEIAEoDRIfChdjb250cm9sX2Zsb3dfZmxhdHRlbmluZxgFIAEoCBIWCg54b3JfZW5jcnlwdGlvbhgGIAEoCCJ9Cg1FdmFzaW9uQ29uZmlnEhoKEm1vZHVsZV9vdmVybG9hZGluZxgBIAEoCBIaChJwZGF0YV9yZWdpc3RyYXRpb24YAiABKAgSGAoQbnRjb250aW51ZV9lbnRyeRgDIAEoCBIaChJldHdfdXNlcm1vZGVfcGF0Y2gYBCABKAgiNwoOTGFiQnVpbGRDb25maWcSJQodY2FsbGJhY2tfdGlja19kZXRhY2hlZF9ob2xkZXIYASABKAgiQQoLWWFyYVdhcm5pbmcSEQoJcnVsZV9uYW1lGAEgASgJEhEKCW5hbWVzcGFjZRgCIAEoCRIMCgR0YWdzGAMgAygJIrQBChdHZW5lcmF0ZVBheWxvYWRSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEhAKCGJ1aWxkX2lkGAIgASgJEhYKDmltcGxhbnRfcHVia2V5GAMgASgMEg8KB3BheWxvYWQYBCABKAwSDgoGZm9ybWF0GAUgASgJEi4KDXlhcmFfd2FybmluZ3MYBiADKAsyFy5zcGVjdGVyLnYxLllhcmFXYXJuaW5nEg0KBWVycm9yGAcgASgJIhQKEkxpc3RGb3JtYXRzUmVxdWVzdCJgChFGb3JtYXREZXNjcmlwdGlvbhIMCgRuYW1lGAEgASgJEhEKCWV4dGVuc2lvbhgCIAEoCRITCgtkZXNjcmlwdGlvbhgDIAEoCRIVCg1vcHNlY193YXJuaW5nGAQgASgIIkUKE0xpc3RGb3JtYXRzUmVzcG9uc2USLgoHZm9ybWF0cxgBIAMoCzIdLnNwZWN0ZXIudjEuRm9ybWF0RGVzY3JpcHRpb24iKQoVR2V0QnVpbGRTdGF0dXNSZXF1ZXN0EhAKCGJ1aWxkX2lkGAEgASgJIokBChZHZXRCdWlsZFN0YXR1c1Jlc3BvbnNlEhAKCGJ1aWxkX2lkGAEgASgJEg4KBnN0YXR1cxgCIAEoCRIOCgZmb3JtYXQYAyABKAkSLgoKY3JlYXRlZF9hdBgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASDQoFZXJyb3IYBSABKAliBnByb3RvMw", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message specter.v1.GeneratePayloadRequest
@@ -108,6 +108,13 @@ export type GeneratePayloadRequest = Message<"specter.v1.GeneratePayloadRequest"
    * @generated from field: bool skip_anti_analysis = 13;
    */
   skipAntiAnalysis: boolean;
+
+  /**
+   * Lab-only build options. Defaults off; requests must match lab-built templates.
+   *
+   * @generated from field: specter.v1.LabBuildConfig lab = 14;
+   */
+  lab?: LabBuildConfig;
 };
 
 /**
@@ -246,6 +253,28 @@ export const EvasionConfigSchema: GenMessage<EvasionConfig> = /*@__PURE__*/
   messageDesc(file_specter_v1_builder, 4);
 
 /**
+ * Lab-only payload build options. These do not transform compiled code; the
+ * server validates that the selected templates were built with matching knobs.
+ *
+ * @generated from message specter.v1.LabBuildConfig
+ */
+export type LabBuildConfig = Message<"specter.v1.LabBuildConfig"> & {
+  /**
+   * Requires CALLBACK_TICK=1 PIC plus DETACHED_HOLD=1 PE stubs.
+   *
+   * @generated from field: bool callback_tick_detached_holder = 1;
+   */
+  callbackTickDetachedHolder: boolean;
+};
+
+/**
+ * Describes the message specter.v1.LabBuildConfig.
+ * Use `create(LabBuildConfigSchema)` to create a new message.
+ */
+export const LabBuildConfigSchema: GenMessage<LabBuildConfig> = /*@__PURE__*/
+  messageDesc(file_specter_v1_builder, 5);
+
+/**
  * @generated from message specter.v1.YaraWarning
  */
 export type YaraWarning = Message<"specter.v1.YaraWarning"> & {
@@ -270,7 +299,7 @@ export type YaraWarning = Message<"specter.v1.YaraWarning"> & {
  * Use `create(YaraWarningSchema)` to create a new message.
  */
 export const YaraWarningSchema: GenMessage<YaraWarning> = /*@__PURE__*/
-  messageDesc(file_specter_v1_builder, 5);
+  messageDesc(file_specter_v1_builder, 6);
 
 /**
  * @generated from message specter.v1.GeneratePayloadResponse
@@ -329,7 +358,7 @@ export type GeneratePayloadResponse = Message<"specter.v1.GeneratePayloadRespons
  * Use `create(GeneratePayloadResponseSchema)` to create a new message.
  */
 export const GeneratePayloadResponseSchema: GenMessage<GeneratePayloadResponse> = /*@__PURE__*/
-  messageDesc(file_specter_v1_builder, 6);
+  messageDesc(file_specter_v1_builder, 7);
 
 /**
  * @generated from message specter.v1.ListFormatsRequest
@@ -342,7 +371,7 @@ export type ListFormatsRequest = Message<"specter.v1.ListFormatsRequest"> & {
  * Use `create(ListFormatsRequestSchema)` to create a new message.
  */
 export const ListFormatsRequestSchema: GenMessage<ListFormatsRequest> = /*@__PURE__*/
-  messageDesc(file_specter_v1_builder, 7);
+  messageDesc(file_specter_v1_builder, 8);
 
 /**
  * @generated from message specter.v1.FormatDescription
@@ -374,7 +403,7 @@ export type FormatDescription = Message<"specter.v1.FormatDescription"> & {
  * Use `create(FormatDescriptionSchema)` to create a new message.
  */
 export const FormatDescriptionSchema: GenMessage<FormatDescription> = /*@__PURE__*/
-  messageDesc(file_specter_v1_builder, 8);
+  messageDesc(file_specter_v1_builder, 9);
 
 /**
  * @generated from message specter.v1.ListFormatsResponse
@@ -391,7 +420,7 @@ export type ListFormatsResponse = Message<"specter.v1.ListFormatsResponse"> & {
  * Use `create(ListFormatsResponseSchema)` to create a new message.
  */
 export const ListFormatsResponseSchema: GenMessage<ListFormatsResponse> = /*@__PURE__*/
-  messageDesc(file_specter_v1_builder, 9);
+  messageDesc(file_specter_v1_builder, 10);
 
 /**
  * @generated from message specter.v1.GetBuildStatusRequest
@@ -408,7 +437,7 @@ export type GetBuildStatusRequest = Message<"specter.v1.GetBuildStatusRequest"> 
  * Use `create(GetBuildStatusRequestSchema)` to create a new message.
  */
 export const GetBuildStatusRequestSchema: GenMessage<GetBuildStatusRequest> = /*@__PURE__*/
-  messageDesc(file_specter_v1_builder, 10);
+  messageDesc(file_specter_v1_builder, 11);
 
 /**
  * @generated from message specter.v1.GetBuildStatusResponse
@@ -447,5 +476,5 @@ export type GetBuildStatusResponse = Message<"specter.v1.GetBuildStatusResponse"
  * Use `create(GetBuildStatusResponseSchema)` to create a new message.
  */
 export const GetBuildStatusResponseSchema: GenMessage<GetBuildStatusResponse> = /*@__PURE__*/
-  messageDesc(file_specter_v1_builder, 11);
+  messageDesc(file_specter_v1_builder, 12);
 

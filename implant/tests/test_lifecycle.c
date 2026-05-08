@@ -126,6 +126,8 @@ static void test_modmgr_init(void) {
     check(mgr != NULL, "modmgr_test_get_manager returns non-NULL");
     check(mgr->initialized == TRUE, "manager is initialized");
     check(mgr->active_count == 0, "active_count starts at 0");
+    check(modmgr_cleanup_generation(mgr) == 0,
+          "cleanup_generation starts at 0");
     check(mgr->next_module_id == 1, "next_module_id starts at 1");
     check(mgr->implant_ctx == &g_test_ctx, "implant_ctx points to ctx");
 
@@ -307,6 +309,8 @@ static void test_modmgr_poll_completed(void) {
 
     check(mod->status == MODULE_STATUS_WIPED, "slot is WIPED after poll+cleanup");
     check(mgr->active_count == 0, "active_count is 0 after cleanup");
+    check(modmgr_cleanup_generation(mgr) == 1,
+          "cleanup_generation increments after completed cleanup");
 }
 
 /* ------------------------------------------------------------------ */
@@ -347,6 +351,8 @@ static void test_modmgr_poll_crashed(void) {
 
     check(mod->status == MODULE_STATUS_WIPED, "crashed slot is WIPED after poll");
     check(mgr->active_count == 0, "active_count is 0 after crash cleanup");
+    check(modmgr_cleanup_generation(mgr) == 2,
+          "cleanup_generation increments after crashed cleanup");
 }
 
 /* ------------------------------------------------------------------ */

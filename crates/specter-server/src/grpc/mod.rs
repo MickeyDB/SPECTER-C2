@@ -1537,11 +1537,30 @@ impl SpecterService for SpecterGrpcService {
             crate::builder::EvasionFlags::default()
         };
 
+        let lab_options = crate::builder::LabBuildOptions {
+            callback_tick_detached_holder: req
+                .lab
+                .as_ref()
+                .map(|lab| lab.callback_tick_detached_holder)
+                .unwrap_or(false),
+        };
+        if output_format.is_none() && lab_options.callback_tick_detached_holder {
+            return Err(Status::invalid_argument(
+                "Lab build option invalid: callback_tick_detached_holder requires a PE template format",
+            ));
+        }
+
         // Use PayloadBuilder for PE formats (raw, dll, service_exe, dotnet)
         // which properly loads specter.bin and embeds config via marker patching.
         // Stagers are text-based and don't need the PIC blob.
         let (payload_bytes, implant_pubkey) = match output_format {
             Some(fmt) => {
+                self.payload_builder
+                    .validate_lab_options(fmt, lab_options)
+                    .map_err(|e| {
+                        Status::invalid_argument(format!("Lab build option invalid: {e}"))
+                    })?;
+
                 let result = self
                     .payload_builder
                     .build_with_evasion(

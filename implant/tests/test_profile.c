@@ -147,6 +147,7 @@ static DWORD build_test_profile(BYTE *blob, DWORD blob_size) {
     tlv_string(&p, 0x21, "/api/chat.postMessage");
     tlv_string(&p, 0x21, "/api/conversations.history");
     tlv_string(&p, 0x21, "/api/users.info");
+    tlv_string(&p, 0x22, "Host: {{host}}");
     tlv_string(&p, 0x22, "Content-Type: application/json");
     tlv_string(&p, 0x22, "User-Agent: Slackbot 1.0");
     tlv_string(&p, 0x22, "Authorization: Bearer xoxb-{{random_hex(8)}}");
@@ -206,7 +207,7 @@ static void test_profile_init(void) {
     ASSERT(spec_strcmp(cfg.request.method, "POST") == 0, "HTTP method parsed");
     ASSERT(cfg.request.uri_count == 3, "3 URI patterns parsed");
     ASSERT(spec_strcmp(cfg.request.uri_patterns[0], "/api/chat.postMessage") == 0, "first URI correct");
-    ASSERT(cfg.request.header_count == 3, "3 headers parsed");
+    ASSERT(cfg.request.header_count == 4, "4 headers parsed");
     ASSERT(cfg.request.embed_count == 1, "1 embed point parsed");
     ASSERT(cfg.request.embed_points[0].location == 0, "embed location = JsonField");
     ASSERT(cfg.request.embed_points[0].encoding == 0, "embed encoding = Base64");
@@ -304,6 +305,8 @@ static void test_profile_build_headers(void) {
     /* Authorization header should have random hex expanded */
     ASSERT(strstr(headers, "Authorization: Bearer xoxb-") != NULL,
            "Authorization header with expanded random_hex");
+    ASSERT(strstr(headers, "Host:") == NULL,
+           "transport-owned Host header skipped");
 }
 
 static void test_profile_embed_extract_json(void) {

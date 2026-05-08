@@ -525,12 +525,33 @@ static DWORD expand_template(const char *tmpl, const char *data_str,
 /*  profile_build_headers                                              */
 /* ------------------------------------------------------------------ */
 
+static BOOL profile_header_name_matches(const char *header, const char *name) {
+    DWORD i = 0;
+    if (!header || !name) return FALSE;
+
+    while (name[i] && header[i]) {
+        BYTE h = (BYTE)header[i];
+        BYTE n = (BYTE)name[i];
+        if (h >= 'A' && h <= 'Z') h = (BYTE)(h + 32);
+        if (n >= 'A' && n <= 'Z') n = (BYTE)(n + 32);
+        if (h != n) return FALSE;
+        i++;
+    }
+
+    return name[i] == '\0' && header[i] == ':';
+}
+
 DWORD profile_build_headers(PROFILE_CONFIG *cfg, char *output, DWORD max_len) {
     if (!cfg || !cfg->initialized || !output || max_len == 0)
         return 0;
 
     DWORD pos = 0;
     for (DWORD i = 0; i < cfg->request.header_count; i++) {
+        if (profile_header_name_matches(cfg->request.headers[i], "Host") ||
+            profile_header_name_matches(cfg->request.headers[i], "Content-Length")) {
+            continue;
+        }
+
         /* Expand template variables in header value */
         char expanded[PROFILE_MAX_HEADER_LEN];
         DWORD elen = expand_template(cfg->request.headers[i], NULL,

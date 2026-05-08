@@ -23,7 +23,7 @@ static IMPLANT_CONFIG g_config;
  * stack frame reuse (the decrypted buffer in cfg_init is on the stack). */
 #define MAX_PROFILE_BLOB 4096
 static BYTE g_profile_blob_buf[MAX_PROFILE_BLOB];
-#define CONFIG_DECRYPT_MAX          (sizeof(IMPLANT_CONFIG) + 128)
+#define CONFIG_DECRYPT_MAX          8192
 
 /* ================================================================== */
 /*  Per-build config magic — derived from CRC32 of PIC header          */
@@ -104,6 +104,7 @@ static PVOID  g_test_pic_base   = NULL;
 
 void cfg_test_set_pic_base(PVOID base)   { g_test_pic_base   = base; }
 void cfg_test_set_system_time(QWORD t)   { g_test_system_time = t;   }
+DWORD cfg_test_get_decrypt_max(void)     { return (DWORD)CONFIG_DECRYPT_MAX; }
 #endif
 
 static QWORD cfg_get_system_time(void) {
