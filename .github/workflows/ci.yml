@@ -257,7 +257,7 @@ jobs:
   yara-scan-public:
     name: YARA Scan (Public Rules)
     runs-on: ubuntu-latest
-    needs: [build-implant]
+    needs: [build-implant, build-modules]
     steps:
       - uses: actions/checkout@v4
       - name: Install YARA Python bindings
@@ -266,6 +266,10 @@ jobs:
         with:
           name: implant-pic-blob
           path: implant/build/
+      - uses: actions/download-artifact@v4
+        with:
+          name: implant-modules
+          path: implant/build/modules/
       - name: Download public YARA rules
         run: |
           git clone --depth 1 https://github.com/Neo23x0/signature-base.git /tmp/signature-base
@@ -273,7 +277,17 @@ jobs:
           git clone --depth 1 https://github.com/elastic/protections-artifacts.git /tmp/elastic-rules
           git clone --depth 1 https://github.com/reversinglabs/reversinglabs-yara-rules.git /tmp/rl-rules
       - name: Scan against public rules
-        run: python3 scripts/scan-public-rules.py implant/build/specter.bin
+        run: |
+          python3 scripts/scan-public-rules.py \
+            --strict \
+            --json public-yara-report.json \
+            implant/build/specter.bin \
+            implant/build/modules
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-yara-report
+          path: public-yara-report.json
 
   implant-verify:
     name: Implant Verification

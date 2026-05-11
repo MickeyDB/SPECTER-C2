@@ -22,7 +22,7 @@ const BACKEND_URL    = process.env.BACKEND_URL;
 const URI_PATTERN    = process.env.URI_PATTERN || '^/api/v[0-9]+/';
 const INTERACTIVE_URI_PATTERN = process.env.INTERACTIVE_URI_PATTERN || '^/api/socks/[^/]+/ws$';
 const HEADER_NAME    = (process.env.HEADER_NAME || 'X-Request-ID').toLowerCase();
-const HEADER_PATTERN = process.env.HEADER_PATTERN || '^[a-f0-9]{32}$';
+const HEADER_PATTERN = process.env.HEADER_PATTERN || '^[a-fA-F0-9]+$';
 const DECOY_BODY     = process.env.DECOY_RESPONSE ||
   '<html><head><title>404 Not Found</title></head><body><h1>Not Found</h1>' +
   '<p>The requested URL was not found on this server.</p></body></html>';

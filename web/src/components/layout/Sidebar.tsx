@@ -14,6 +14,7 @@ import {
   Target,
   Users,
   Bell,
+  ClipboardList,
   Cloud,
   FileText,
   ChevronLeft,
@@ -43,6 +44,7 @@ const navSections: NavSection[] = [
       { to: '/sessions', icon: Monitor, label: 'Sessions' },
       { to: '/map', icon: Network, label: 'Session Map' },
       { to: '/tasks', icon: ListTodo, label: 'Tasks' },
+      { to: '/logs', icon: ClipboardList, label: 'Logs' },
     ],
   },
   {

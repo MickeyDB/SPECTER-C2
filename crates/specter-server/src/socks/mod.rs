@@ -231,13 +231,23 @@ impl SocksRelay {
         self.state.read().await.as_str().to_string()
     }
 
+    async fn stop_local_listener(&self) {
+        *self.running.write().await = false;
+
+        if let Some(handle) = self.accept_task.lock().await.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+
     async fn mark_start_result(&self, success: bool) {
-        let mut state = self.state.write().await;
-        *state = if success {
-            SocksRelayState::Ready
-        } else {
-            SocksRelayState::Degraded
-        };
+        if success {
+            *self.state.write().await = SocksRelayState::Ready;
+            return;
+        }
+
+        self.stop_local_listener().await;
+        *self.state.write().await = SocksRelayState::Degraded;
     }
 
     /// Start the SOCKS5 listener. Returns a handle that can be used to stop it.
@@ -300,10 +310,7 @@ impl SocksRelay {
 
         let stop_task_result = self.send_to_implant(0, MSG_CLOSE, &[]).await;
 
-        if let Some(handle) = self.accept_task.lock().await.take() {
-            handle.abort();
-            let _ = handle.await;
-        }
+        self.stop_local_listener().await;
 
         let senders = self
             .conn_channels

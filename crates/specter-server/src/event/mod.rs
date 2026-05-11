@@ -1,6 +1,8 @@
 pub mod webhooks;
 
-use specter_common::proto::specter::v1::{ChatMessage, PresenceUpdate, SessionEvent, TaskEvent};
+use specter_common::proto::specter::v1::{
+    ChatMessage, OperationLog, PresenceUpdate, SessionEvent, TaskEvent,
+};
 use tokio::sync::broadcast;
 
 #[derive(Clone, Debug)]
@@ -13,6 +15,7 @@ pub enum SpecterEvent {
     TaskFailed(TaskEvent),
     PresenceUpdate(PresenceUpdate),
     ChatMessage(ChatMessage),
+    OperationLog(OperationLog),
     Generic { message: String },
 }
 

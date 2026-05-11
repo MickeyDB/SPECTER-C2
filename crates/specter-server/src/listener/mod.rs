@@ -26,6 +26,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::event::EventBus;
 use crate::module::ModuleRepository;
+use crate::operation_log::OperationLogStore;
 use crate::profile::compiler::ListenerProfile;
 use crate::profile::schema::*;
 use crate::profile::{compile_listener_config, parse_profile, transform_decode, transform_encode};
@@ -43,6 +44,7 @@ pub struct HttpState {
     pub session_manager: Arc<SessionManager>,
     pub task_dispatcher: Arc<TaskDispatcher>,
     pub event_bus: Arc<EventBus>,
+    pub operation_log: Option<Arc<OperationLogStore>>,
     pub module_repository: Option<Arc<ModuleRepository>>,
     pub socks_manager: Option<Arc<SocksManager>>,
     pub server_secret: Arc<StaticSecret>,
@@ -820,6 +822,7 @@ pub struct ListenerManager {
     socks_manager: Option<Arc<SocksManager>>,
     #[allow(dead_code)]
     event_bus: Arc<EventBus>,
+    operation_log: Option<Arc<OperationLogStore>>,
     active: Mutex<HashMap<String, ActiveListener>>,
 }
 
@@ -829,6 +832,7 @@ impl ListenerManager {
         session_manager: Arc<SessionManager>,
         task_dispatcher: Arc<TaskDispatcher>,
         event_bus: Arc<EventBus>,
+        operation_log: Option<Arc<OperationLogStore>>,
         socks_manager: Option<Arc<SocksManager>>,
     ) -> Self {
         Self {
@@ -837,6 +841,7 @@ impl ListenerManager {
             task_dispatcher,
             socks_manager,
             event_bus,
+            operation_log,
             active: Mutex::new(HashMap::new()),
         }
     }
@@ -992,6 +997,7 @@ impl ListenerManager {
             session_manager: Arc::clone(&self.session_manager),
             task_dispatcher: Arc::clone(&self.task_dispatcher),
             event_bus: Arc::clone(&self.event_bus),
+            operation_log: self.operation_log.as_ref().map(Arc::clone),
             module_repository: None,
             socks_manager: self.socks_manager.as_ref().map(Arc::clone),
             server_secret: Arc::new(secret),

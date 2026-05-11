@@ -7,6 +7,7 @@ use tokio::process::Command;
 use tracing::{debug, error, info, warn};
 
 use crate::event::{EventBus, SpecterEvent};
+use crate::operation_log::record_operation_log;
 
 use super::{
     RedirectorConfig, RedirectorError, RedirectorProvider, RedirectorState, RedirectorType,
@@ -66,6 +67,9 @@ pub async fn deploy_terraform(
 
     // terraform init
     run_terraform(
+        pool,
+        event_bus,
+        &config.id,
         &module_dir,
         &work_dir,
         &["init", "-input=false", "-no-color"],
@@ -78,6 +82,9 @@ pub async fn deploy_terraform(
 
     // terraform apply
     run_terraform(
+        pool,
+        event_bus,
+        &config.id,
         &module_dir,
         &work_dir,
         &[
@@ -91,7 +98,7 @@ pub async fn deploy_terraform(
     .await?;
 
     // Parse outputs
-    let outputs = parse_outputs(&module_dir, &work_dir).await?;
+    let outputs = parse_outputs(pool, event_bus, &config.id, &module_dir, &work_dir).await?;
 
     // Persist Terraform state as a blob in the DB
     persist_state_to_db(pool, &config.id, &work_dir).await?;
@@ -182,6 +189,9 @@ pub async fn destroy_terraform(
     });
 
     run_terraform(
+        pool,
+        event_bus,
+        id,
         &module_dir,
         &work_dir,
         &["init", "-input=false", "-no-color"],
@@ -189,6 +199,9 @@ pub async fn destroy_terraform(
     .await?;
 
     run_terraform(
+        pool,
+        event_bus,
+        id,
         &module_dir,
         &work_dir,
         &[
@@ -284,11 +297,29 @@ fn build_tfvars(config: &RedirectorConfig) -> serde_json::Value {
         );
     }
 
+    for (key, value) in [
+        ("sku_name", &config.sku_name),
+        ("resource_group_name", &config.resource_group_name),
+        ("dns_zone_name", &config.dns_zone_name),
+        ("dns_zone_resource_group", &config.dns_zone_resource_group),
+        ("uri_pattern", &config.uri_pattern),
+        ("interactive_uri_pattern", &config.interactive_uri_pattern),
+        ("header_name", &config.header_name),
+        ("header_pattern", &config.header_pattern),
+    ] {
+        if !value.is_empty() {
+            map.insert(key.into(), serde_json::json!(value));
+        }
+    }
+
     vars
 }
 
 /// Execute a terraform command, returning an error if it fails.
 async fn run_terraform(
+    pool: &SqlitePool,
+    event_bus: &Arc<EventBus>,
+    redirector_id: &str,
     module_dir: &Path,
     work_dir: &Path,
     args: &[&str],
@@ -310,8 +341,26 @@ async fn run_terraform(
     if needs_state {
         full_args.push(&state_flag);
     }
+    let terraform_bin = terraform_command_path();
+    let command_line = format!("terraform {}", full_args.join(" "));
+    let _ = record_operation_log(
+        pool,
+        event_bus,
+        "info",
+        "terraform",
+        "redirector",
+        redirector_id,
+        format!("{command_line} started"),
+        format!(
+            "terraform_bin={}\nmodule_dir={}\nwork_dir={}",
+            terraform_bin.display(),
+            module_dir.display(),
+            work_dir.display()
+        ),
+    )
+    .await;
 
-    let output = Command::new("terraform")
+    let output = Command::new(&terraform_bin)
         .args(&full_args)
         .current_dir(module_dir)
         .env("TF_DATA_DIR", work_dir.join(".terraform"))
@@ -321,9 +370,24 @@ async fn run_terraform(
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let details = format!(
+        "command={command_line}\nexit_status={}\n\n[stdout]\n{}\n\n[stderr]\n{}",
+        output.status, stdout, stderr
+    );
 
     if !output.status.success() {
         error!("terraform failed: {stderr}");
+        let _ = record_operation_log(
+            pool,
+            event_bus,
+            "error",
+            "terraform",
+            "redirector",
+            redirector_id,
+            format!("{command_line} failed"),
+            &details,
+        )
+        .await;
         return Err(RedirectorError::TerraformError(format!(
             "terraform {} failed (exit {}): {}",
             args.first().unwrap_or(&""),
@@ -335,16 +399,63 @@ async fn run_terraform(
     if !stderr.is_empty() {
         debug!("terraform stderr: {stderr}");
     }
+    let level = if stderr.is_empty() { "info" } else { "warn" };
+    let _ = record_operation_log(
+        pool,
+        event_bus,
+        level,
+        "terraform",
+        "redirector",
+        redirector_id,
+        format!("{command_line} completed"),
+        details,
+    )
+    .await;
 
     Ok(stdout)
 }
 
+fn terraform_command_path() -> PathBuf {
+    if let Ok(path) = std::env::var("SPECTER_TERRAFORM_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            let candidate = PathBuf::from(profile)
+                .join("Downloads")
+                .join("terraform_1.15.2_windows_amd64")
+                .join("terraform.exe");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from("terraform")
+}
+
 /// Parse `terraform output -json` into a map.
 async fn parse_outputs(
+    pool: &SqlitePool,
+    event_bus: &Arc<EventBus>,
+    redirector_id: &str,
     module_dir: &Path,
     work_dir: &Path,
 ) -> Result<HashMap<String, serde_json::Value>, RedirectorError> {
-    let raw = run_terraform(module_dir, work_dir, &["output", "-json", "-no-color"]).await?;
+    let raw = run_terraform(
+        pool,
+        event_bus,
+        redirector_id,
+        module_dir,
+        work_dir,
+        &["output", "-json", "-no-color"],
+    )
+    .await?;
 
     let outputs: HashMap<String, TerraformOutput> = serde_json::from_str(&raw).unwrap_or_default();
 
@@ -438,6 +549,14 @@ mod tests {
             health_check_interval: 60,
             auto_rotate_on_block: false,
             azure_location: "westeurope".to_string(),
+            sku_name: String::new(),
+            resource_group_name: String::new(),
+            dns_zone_name: String::new(),
+            dns_zone_resource_group: String::new(),
+            uri_pattern: String::new(),
+            interactive_uri_pattern: String::new(),
+            header_name: String::new(),
+            header_pattern: String::new(),
             fronting: None,
         };
 
@@ -516,6 +635,14 @@ mod tests {
             health_check_interval: 30,
             auto_rotate_on_block: true,
             azure_location: "westeurope".to_string(),
+            sku_name: String::new(),
+            resource_group_name: String::new(),
+            dns_zone_name: String::new(),
+            dns_zone_resource_group: String::new(),
+            uri_pattern: String::new(),
+            interactive_uri_pattern: String::new(),
+            header_name: String::new(),
+            header_pattern: String::new(),
             fronting: None,
         };
 
@@ -545,6 +672,14 @@ mod tests {
             health_check_interval: 60,
             auto_rotate_on_block: false,
             azure_location: "westeurope".to_string(),
+            sku_name: "B1".to_string(),
+            resource_group_name: String::new(),
+            dns_zone_name: String::new(),
+            dns_zone_resource_group: String::new(),
+            uri_pattern: "^/api/v[0-9]+/".to_string(),
+            interactive_uri_pattern: "^/api/socks/[^/]+/ws$".to_string(),
+            header_name: "X-Request-ID".to_string(),
+            header_pattern: "^[a-fA-F0-9]+$".to_string(),
             fronting: None,
         };
 
@@ -555,6 +690,10 @@ mod tests {
         assert_eq!(vars["profile_id"], "p1");
         assert_eq!(vars["azure_location"], "westeurope");
         assert_eq!(vars["decoy_response"], "nope");
+        assert_eq!(vars["sku_name"], "B1");
+        assert_eq!(vars["header_name"], "X-Request-ID");
+        assert_eq!(vars["header_pattern"], "^[a-fA-F0-9]+$");
+        assert_eq!(vars["interactive_uri_pattern"], "^/api/socks/[^/]+/ws$");
     }
 
     #[tokio::test]

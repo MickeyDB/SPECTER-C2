@@ -21,6 +21,7 @@ use crate::event::EventBus;
 use crate::grpc::SpecterGrpcService;
 use crate::listener::ListenerManager;
 use crate::module::ModuleRepository;
+use crate::operation_log::OperationLogStore;
 use crate::profile::ProfileStore;
 use crate::reports::ReportGenerator;
 use crate::session::SessionManager;
@@ -100,6 +101,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
 
     // 3. Event bus
     let event_bus = Arc::new(EventBus::new(1024));
+    let operation_log = Arc::new(OperationLogStore::new(pool.clone(), Arc::clone(&event_bus)));
 
     // 4. Managers
     let session_manager = Arc::new(SessionManager::new(pool.clone(), Arc::clone(&event_bus)));
@@ -113,6 +115,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         Arc::clone(&session_manager),
         Arc::clone(&task_dispatcher),
         Arc::clone(&event_bus),
+        Some(Arc::clone(&operation_log)),
         Some(Arc::clone(&socks_manager)),
     ));
     let module_repository = Arc::new(ModuleRepository::new(pool.clone()));
@@ -225,6 +228,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         Arc::clone(&chat_service),
         Arc::clone(&report_generator),
         Arc::clone(&socks_manager),
+        Arc::clone(&operation_log),
     );
 
     if let Some(ref ca) = ca {

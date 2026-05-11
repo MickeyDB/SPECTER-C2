@@ -38,6 +38,8 @@ pub struct YaraMatch {
     pub namespace: String,
     /// Tags associated with the rule.
     pub tags: Vec<String>,
+    /// Severity from rule metadata, if present.
+    pub severity: String,
 }
 
 /// Scan a payload blob against all YARA rules in the given directory.
@@ -101,13 +103,17 @@ fn scan_with_cli(rule_files: &[PathBuf], payload_path: &Path) -> Result<Vec<Yara
         match Command::new(cmd_name).args(&args).output() {
             Ok(output) if output.status.success() || output.status.code() == Some(0) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                return Ok(parse_yara_output(&stdout));
+                let mut matches = parse_yara_output(&stdout);
+                enrich_matches_from_rules(&mut matches, rule_files)?;
+                return Ok(matches);
             }
             Ok(output) => {
                 // Non-zero exit but ran — could mean matches found (yara exits 0 even with matches)
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if !stdout.trim().is_empty() {
-                    return Ok(parse_yara_output(&stdout));
+                    let mut matches = parse_yara_output(&stdout);
+                    enrich_matches_from_rules(&mut matches, rule_files)?;
+                    return Ok(matches);
                 }
                 // Actual error
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -136,10 +142,49 @@ fn parse_yara_output(output: &str) -> Vec<YaraMatch> {
                 rule_name: rule_name.to_string(),
                 namespace: String::new(),
                 tags: Vec::new(),
+                severity: String::new(),
             });
         }
     }
     matches
+}
+
+fn enrich_matches_from_rules(
+    matches: &mut [YaraMatch],
+    rule_files: &[PathBuf],
+) -> Result<(), YaraError> {
+    let mut metadata = Vec::new();
+
+    for path in rule_files {
+        let source = std::fs::read_to_string(path).map_err(|e| YaraError::RuleRead {
+            path: path.clone(),
+            source: e,
+        })?;
+        let namespace = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("default")
+            .to_string();
+
+        for rule in parse_yara_rules(&source) {
+            metadata.push(RuleMetadata {
+                name: rule.name,
+                namespace: namespace.clone(),
+                tags: rule.tags,
+                severity: rule.severity,
+            });
+        }
+    }
+
+    for found in matches {
+        if let Some(meta) = metadata.iter().find(|m| m.name == found.rule_name) {
+            found.namespace.clone_from(&meta.namespace);
+            found.tags.clone_from(&meta.tags);
+            found.severity.clone_from(&meta.severity);
+        }
+    }
+
+    Ok(())
 }
 
 /// Built-in pattern scanner: parses basic YARA string rules and performs
@@ -169,6 +214,7 @@ fn scan_with_builtin(blob: &[u8], rule_files: &[PathBuf]) -> Result<Vec<YaraMatc
                     rule_name: rule.name.clone(),
                     namespace: namespace.clone(),
                     tags: rule.tags.clone(),
+                    severity: rule.severity.clone(),
                 });
             }
         }
@@ -185,8 +231,17 @@ fn scan_with_builtin(blob: &[u8], rule_files: &[PathBuf]) -> Result<Vec<YaraMatc
 struct ParsedRule {
     name: String,
     tags: Vec<String>,
+    severity: String,
     strings: Vec<PatternEntry>,
     condition: RuleCondition,
+}
+
+#[derive(Debug)]
+struct RuleMetadata {
+    name: String,
+    namespace: String,
+    tags: Vec<String>,
+    severity: String,
 }
 
 #[derive(Debug)]
@@ -298,15 +353,56 @@ fn parse_yara_rules(source: &str) -> Vec<ParsedRule> {
         // Parse condition section
         let condition = parse_condition_section(body);
 
+        // Parse metadata used by builder delivery policy.
+        let severity = parse_meta_value(body, "severity").unwrap_or_default();
+
         rules.push(ParsedRule {
             name,
             tags,
+            severity,
             strings,
             condition,
         });
     }
 
     rules
+}
+
+fn parse_meta_value(body: &str, key: &str) -> Option<String> {
+    let meta_start = body.find("meta:")? + 5;
+    let meta_end = body[meta_start..]
+        .find("strings:")
+        .map(|i| meta_start + i)
+        .or_else(|| {
+            body[meta_start..]
+                .find("condition:")
+                .map(|i| meta_start + i)
+        })
+        .unwrap_or(body.len());
+    let meta = &body[meta_start..meta_end];
+
+    for line in meta.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let Some((name, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() != key {
+            continue;
+        }
+        let value = raw_value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+
+    None
 }
 
 fn parse_strings_section(body: &str) -> Vec<PatternEntry> {
@@ -543,6 +639,8 @@ rule DetectMalware {
             "test_detect.yar",
             r#"
 rule DetectTestMarker {
+    meta:
+        severity = "critical"
     strings:
         $marker = "SPECTER_TEST_PAYLOAD"
     condition:
@@ -558,6 +656,7 @@ rule DetectTestMarker {
         let matches = scan_payload(&payload, dir.path()).unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].rule_name, "DetectTestMarker");
+        assert_eq!(matches[0].severity, "critical");
     }
 
     #[test]
@@ -739,5 +838,26 @@ rule HexPattern {
         let matches = scan_with_builtin(&[0x00; 16], &files).unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].rule_name, "Always");
+    }
+
+    #[test]
+    fn test_parse_rule_severity_metadata() {
+        let rules = parse_yara_rules(
+            r#"
+rule SeverityRule : CRITICAL {
+    meta:
+        severity = "critical"
+        description = "test"
+    strings:
+        $a = "ALPHA"
+    condition:
+        $a
+}
+"#,
+        );
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].severity, "critical");
+        assert_eq!(rules[0].tags, vec!["CRITICAL"]);
     }
 }

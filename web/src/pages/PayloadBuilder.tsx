@@ -92,6 +92,11 @@ function YaraWarnings({ warnings }: { warnings: YaraWarning[] }) {
             {w.namespace && (
               <span className="text-specter-muted">({w.namespace})</span>
             )}
+            {w.severity && (
+              <span className="rounded bg-specter-danger/20 px-1 py-0.5 text-[10px] uppercase text-specter-danger">
+                {w.severity}
+              </span>
+            )}
             {w.tags.length > 0 && (
               <div className="flex gap-1">
                 {w.tags.map((t) => (

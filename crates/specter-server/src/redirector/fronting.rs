@@ -162,6 +162,14 @@ mod tests {
             health_check_interval: 60,
             auto_rotate_on_block: true,
             azure_location: "westeurope".to_string(),
+            sku_name: String::new(),
+            resource_group_name: String::new(),
+            dns_zone_name: String::new(),
+            dns_zone_resource_group: String::new(),
+            uri_pattern: String::new(),
+            interactive_uri_pattern: String::new(),
+            header_name: String::new(),
+            header_pattern: String::new(),
             fronting,
         }
     }

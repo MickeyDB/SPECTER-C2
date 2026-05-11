@@ -19,6 +19,7 @@ import {
   CheckCircle,
   AlertCircle,
   XCircle,
+  Copy,
 } from 'lucide-react'
 import { specterClient } from '@/lib/client'
 import type { RedirectorInfo } from '@/gen/specter/v1/azure_pb'
@@ -84,6 +85,16 @@ function ProviderIconElement({ provider, className }: { provider: string; classN
   return <Globe className={className} />
 }
 
+function socksChannelTemplate(redirector: RedirectorInfo): string {
+  const base =
+    redirector.socksChannelBaseUrl ||
+    (redirector.endpointUrl || (redirector.domain ? `https://${redirector.domain}` : ''))
+      .replace(/^https:\/\//i, 'wss://')
+      .replace(/^http:\/\//i, 'ws://')
+      .replace(/\/$/, '')
+  return base ? `${base}/api/socks/<session-id>/ws` : ''
+}
+
 // Simulated TLS expiry (in a real system, this would come from the server)
 function simulateTlsExpiry(domain: string): string {
   const hash = domain.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
@@ -145,6 +156,7 @@ function RedirectorCard({
   const state = health?.state ?? redirector.state
   const colorClass = stateColors[state.toLowerCase()] ?? 'text-specter-muted'
   const bgClass = stateBgColors[state.toLowerCase()] ?? 'bg-specter-muted/10 border-specter-muted/30'
+  const socksChannel = socksChannelTemplate(redirector)
 
   return (
     <div className="flex flex-col rounded-lg border border-specter-border bg-specter-surface p-4 transition-colors hover:border-specter-muted">
@@ -164,7 +176,7 @@ function RedirectorCard({
       <div className="mt-3 flex flex-col gap-1.5">
         <div className="flex items-center gap-2 text-xs">
           <Globe className="h-3 w-3 text-specter-muted" />
-          <span className="text-specter-text">{redirector.domain || 'No domain'}</span>
+          <span className="min-w-0 truncate text-specter-text">{redirector.endpointUrl || redirector.domain || 'No domain'}</span>
         </div>
         <div className="flex items-center gap-2 text-xs">
           <Cloud className="h-3 w-3 text-specter-muted" />
@@ -190,6 +202,25 @@ function RedirectorCard({
       {health && (
         <div className={`mt-3 rounded border px-2 py-1 text-[10px] ${bgClass} ${colorClass}`}>
           Health: {health.healthy ? 'Healthy' : 'Unhealthy'} ({health.state})
+        </div>
+      )}
+
+      {socksChannel && (
+        <div className="mt-3 rounded border border-specter-border bg-specter-bg p-2">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[10px] uppercase text-specter-muted">SOCKS channel</span>
+            <button
+              type="button"
+              onClick={() => navigator.clipboard?.writeText(socksChannel)}
+              className="text-specter-muted transition-colors hover:text-specter-text"
+              title="Copy SOCKS channel template"
+            >
+              <Copy className="h-3 w-3" />
+            </button>
+          </div>
+          <code className="block break-all font-mono text-[10px] text-specter-muted">
+            {socksChannel}
+          </code>
         </div>
       )}
 
@@ -306,7 +337,7 @@ function DeployWizard({
   const steps = ['provider', 'domain', 'profile', 'deploy'] as const
   const stepIdx = steps.indexOf(state.step)
 
-  const providers = ['AWS', 'Azure', 'GCP', 'Cloudflare', 'DigitalOcean']
+  const providers = ['AWS', 'Azure', 'GCP', 'CloudFlare', 'DigitalOcean']
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -351,9 +382,9 @@ function DeployWizard({
                       <button
                         key={p}
                         onClick={() => {
-                          const defaultType = p === 'Cloudflare' ? 'CDN'
+                          const defaultType = p === 'CloudFlare' ? 'CDN'
                             : p === 'AWS' ? 'CDN'
-                            : p === 'Azure' ? ''
+                            : p === 'Azure' ? 'VPS'
                             : p === 'DigitalOcean' ? 'VPS'
                             : ''
                           onUpdate({ provider: p, redirectorType: defaultType })
@@ -613,7 +644,7 @@ function DomainPoolTable({
           onChange={(e) => setNewProvider(e.target.value)}
           className="rounded border border-specter-border bg-specter-surface px-2 py-1 text-xs text-specter-text focus:border-specter-accent focus:outline-none"
         >
-          {['AWS', 'Azure', 'GCP', 'Cloudflare', 'DigitalOcean'].map((p) => (
+          {['AWS', 'Azure', 'GCP', 'CloudFlare', 'DigitalOcean'].map((p) => (
             <option key={p} value={p}>{p}</option>
           ))}
         </select>
@@ -825,6 +856,7 @@ export function Redirectors() {
       const id = crypto.randomUUID()
       const name = deployWizard.name || `${deployWizard.provider.toLowerCase()}-${Date.now()}`
       const backendUrl = deployWizard.backendUrl || window.location.origin
+      const isAzureAppService = deployWizard.provider === 'Azure' && deployWizard.redirectorType === 'VPS'
       const configYaml = [
         `id: "${id}"`,
         `name: "${name}"`,
@@ -838,6 +870,16 @@ export function Redirectors() {
         `  decoy_response: "${deployWizard.decoyResponse || '<!DOCTYPE html><html><head><title>404</title></head><body><h1>Not Found</h1></body></html>'}"`,
         `health_check_interval: 60`,
         `auto_rotate_on_block: false`,
+        ...(isAzureAppService
+          ? [
+              `azure_location: "westeurope"`,
+              `sku_name: "B1"`,
+              `uri_pattern: "^/api/v[0-9]+/"`,
+              `interactive_uri_pattern: "^/api/socks/[^/]+/ws$"`,
+              `header_name: "none"`,
+              `header_pattern: ".*"`,
+            ]
+          : []),
       ].join('\n')
 
       const req = create(DeployRedirectorRequestSchema, { configYaml })

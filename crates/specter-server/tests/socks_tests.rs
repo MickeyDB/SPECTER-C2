@@ -159,6 +159,46 @@ async fn prepare_start_replaces_degraded_relay() {
 }
 
 #[tokio::test]
+async fn failed_start_releases_bind_port() {
+    let (session_mgr, _task_disp, socks_mgr) = setup().await;
+
+    let session_id = session_mgr
+        .register_session(
+            "WORKSTATION".into(),
+            "admin".into(),
+            1234,
+            "Windows 11".into(),
+            "High".into(),
+            "explorer.exe".into(),
+            "192.168.1.10".into(),
+            "1.2.3.4".into(),
+        )
+        .await
+        .unwrap();
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    socks_mgr
+        .start_relay(&session_id, &bind_addr.to_string(), "", "task-start")
+        .await
+        .unwrap();
+    socks_mgr
+        .mark_started_task_result(&session_id, "task-start", false)
+        .await;
+
+    let relay = socks_mgr.relay_info(&session_id).await.unwrap();
+    assert_eq!(relay.state, "degraded");
+
+    let rebound = tokio::net::TcpListener::bind(bind_addr).await;
+    assert!(
+        rebound.is_ok(),
+        "port should be released after failed module start"
+    );
+}
+
+#[tokio::test]
 async fn start_relay_rejects_duplicate() {
     let (session_mgr, _task_disp, socks_mgr) = setup().await;
 

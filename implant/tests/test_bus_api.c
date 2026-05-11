@@ -182,7 +182,7 @@ void spec_sha256(const BYTE *data, DWORD len, BYTE digest[32]);
 #define LOG_WARN    2
 #define LOG_ERROR   3
 #define BUS_OUTPUT_RING_SIZE    4096
-#define BUS_OUTPUT_ENTRY_MAX    512
+#define BUS_OUTPUT_ENTRY_MAX    3584
 
 typedef struct _OUTPUT_RING {
     BYTE    data[BUS_OUTPUT_RING_SIZE];

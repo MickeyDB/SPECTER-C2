@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package specter.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message OperationLog {
+  string id = 1;
+  string level = 2;
+  string source = 3;
+  string target_type = 4;
+  string target_id = 5;
+  string message = 6;
+  string details = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ListOperationLogsRequest {
+  string source = 1;
+  string target_type = 2;
+  string target_id = 3;
+  int32 limit = 4;
+}
+
+message ListOperationLogsResponse {
+  repeated OperationLog logs = 1;
+}

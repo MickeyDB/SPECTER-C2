@@ -189,12 +189,17 @@ function parseSocksStartArgs(input: string, sessionId: string) {
   let bindAddress = '127.0.0.1:1080'
   let throttleMs = 250
   let channelUrl = ''
+  let redirectorRef = ''
 
   for (const token of tokens) {
     if (/^(wss?|https?):\/\//i.test(token)) {
       channelUrl = normalizeSocksChannelUrl(token, sessionId)
     } else if (/^\d+$/.test(token)) {
       throttleMs = Number.parseInt(token, 10)
+    } else if (/^(via:|redirector:|@)/i.test(token)) {
+      redirectorRef = token.replace(/^(via:|redirector:|@)/i, '')
+    } else if (!token.includes(':')) {
+      redirectorRef = token
     } else {
       bindAddress = token
     }
@@ -204,7 +209,33 @@ function parseSocksStartArgs(input: string, sessionId: string) {
     bindAddress,
     throttleMs: Number.isFinite(throttleMs) ? throttleMs : 250,
     channelUrl,
+    redirectorRef,
   }
+}
+
+async function resolveSocksRedirectorChannel(ref: string, sessionId: string): Promise<string> {
+  const lookup = ref.trim().toLowerCase()
+  if (!lookup) return ''
+
+  const res = await specterClient.listRedirectors({})
+  const redirector = res.redirectors.find((item) => {
+    return [item.id, item.name, item.domain]
+      .filter(Boolean)
+      .some((value) => value.toLowerCase() === lookup)
+  })
+
+  if (!redirector) {
+    throw new Error(`redirector '${ref}' not found`)
+  }
+
+  const base =
+    redirector.socksChannelBaseUrl ||
+    redirector.endpointUrl ||
+    (redirector.domain ? `https://${redirector.domain}` : '')
+  if (!base) {
+    throw new Error(`redirector '${ref}' does not have an endpoint yet`)
+  }
+  return normalizeSocksChannelUrl(base, sessionId)
 }
 
 function saveCommandHistory(sessionId: string, history: string[]) {
@@ -489,8 +520,8 @@ function writeHelp(term: XTerminal, sessionId = '') {
     '\x1b[33mModules:\x1b[0m',
     '  module_load <name> [args]  — Load and execute a module',
     '  bof <name> [args]          — Load and execute a BOF',
-    '  socks start [bind] [ms] [ws-url]',
-    '                            — Start SOCKS relay; ws-url may be a redirector channel',
+    '  socks start [bind] [ms] [ws-url|via:<redirector>]',
+    '                            — Start SOCKS relay; via can be a redirector name/id',
     '  socks list|status|stop     — Inspect or stop SOCKS relay',
     '',
     '\x1b[33mLocal:\x1b[0m',
@@ -840,17 +871,19 @@ export function SessionInteract() {
 
         try {
           if (subcommand === 'start') {
-            const { bindAddress, throttleMs, channelUrl } = parseSocksStartArgs(args, id)
+            const parsed = parseSocksStartArgs(args, id)
+            const channelUrl =
+              parsed.channelUrl || (parsed.redirectorRef ? await resolveSocksRedirectorChannel(parsed.redirectorRef, id) : '')
             const res = await specterClient.startSocksRelay({
               sessionId: id,
-              bindAddress,
-              throttleMs,
+              bindAddress: parsed.bindAddress,
+              throttleMs: parsed.throttleMs,
               channelUrl,
             })
             if (term) {
               const relay = res.relay
               writePersistedLines(term, id, [
-                `\x1b[32m[socks]\x1b[0m started ${relay?.bindAddress ?? bindAddress} task=${relay?.startedTaskId ?? 'queued'}`,
+                `\x1b[32m[socks]\x1b[0m started ${relay?.bindAddress ?? parsed.bindAddress} task=${relay?.startedTaskId ?? 'queued'}`,
                 `\x1b[32m[socks]\x1b[0m state=${relay?.state || 'starting'} transport=${relay?.transport || 'beacon_fallback'} channel=${relay?.channelUrl || channelUrl || 'not configured'}`,
               ])
               writePrompt(term)
@@ -905,7 +938,7 @@ export function SessionInteract() {
           }
 
           if (term) {
-            writePersistedLine(term, id, '\x1b[31m[socks]\x1b[0m usage: socks start [127.0.0.1:1080] [throttle_ms] [wss://redirector/api/socks/<session>/ws] | stop | status | list')
+            writePersistedLine(term, id, '\x1b[31m[socks]\x1b[0m usage: socks start [127.0.0.1:1080] [throttle_ms] [wss://redirector/api/socks/<session>/ws|via:<redirector>] | stop | status | list')
             writePrompt(term)
           }
         } catch (err) {

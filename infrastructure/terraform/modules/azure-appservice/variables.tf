@@ -56,7 +56,7 @@ variable "header_name" {
 variable "header_pattern" {
   description = "Regex pattern for the C2 identification header value"
   type        = string
-  default     = "^[a-f0-9]{32}$"
+  default     = "^[a-fA-F0-9]+$"
 }
 
 variable "azure_location" {

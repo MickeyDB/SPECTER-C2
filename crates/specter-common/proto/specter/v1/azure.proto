@@ -61,6 +61,8 @@ message RedirectorInfo {
   string state = 6;
   string backend_url = 7;
   string config_yaml = 8;
+  string endpoint_url = 9;
+  string socks_channel_base_url = 10;
 }
 
 // DeployRedirector

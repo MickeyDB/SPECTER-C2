@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/specter/v1/azure.proto",
         "proto/specter/v1/collaboration.proto",
         "proto/specter/v1/reports.proto",
+        "proto/specter/v1/operation_logs.proto",
         "proto/specter/v1/specter_service.proto",
     ];
 

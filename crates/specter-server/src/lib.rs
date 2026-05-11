@@ -9,6 +9,7 @@ pub mod grpc;
 pub mod listener;
 pub mod module;
 pub mod module_args;
+pub mod operation_log;
 pub mod profile;
 pub mod redirector;
 pub mod reports;

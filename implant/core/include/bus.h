@@ -35,7 +35,7 @@
 /* ------------------------------------------------------------------ */
 
 #define BUS_OUTPUT_RING_SIZE    4096   /* Encrypted ring buffer capacity  */
-#define BUS_OUTPUT_ENTRY_MAX    512    /* Max single output write size    */
+#define BUS_OUTPUT_ENTRY_MAX    3584   /* Max single output write size    */
 
 /* ------------------------------------------------------------------ */
 /*  MODULE_BUS_API — function table passed to every module              */

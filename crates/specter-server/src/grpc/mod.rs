@@ -21,6 +21,7 @@ use crate::listener::azure_listener::AzureListenerManager;
 use crate::listener::ListenerManager;
 use crate::module::ModuleRepository;
 use crate::module_args::{encode_module_args, normalize_module_args, ModuleArg};
+use crate::operation_log::OperationLogStore;
 use crate::profile::ProfileStore;
 use crate::redirector::RedirectorOrchestrator;
 use crate::reports::ReportGenerator;
@@ -49,6 +50,7 @@ pub struct SpecterGrpcService {
     chat_service: Arc<ChatService>,
     report_generator: Arc<ReportGenerator>,
     socks_manager: Arc<SocksManager>,
+    operation_log: Arc<OperationLogStore>,
 }
 
 impl SpecterGrpcService {
@@ -70,6 +72,7 @@ impl SpecterGrpcService {
         chat_service: Arc<ChatService>,
         report_generator: Arc<ReportGenerator>,
         socks_manager: Arc<SocksManager>,
+        operation_log: Arc<OperationLogStore>,
     ) -> Self {
         Self {
             session_manager,
@@ -91,6 +94,7 @@ impl SpecterGrpcService {
             chat_service,
             report_generator,
             socks_manager,
+            operation_log,
         }
     }
 
@@ -1293,13 +1297,14 @@ impl SpecterService for SpecterGrpcService {
     ) -> Result<Response<StartSocksRelayResponse>, Status> {
         let ctx = require_permission(&request, "queue_task")?;
         let req = request.into_inner();
+        let session_id = req.session_id.clone();
         let bind_address = if req.bind_address.trim().is_empty() {
             "127.0.0.1:1080".to_string()
         } else {
             req.bind_address.trim().to_string()
         };
         self.socks_manager
-            .prepare_start(&req.session_id)
+            .prepare_start(&session_id)
             .await
             .map_err(Status::failed_precondition)?;
 
@@ -1318,24 +1323,50 @@ impl SpecterService for SpecterGrpcService {
         .map_err(Status::invalid_argument)?;
 
         let task_id = self
-            .queue_module_task(&req.session_id, "socks5", &module_args, &ctx.operator_id)
+            .queue_module_task(&session_id, "socks5", &module_args, &ctx.operator_id)
             .await?;
 
         if let Err(e) = self
             .socks_manager
-            .start_relay(&req.session_id, &bind_address, &channel_url, &task_id)
+            .start_relay(&session_id, &bind_address, &channel_url, &task_id)
             .await
         {
             let _ = self
                 .task_dispatcher
                 .complete_task(&task_id, e.as_bytes(), false)
                 .await;
+            let _ = self
+                .operation_log
+                .record(
+                    "error",
+                    "socks",
+                    "session",
+                    &session_id,
+                    "SOCKS relay failed to start",
+                    e.clone(),
+                )
+                .await;
             return Err(Status::failed_precondition(e));
         }
 
+        let _ = self
+            .operation_log
+            .record(
+                "info",
+                "socks",
+                "session",
+                &session_id,
+                "SOCKS relay starting",
+                format!(
+                    "bind_address={bind_address}\ntask_id={task_id}\ntransport=beacon_fallback\nchannel_url={}",
+                    if channel_url.is_empty() { "not configured" } else { &channel_url }
+                ),
+            )
+            .await;
+
         Ok(Response::new(StartSocksRelayResponse {
             relay: Some(SocksRelayInfo {
-                session_id: req.session_id,
+                session_id,
                 bind_address,
                 started_task_id: task_id,
                 transport: "beacon_fallback".to_string(),
@@ -1351,14 +1382,29 @@ impl SpecterService for SpecterGrpcService {
     ) -> Result<Response<StopSocksRelayResponse>, Status> {
         require_permission(&request, "queue_task")?;
         let req = request.into_inner();
+        let session_id = req.session_id.clone();
         let stop_task_id = self
             .socks_manager
-            .stop_relay(&req.session_id)
+            .stop_relay(&session_id)
             .await
             .map_err(Status::failed_precondition)?;
+        let resolved_stop_task_id =
+            stop_task_id.unwrap_or_else(|| "interactive_channel".to_string());
+
+        let _ = self
+            .operation_log
+            .record(
+                "info",
+                "socks",
+                "session",
+                &session_id,
+                "SOCKS relay stop requested",
+                format!("stop_task_id={resolved_stop_task_id}"),
+            )
+            .await;
 
         Ok(Response::new(StopSocksRelayResponse {
-            stop_task_id: stop_task_id.unwrap_or_else(|| "interactive_channel".to_string()),
+            stop_task_id: resolved_stop_task_id,
         }))
     }
 
@@ -1836,6 +1882,7 @@ impl SpecterService for SpecterGrpcService {
                         rule_name: m.rule_name,
                         namespace: m.namespace,
                         tags: m.tags,
+                        severity: m.severity,
                     })
                     .collect(),
                 Err(e) => {
@@ -1847,12 +1894,15 @@ impl SpecterService for SpecterGrpcService {
             Vec::new()
         };
 
-        // Block delivery if any YARA rule tagged [CRITICAL] matched.
+        // Block delivery if any YARA rule is marked critical.
         // These indicate the payload contains signatures that would be
         // immediately detected by AV/EDR and must not be delivered.
         let critical_matches: Vec<&str> = yara_warnings
             .iter()
-            .filter(|w| w.tags.iter().any(|t| t == "CRITICAL"))
+            .filter(|w| {
+                w.severity.eq_ignore_ascii_case("critical")
+                    || w.tags.iter().any(|t| t.eq_ignore_ascii_case("CRITICAL"))
+            })
             .map(|w| w.rule_name.as_str())
             .collect();
         if !critical_matches.is_empty() {
@@ -2055,6 +2105,8 @@ impl SpecterService for SpecterGrpcService {
 
         Ok(Response::new(DeployRedirectorResponse {
             redirector: Some(RedirectorInfo {
+                endpoint_url: redirector_endpoint_url(&config.domain),
+                socks_channel_base_url: redirector_socks_channel_base_url(&config.domain),
                 id,
                 name: config.name,
                 redirector_type: config.redirector_type.to_string(),
@@ -2128,6 +2180,8 @@ impl SpecterService for SpecterGrpcService {
             .map(|(config, state)| {
                 let config_yaml = serde_yaml::to_string(&config).unwrap_or_default();
                 RedirectorInfo {
+                    endpoint_url: redirector_endpoint_url(&config.domain),
+                    socks_channel_base_url: redirector_socks_channel_base_url(&config.domain),
                     id: config.id,
                     name: config.name,
                     redirector_type: config.redirector_type.to_string(),
@@ -2280,6 +2334,22 @@ impl SpecterService for SpecterGrpcService {
             report: Some(report_to_proto(report)),
         }))
     }
+
+    async fn list_operation_logs(
+        &self,
+        request: Request<ListOperationLogsRequest>,
+    ) -> Result<Response<ListOperationLogsResponse>, Status> {
+        require_permission(&request, "list_sessions")?;
+        let req = request.into_inner();
+        let limit = if req.limit <= 0 { 250 } else { req.limit } as i64;
+        let logs = self
+            .operation_log
+            .list(&req.source, &req.target_type, &req.target_id, limit)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(ListOperationLogsResponse { logs }))
+    }
 }
 
 fn report_to_proto(r: crate::reports::Report) -> ReportInfo {
@@ -2394,6 +2464,30 @@ fn convert_event(ev: SpecterEvent) -> Event {
         SpecterEvent::ChatMessage(e) => Event {
             event: Some(event::Event::ChatMessage(e)),
         },
+        SpecterEvent::OperationLog(e) => Event {
+            event: Some(event::Event::OperationLog(e)),
+        },
         SpecterEvent::Generic { .. } => Event { event: None },
     }
+}
+
+fn redirector_endpoint_url(domain: &str) -> String {
+    let trimmed = domain.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+    format!("https://{trimmed}")
+}
+
+fn redirector_socks_channel_base_url(domain: &str) -> String {
+    let endpoint = redirector_endpoint_url(domain);
+    if endpoint.is_empty() {
+        return String::new();
+    }
+    endpoint
+        .replacen("https://", "wss://", 1)
+        .replacen("http://", "ws://", 1)
 }

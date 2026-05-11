@@ -12,6 +12,7 @@ use sqlx::{Row, SqlitePool};
 use thiserror::Error;
 
 use crate::event::{EventBus, SpecterEvent};
+use crate::operation_log::record_operation_log;
 
 pub use fronting::DomainFrontingConfig;
 
@@ -176,6 +177,30 @@ pub struct RedirectorConfig {
     /// Defaults to "westeurope" if not set.
     #[serde(default = "default_azure_location")]
     pub azure_location: String,
+    /// Optional provider-specific App Service SKU.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sku_name: String,
+    /// Optional existing resource group for Azure deployments.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource_group_name: String,
+    /// Optional Azure DNS zone for custom domain validation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dns_zone_name: String,
+    /// Optional resource group that owns the Azure DNS zone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dns_zone_resource_group: String,
+    /// URI regex used by redirector filtering.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uri_pattern: String,
+    /// WebSocket URI regex used for interactive channels such as SOCKS.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub interactive_uri_pattern: String,
+    /// Optional header name used by redirector filtering. Set to "none" to skip.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub header_name: String,
+    /// Optional regex for the filtering header value.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub header_pattern: String,
     /// Domain fronting configuration. Required when `redirector_type` is `DomainFront`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fronting: Option<DomainFrontingConfig>,
@@ -309,6 +334,20 @@ impl RedirectorOrchestrator {
                 config.name, config.id
             ),
         });
+        let _ = record_operation_log(
+            &self.pool,
+            &self.event_bus,
+            "info",
+            "redirector",
+            "redirector",
+            &config.id,
+            "Redirector created",
+            format!(
+                "name={}\nprovider={}\ntype={}\nbackend_url={}",
+                config.name, config.provider, config.redirector_type, config.backend_url
+            ),
+        )
+        .await;
 
         // Spawn Terraform deployment in the background so the RPC returns immediately.
         let pool = self.pool.clone();
@@ -341,6 +380,17 @@ impl RedirectorOrchestrator {
                     event_bus.publish(SpecterEvent::Generic {
                         message: format!("Redirector '{id}' deployment failed: {e}"),
                     });
+                    let _ = record_operation_log(
+                        &pool,
+                        &event_bus,
+                        "error",
+                        "redirector",
+                        "redirector",
+                        &id,
+                        "Redirector deployment failed",
+                        e.to_string(),
+                    )
+                    .await;
                 }
             }
         });
@@ -391,6 +441,17 @@ impl RedirectorOrchestrator {
             event_bus.publish(SpecterEvent::Generic {
                 message: format!("Redirector '{id}' destroyed"),
             });
+            let _ = record_operation_log(
+                &pool,
+                &event_bus,
+                "info",
+                "redirector",
+                "redirector",
+                &id,
+                "Redirector destroyed",
+                "",
+            )
+            .await;
         });
 
         Ok(())
@@ -514,6 +575,17 @@ impl RedirectorOrchestrator {
         self.event_bus.publish(SpecterEvent::Generic {
             message: format!("Redirector {id} transitioned from {current} to {target}"),
         });
+        let _ = record_operation_log(
+            &self.pool,
+            &self.event_bus,
+            "info",
+            "redirector",
+            "redirector",
+            id,
+            "Redirector state changed",
+            format!("from={current}\nto={target}"),
+        )
+        .await;
 
         Ok(())
     }
@@ -543,6 +615,14 @@ mod tests {
             health_check_interval: 30,
             auto_rotate_on_block: true,
             azure_location: "westeurope".to_string(),
+            sku_name: String::new(),
+            resource_group_name: String::new(),
+            dns_zone_name: String::new(),
+            dns_zone_resource_group: String::new(),
+            uri_pattern: String::new(),
+            interactive_uri_pattern: String::new(),
+            header_name: String::new(),
+            header_pattern: String::new(),
             fronting: None,
         };
 
@@ -651,6 +731,14 @@ mod tests {
             health_check_interval: 60,
             auto_rotate_on_block: false,
             azure_location: "westeurope".to_string(),
+            sku_name: String::new(),
+            resource_group_name: String::new(),
+            dns_zone_name: String::new(),
+            dns_zone_resource_group: String::new(),
+            uri_pattern: String::new(),
+            interactive_uri_pattern: String::new(),
+            header_name: String::new(),
+            header_pattern: String::new(),
             fronting: None,
         };
 
@@ -703,6 +791,14 @@ mod tests {
             health_check_interval: 60,
             auto_rotate_on_block: true,
             azure_location: "westeurope".to_string(),
+            sku_name: String::new(),
+            resource_group_name: String::new(),
+            dns_zone_name: String::new(),
+            dns_zone_resource_group: String::new(),
+            uri_pattern: String::new(),
+            interactive_uri_pattern: String::new(),
+            header_name: String::new(),
+            header_pattern: String::new(),
             fronting: None,
         };
 

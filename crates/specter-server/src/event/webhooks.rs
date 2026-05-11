@@ -401,6 +401,7 @@ fn event_type_name(event: &SpecterEvent) -> String {
         SpecterEvent::TaskFailed(_) => "task_failed".into(),
         SpecterEvent::PresenceUpdate(_) => "presence_update".into(),
         SpecterEvent::ChatMessage(_) => "chat_message".into(),
+        SpecterEvent::OperationLog(_) => "operation_log".into(),
         SpecterEvent::Generic { .. } => "generic".into(),
     }
 }
@@ -469,6 +470,20 @@ fn event_to_json(event: &SpecterEvent) -> serde_json::Value {
                     "sender_username": m.sender_username,
                     "content": m.content,
                     "channel": m.channel,
+                },
+            })
+        }
+        SpecterEvent::OperationLog(ref log) => {
+            serde_json::json!({
+                "event_type": "operation_log",
+                "timestamp": Utc::now().to_rfc3339(),
+                "details": {
+                    "id": log.id,
+                    "level": log.level,
+                    "source": log.source,
+                    "target_type": log.target_type,
+                    "target_id": log.target_id,
+                    "message": log.message,
                 },
             })
         }

@@ -125,12 +125,39 @@ pub async fn process_checkin(
                 .await;
         }
 
+        let task_type = state
+            .task_dispatcher
+            .get_task(&tr.task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|task| task.task_type)
+            .unwrap_or_else(|| "task".to_string());
+
         if let Err(e) = state
             .task_dispatcher
             .complete_task(&tr.task_id, tr.result.as_bytes(), success)
             .await
         {
             tracing::warn!("Failed to complete task {}: {e}", tr.task_id);
+        } else if let Some(operation_log) = state.operation_log.as_ref() {
+            let level = if success { "info" } else { "error" };
+            let outcome = if success { "completed" } else { "failed" };
+            let message = format!("{task_type} {outcome}");
+            let details = if tr.result.is_empty() {
+                format!("task_id={}", tr.task_id)
+            } else {
+                format!("task_id={}\n{}", tr.task_id, tr.result)
+            };
+            if let Err(e) = operation_log
+                .record(level, "module", "session", &session_id, message, details)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to record operation log for task {}: {e}",
+                    tr.task_id
+                );
+            }
         }
 
         if success {

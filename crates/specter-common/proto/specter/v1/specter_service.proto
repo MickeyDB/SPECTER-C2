@@ -16,6 +16,7 @@ import "specter/v1/azure.proto";
 import "specter/v1/collaboration.proto";
 import "specter/v1/reports.proto";
 import "specter/v1/socks.proto";
+import "specter/v1/operation_logs.proto";
 
 // Unified event message for the SubscribeEvents stream.
 message Event {
@@ -24,6 +25,7 @@ message Event {
     TaskEvent task_event = 2;
     PresenceUpdate presence_update = 3;
     ChatMessage chat_message = 4;
+    OperationLog operation_log = 5;
   }
 }
 
@@ -124,4 +126,7 @@ service SpecterService {
   rpc GenerateReport(GenerateReportRequest) returns (GenerateReportResponse);
   rpc ListReports(ListReportsRequest) returns (ListReportsResponse);
   rpc GetReport(GetReportRequest) returns (GetReportResponse);
+
+  // Operator-visible logs
+  rpc ListOperationLogs(ListOperationLogsRequest) returns (ListOperationLogsResponse);
 }

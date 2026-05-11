@@ -481,6 +481,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Arc::clone(&task_dispatcher),
             Arc::clone(&event_bus),
             None,
+            None,
         ))
     };
 
@@ -621,6 +622,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             session_manager: Arc::clone(&session_manager),
             task_dispatcher: Arc::clone(&task_dispatcher),
             event_bus: Arc::clone(&event_bus),
+            operation_log: None,
             module_repository: None,
             socks_manager: None,
             server_secret: Arc::new(server_secret),
