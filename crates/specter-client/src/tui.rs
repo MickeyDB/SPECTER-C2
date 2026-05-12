@@ -387,5 +387,27 @@ fn handle_event_update(app: &mut App, event: &specter_common::proto::specter::v1
                 app.chat_messages.drain(..app.chat_messages.len() - 200);
             }
         }
+        Inner::OperationLog(log) => {
+            let kind = match log.level.as_str() {
+                "error" | "failed" | "failure" => LineKind::Error,
+                _ => LineKind::System,
+            };
+            let source = if log.source.is_empty() {
+                "log"
+            } else {
+                log.source.as_str()
+            };
+            let message = if log.message.is_empty() {
+                "(no message)"
+            } else {
+                log.message.as_str()
+            };
+            let line = ConsoleLine::new(kind, format!("[{source}] {message}"));
+            if log.target_type == "session" && !log.target_id.is_empty() {
+                app.console_append(line.with_session(log.target_id.clone()));
+            } else {
+                app.console_append(line);
+            }
+        }
     }
 }
