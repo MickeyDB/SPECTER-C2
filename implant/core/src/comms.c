@@ -915,15 +915,22 @@ NTSTATUS comms_tls_send(COMMS_CONTEXT *ctx, const BYTE *data, DWORD len) {
 
     COMMS_API *api = &ctx->api;
     DWORD max_msg = ctx->stream_sizes.cbMaximumMessage;
+    DWORD max_local_msg = 0;
     DWORD sent = 0;
+
+    if (ctx->stream_sizes.cbHeader + ctx->stream_sizes.cbTrailer >= COMMS_SEND_BUF_SIZE)
+        return STATUS_BUFFER_TOO_SMALL;
+
+    max_local_msg = COMMS_SEND_BUF_SIZE -
+                    ctx->stream_sizes.cbHeader -
+                    ctx->stream_sizes.cbTrailer;
+    if (max_msg == 0 || max_msg > max_local_msg)
+        max_msg = max_local_msg;
+    if (max_msg == 0)
+        return STATUS_BUFFER_TOO_SMALL;
 
     while (sent < len) {
         DWORD chunk = (len - sent > max_msg) ? max_msg : (len - sent);
-        DWORD total = ctx->stream_sizes.cbHeader + chunk + ctx->stream_sizes.cbTrailer;
-
-        /* Use send_buf if big enough, otherwise bail */
-        if (total > COMMS_SEND_BUF_SIZE)
-            return STATUS_BUFFER_TOO_SMALL;
 
         BYTE *msg_buf = ctx->send_buf;
         spec_memcpy(msg_buf + ctx->stream_sizes.cbHeader, data + sent, chunk);
