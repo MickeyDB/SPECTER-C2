@@ -415,11 +415,15 @@ impl RedirectorOrchestrator {
     /// or intentionally retired redirectors/domains.
     pub async fn destroy(&self, id: &str) -> Result<(), RedirectorError> {
         let current = self.get_state(id).await?;
-        if matches!(current, RedirectorState::Destroyed | RedirectorState::Burned) {
+        if matches!(
+            current,
+            RedirectorState::Destroyed | RedirectorState::Burned
+        ) {
             return Ok(());
         }
 
-        self.transition_state(id, RedirectorState::Destroying).await?;
+        self.transition_state(id, RedirectorState::Destroying)
+            .await?;
 
         // Spawn background Terraform destroy
         let pool = self.pool.clone();
@@ -430,6 +434,7 @@ impl RedirectorOrchestrator {
             matches!(current, RedirectorState::Active | RedirectorState::Degraded);
 
         tokio::spawn(async move {
+            let mut destroyed = !needs_terraform;
             if needs_terraform {
                 match deploy::destroy_terraform(
                     &pool,
@@ -442,14 +447,37 @@ impl RedirectorOrchestrator {
                 {
                     Ok(()) => {
                         tracing::info!("Redirector '{id}' infrastructure destroyed");
+                        destroyed = true;
                     }
                     Err(e) => {
                         tracing::error!("Redirector '{id}' terraform destroy failed: {e}");
+                        let _ = sqlx::query(
+                            "UPDATE redirectors SET state = ?1, updated_at = ?2 WHERE id = ?3",
+                        )
+                        .bind(RedirectorState::Failed.to_string())
+                        .bind(Utc::now().timestamp())
+                        .bind(&id)
+                        .execute(&pool)
+                        .await;
+                        let _ = record_operation_log(
+                            &pool,
+                            &event_bus,
+                            "error",
+                            "redirector",
+                            "redirector",
+                            &id,
+                            "Redirector destroy failed",
+                            e.to_string(),
+                        )
+                        .await;
                     }
                 }
             }
 
-            // Transition to Destroyed regardless (cleanup DB record)
+            if !destroyed {
+                return;
+            }
+
             let _ = sqlx::query("UPDATE redirectors SET state = ?1, updated_at = ?2 WHERE id = ?3")
                 .bind(RedirectorState::Destroyed.to_string())
                 .bind(Utc::now().timestamp())
@@ -667,16 +695,21 @@ mod tests {
         assert!(RedirectorState::Provisioning.can_transition_to(RedirectorState::Failed));
         assert!(RedirectorState::Active.can_transition_to(RedirectorState::Degraded));
         assert!(RedirectorState::Active.can_transition_to(RedirectorState::Burning));
+        assert!(RedirectorState::Active.can_transition_to(RedirectorState::Destroying));
         assert!(RedirectorState::Degraded.can_transition_to(RedirectorState::Active));
         assert!(RedirectorState::Degraded.can_transition_to(RedirectorState::Burning));
+        assert!(RedirectorState::Degraded.can_transition_to(RedirectorState::Destroying));
         assert!(RedirectorState::Degraded.can_transition_to(RedirectorState::Failed));
         assert!(RedirectorState::Burning.can_transition_to(RedirectorState::Burned));
         assert!(RedirectorState::Burning.can_transition_to(RedirectorState::Failed));
         assert!(RedirectorState::Provisioning.can_transition_to(RedirectorState::Burning));
+        assert!(RedirectorState::Provisioning.can_transition_to(RedirectorState::Destroying));
+        assert!(RedirectorState::Destroying.can_transition_to(RedirectorState::Destroyed));
 
         // Invalid transitions
         assert!(!RedirectorState::Active.can_transition_to(RedirectorState::Provisioning));
         assert!(!RedirectorState::Burned.can_transition_to(RedirectorState::Active));
+        assert!(!RedirectorState::Destroyed.can_transition_to(RedirectorState::Active));
         assert!(!RedirectorState::Failed.can_transition_to(RedirectorState::Active));
     }
 

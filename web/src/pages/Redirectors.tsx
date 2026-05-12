@@ -908,8 +908,15 @@ export function Redirectors() {
     setDeployWizard((prev) => (prev ? { ...prev, deploying: true, result: null } : null))
 
     try {
-      const id = crypto.randomUUID()
-      const name = deployWizard.name || `${deployWizard.provider.toLowerCase()}-${Date.now()}`
+      const id = crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+      const providerPrefix: Record<string, string> = {
+        Azure: 'edge',
+        AWS: 'cdn',
+        CloudFlare: 'cache',
+        GCP: 'asset',
+        DigitalOcean: 'node',
+      }
+      const name = deployWizard.name || `${providerPrefix[deployWizard.provider] || 'edge'}-${id}`
       const backendUrl = deployWizard.backendUrl || window.location.origin
       const isAzureAppService = deployWizard.provider === 'Azure' && deployWizard.redirectorType === 'VPS'
       const configYaml = [

@@ -35,6 +35,14 @@ fn sample_config() -> RedirectorConfig {
         health_check_interval: 30,
         auto_rotate_on_block: true,
         azure_location: "westeurope".to_string(),
+        sku_name: String::new(),
+        resource_group_name: String::new(),
+        dns_zone_name: String::new(),
+        dns_zone_resource_group: String::new(),
+        uri_pattern: String::new(),
+        interactive_uri_pattern: String::new(),
+        header_name: String::new(),
+        header_pattern: String::new(),
         fronting: None,
     }
 }
@@ -202,15 +210,21 @@ fn valid_state_transitions_are_accepted() {
         (RedirectorState::Provisioning, RedirectorState::Active),
         (RedirectorState::Provisioning, RedirectorState::Failed),
         (RedirectorState::Provisioning, RedirectorState::Burning),
+        (RedirectorState::Provisioning, RedirectorState::Destroying),
         (RedirectorState::Active, RedirectorState::Degraded),
         (RedirectorState::Active, RedirectorState::Burning),
+        (RedirectorState::Active, RedirectorState::Destroying),
         (RedirectorState::Degraded, RedirectorState::Active),
         (RedirectorState::Degraded, RedirectorState::Burning),
+        (RedirectorState::Degraded, RedirectorState::Destroying),
         (RedirectorState::Degraded, RedirectorState::Failed),
         (RedirectorState::Failed, RedirectorState::Burning),
         (RedirectorState::Failed, RedirectorState::Burned),
+        (RedirectorState::Failed, RedirectorState::Destroying),
         (RedirectorState::Burning, RedirectorState::Burned),
         (RedirectorState::Burning, RedirectorState::Failed),
+        (RedirectorState::Destroying, RedirectorState::Destroyed),
+        (RedirectorState::Destroying, RedirectorState::Failed),
     ];
 
     for (from, to) in valid {
@@ -225,6 +239,10 @@ fn invalid_state_transitions_are_rejected() {
         (RedirectorState::Active, RedirectorState::Active),
         (RedirectorState::Burned, RedirectorState::Active),
         (RedirectorState::Burned, RedirectorState::Burning),
+        (RedirectorState::Burned, RedirectorState::Destroying),
+        (RedirectorState::Destroyed, RedirectorState::Active),
+        (RedirectorState::Destroyed, RedirectorState::Burning),
+        (RedirectorState::Destroyed, RedirectorState::Destroying),
         (RedirectorState::Failed, RedirectorState::Active),
         (RedirectorState::Failed, RedirectorState::Provisioning),
         (RedirectorState::Failed, RedirectorState::Degraded),
@@ -248,6 +266,8 @@ fn self_transitions_are_rejected() {
         RedirectorState::Degraded,
         RedirectorState::Burning,
         RedirectorState::Burned,
+        RedirectorState::Destroying,
+        RedirectorState::Destroyed,
         RedirectorState::Failed,
     ];
 
@@ -267,6 +287,8 @@ fn burned_state_cannot_transition() {
         RedirectorState::Degraded,
         RedirectorState::Burning,
         RedirectorState::Burned,
+        RedirectorState::Destroying,
+        RedirectorState::Destroyed,
         RedirectorState::Failed,
     ];
 
@@ -274,6 +296,10 @@ fn burned_state_cannot_transition() {
         assert!(
             !RedirectorState::Burned.can_transition_to(target),
             "Burned -> {target} should be invalid"
+        );
+        assert!(
+            !RedirectorState::Destroyed.can_transition_to(target),
+            "Destroyed -> {target} should be invalid"
         );
     }
 }
@@ -286,6 +312,8 @@ fn all_state_variants_roundtrip() {
         ("Degraded", RedirectorState::Degraded),
         ("Burning", RedirectorState::Burning),
         ("Burned", RedirectorState::Burned),
+        ("Destroying", RedirectorState::Destroying),
+        ("Destroyed", RedirectorState::Destroyed),
         ("Failed", RedirectorState::Failed),
     ] {
         let parsed: RedirectorState = s.parse().unwrap();
