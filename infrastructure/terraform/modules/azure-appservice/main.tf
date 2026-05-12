@@ -16,9 +16,9 @@ provider "azurerm" {
 }
 
 locals {
-  rg_name  = var.resource_group_name != "" ? var.resource_group_name : "specter-ws-${var.redirector_id}"
+  rg_name  = var.resource_group_name != "" ? var.resource_group_name : "rg-edge-${var.redirector_id}"
   create_rg = var.resource_group_name == ""
-  app_name = "specter-ws-${var.redirector_id}"
+  app_name = "edge-${var.redirector_id}"
 }
 
 # --- Resource Group ---
@@ -30,7 +30,7 @@ resource "azurerm_resource_group" "redir" {
 
   tags = {
     RedirectorID = var.redirector_id
-    Purpose      = "specter-c2-redirector"
+    Purpose      = "edge-forwarder"
   }
 }
 

@@ -576,9 +576,9 @@ export function PayloadBuilder() {
 
             {/* Callback Channels */}
             <section className="rounded-lg border border-specter-border bg-specter-surface p-4">
-              <div className="mb-3 flex items-center justify-between">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-xs font-medium text-specter-text">Callback Channels</h2>
-                <div className="flex gap-1">
+                <div className="flex min-w-0 flex-wrap justify-end gap-1">
                   {redirectors.length > 0 && (
                     <select
                       onChange={(e) => {
@@ -594,7 +594,7 @@ export function PayloadBuilder() {
                         }
                         e.target.value = ''
                       }}
-                      className="rounded border border-specter-border bg-specter-bg px-2 py-1 text-[10px] text-specter-muted focus:border-specter-accent focus:outline-none"
+                      className="max-w-full rounded border border-specter-border bg-specter-bg px-2 py-1 text-[10px] text-specter-muted focus:border-specter-accent focus:outline-none sm:max-w-44"
                       defaultValue=""
                     >
                       <option value="" disabled>

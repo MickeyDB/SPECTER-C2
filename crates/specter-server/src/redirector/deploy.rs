@@ -151,6 +151,7 @@ pub async fn destroy_terraform(
     event_bus: &Arc<EventBus>,
     id: &str,
     infra_root: &Path,
+    final_state: RedirectorState,
 ) -> Result<(), RedirectorError> {
     // Load config from DB
     let row = sqlx::query("SELECT config_yaml FROM redirectors WHERE id = ?1")
@@ -214,12 +215,12 @@ pub async fn destroy_terraform(
     )
     .await?;
 
-    // Clear terraform state in DB and transition to Burned
+    // Clear terraform state in DB and transition to the caller's terminal state.
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "UPDATE redirectors SET state = ?1, terraform_state = NULL, updated_at = ?2 WHERE id = ?3",
     )
-    .bind(RedirectorState::Burned.to_string())
+    .bind(final_state.to_string())
     .bind(now)
     .bind(id)
     .execute(pool)

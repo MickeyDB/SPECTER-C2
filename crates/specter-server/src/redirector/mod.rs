@@ -223,6 +223,8 @@ pub enum RedirectorState {
     Degraded,
     Burning,
     Burned,
+    Destroying,
+    Destroyed,
     Failed,
 }
 
@@ -233,15 +235,21 @@ impl RedirectorState {
             (Self::Provisioning, Self::Active)
                 | (Self::Provisioning, Self::Failed)
                 | (Self::Provisioning, Self::Burning)
+                | (Self::Provisioning, Self::Destroying)
                 | (Self::Active, Self::Degraded)
                 | (Self::Active, Self::Burning)
+                | (Self::Active, Self::Destroying)
                 | (Self::Degraded, Self::Active)
                 | (Self::Degraded, Self::Burning)
+                | (Self::Degraded, Self::Destroying)
                 | (Self::Degraded, Self::Failed)
                 | (Self::Failed, Self::Burning)
                 | (Self::Failed, Self::Burned)
+                | (Self::Failed, Self::Destroying)
                 | (Self::Burning, Self::Burned)
                 | (Self::Burning, Self::Failed)
+                | (Self::Destroying, Self::Destroyed)
+                | (Self::Destroying, Self::Failed)
         )
     }
 }
@@ -254,6 +262,8 @@ impl std::fmt::Display for RedirectorState {
             Self::Degraded => write!(f, "Degraded"),
             Self::Burning => write!(f, "Burning"),
             Self::Burned => write!(f, "Burned"),
+            Self::Destroying => write!(f, "Destroying"),
+            Self::Destroyed => write!(f, "Destroyed"),
             Self::Failed => write!(f, "Failed"),
         }
     }
@@ -268,6 +278,8 @@ impl std::str::FromStr for RedirectorState {
             "Degraded" => Ok(Self::Degraded),
             "Burning" => Ok(Self::Burning),
             "Burned" => Ok(Self::Burned),
+            "Destroying" => Ok(Self::Destroying),
+            "Destroyed" => Ok(Self::Destroyed),
             "Failed" => Ok(Self::Failed),
             other => Err(RedirectorError::InvalidConfig(format!(
                 "unknown state: {other}"
@@ -398,17 +410,16 @@ impl RedirectorOrchestrator {
         Ok(config.id.clone())
     }
 
-    /// Destroy a redirector: transitions to Burning, runs terraform destroy,
-    /// then transitions to Burned. For redirectors that never deployed (Failed/Provisioning),
-    /// skips Terraform and goes straight to Burned.
+    /// Destroy a redirector: transitions to Destroying, runs terraform destroy,
+    /// then transitions to Destroyed. Burn/Burned remains reserved for blocked
+    /// or intentionally retired redirectors/domains.
     pub async fn destroy(&self, id: &str) -> Result<(), RedirectorError> {
         let current = self.get_state(id).await?;
-        if current == RedirectorState::Burned {
+        if matches!(current, RedirectorState::Destroyed | RedirectorState::Burned) {
             return Ok(());
         }
 
-        // Transition to Burning first
-        self.transition_state(id, RedirectorState::Burning).await?;
+        self.transition_state(id, RedirectorState::Destroying).await?;
 
         // Spawn background Terraform destroy
         let pool = self.pool.clone();
@@ -420,7 +431,15 @@ impl RedirectorOrchestrator {
 
         tokio::spawn(async move {
             if needs_terraform {
-                match deploy::destroy_terraform(&pool, &event_bus, &id, &infra_root).await {
+                match deploy::destroy_terraform(
+                    &pool,
+                    &event_bus,
+                    &id,
+                    &infra_root,
+                    RedirectorState::Destroyed,
+                )
+                .await
+                {
                     Ok(()) => {
                         tracing::info!("Redirector '{id}' infrastructure destroyed");
                     }
@@ -430,9 +449,9 @@ impl RedirectorOrchestrator {
                 }
             }
 
-            // Transition to Burned regardless (cleanup DB record)
+            // Transition to Destroyed regardless (cleanup DB record)
             let _ = sqlx::query("UPDATE redirectors SET state = ?1, updated_at = ?2 WHERE id = ?3")
-                .bind(RedirectorState::Burned.to_string())
+                .bind(RedirectorState::Destroyed.to_string())
                 .bind(Utc::now().timestamp())
                 .bind(&id)
                 .execute(&pool)

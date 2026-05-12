@@ -227,6 +227,14 @@ pub fn finalize_payload(payload: &mut [u8]) {
     // SPECHEAP, SPECFLOW) and old CONFIG_MAGIC occurrences.
     scrub_markers(payload, &mut rng);
 
+    // PE stubs keep the config length/capacity at fixed offsets in
+    // stub_config_region, so the original 16-byte CCCC marker is no longer
+    // needed after the builder has found the region and embedded the config.
+    const CONFIG_MARKER: &[u8; 16] = b"CCCCCCCCCCCCCCCC";
+    while let Some(pos) = find_marker(payload, CONFIG_MARKER) {
+        fill_random(&mut payload[pos..pos + CONFIG_MARKER.len()], &mut rng);
+    }
+
     // Phase 0.4: SPBF marker no longer exists in the implant binary.
 
     // Scrub ALL occurrences of SPECPICBLOB marker in the final payload

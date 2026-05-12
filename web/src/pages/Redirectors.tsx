@@ -45,6 +45,7 @@ function formatRelativeTime(date: Date): string {
 }
 
 const stateColors: Record<string, string> = {
+  provisioning: 'text-specter-info',
   running: 'text-status-active',
   healthy: 'text-status-active',
   active: 'text-status-active',
@@ -53,11 +54,15 @@ const stateColors: Record<string, string> = {
   stopped: 'text-specter-muted',
   error: 'text-status-dead',
   dead: 'text-status-dead',
+  burning: 'text-specter-warning',
+  burned: 'text-specter-warning',
+  destroying: 'text-specter-muted',
   destroyed: 'text-specter-muted',
   deploying: 'text-specter-info',
 }
 
 const stateBgColors: Record<string, string> = {
+  provisioning: 'bg-specter-info/10 border-specter-info/30',
   running: 'bg-status-active/10 border-status-active/30',
   healthy: 'bg-status-active/10 border-status-active/30',
   active: 'bg-status-active/10 border-status-active/30',
@@ -66,6 +71,9 @@ const stateBgColors: Record<string, string> = {
   stopped: 'bg-specter-muted/10 border-specter-muted/30',
   error: 'bg-status-dead/10 border-status-dead/30',
   dead: 'bg-status-dead/10 border-status-dead/30',
+  burning: 'bg-specter-warning/10 border-specter-warning/30',
+  burned: 'bg-specter-warning/10 border-specter-warning/30',
+  destroying: 'bg-specter-muted/10 border-specter-muted/30',
   destroyed: 'bg-specter-muted/10 border-specter-muted/30',
   deploying: 'bg-specter-info/10 border-specter-info/30',
 }
@@ -73,8 +81,17 @@ const stateBgColors: Record<string, string> = {
 function StateIconElement({ state, className }: { state: string; className?: string }) {
   const s = state.toLowerCase()
   if (s === 'running' || s === 'healthy' || s === 'active') return <CheckCircle className={className} />
-  if (s === 'degraded' || s === 'warning' || s === 'deploying') return <AlertCircle className={className} />
+  if (s === 'degraded' || s === 'warning' || s === 'deploying' || s === 'provisioning' || s === 'burning' || s === 'destroying') return <AlertCircle className={className} />
   return <XCircle className={className} />
+}
+
+function displayState(state: string): string {
+  const s = state.toLowerCase()
+  if (s === 'burned') return 'Burned'
+  if (s === 'destroyed') return 'Destroyed'
+  if (s === 'destroying') return 'Destroying'
+  if (s === 'burning') return 'Burning'
+  return state
 }
 
 function ProviderIconElement({ provider, className }: { provider: string; className?: string }) {
@@ -157,6 +174,15 @@ function RedirectorCard({
   const colorClass = stateColors[state.toLowerCase()] ?? 'text-specter-muted'
   const bgClass = stateBgColors[state.toLowerCase()] ?? 'bg-specter-muted/10 border-specter-muted/30'
   const socksChannel = socksChannelTemplate(redirector)
+  const endpoint = redirector.endpointUrl || redirector.domain || ''
+  const [copiedValue, setCopiedValue] = useState<string | null>(null)
+
+  const copyValue = useCallback((value: string) => {
+    if (!value) return
+    navigator.clipboard?.writeText(value)
+    setCopiedValue(value)
+    setTimeout(() => setCopiedValue(null), 1600)
+  }, [])
 
   return (
     <div className="flex flex-col rounded-lg border border-specter-border bg-specter-surface p-4 transition-colors hover:border-specter-muted">
@@ -168,16 +194,28 @@ function RedirectorCard({
         </div>
         <span className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium ${bgClass} ${colorClass}`}>
           <StateIconElement state={state} className="h-2.5 w-2.5" />
-          {state}
+          {displayState(state)}
         </span>
       </div>
 
       {/* Details */}
       <div className="mt-3 flex flex-col gap-1.5">
-        <div className="flex items-center gap-2 text-xs">
+        <button
+          type="button"
+          onClick={() => copyValue(endpoint)}
+          className="flex min-w-0 items-center gap-2 text-left text-xs text-specter-text transition-colors hover:text-specter-accent"
+          title={endpoint ? 'Copy endpoint URL' : 'No endpoint URL'}
+        >
           <Globe className="h-3 w-3 text-specter-muted" />
-          <span className="min-w-0 truncate text-specter-text">{redirector.endpointUrl || redirector.domain || 'No domain'}</span>
-        </div>
+          <span className="min-w-0 flex-1 truncate">{endpoint || 'No domain'}</span>
+          {endpoint && (
+            copiedValue === endpoint ? (
+              <CheckCircle className="h-3 w-3 shrink-0 text-status-active" />
+            ) : (
+              <Copy className="h-3 w-3 shrink-0 text-specter-muted" />
+            )
+          )}
+        </button>
         <div className="flex items-center gap-2 text-xs">
           <Cloud className="h-3 w-3 text-specter-muted" />
           <span className="text-specter-muted">{redirector.provider || 'Unknown'}</span>
@@ -211,14 +249,23 @@ function RedirectorCard({
             <span className="text-[10px] uppercase text-specter-muted">SOCKS channel</span>
             <button
               type="button"
-              onClick={() => navigator.clipboard?.writeText(socksChannel)}
+              onClick={() => copyValue(socksChannel)}
               className="text-specter-muted transition-colors hover:text-specter-text"
               title="Copy SOCKS channel template"
             >
-              <Copy className="h-3 w-3" />
+              {copiedValue === socksChannel ? <CheckCircle className="h-3 w-3 text-status-active" /> : <Copy className="h-3 w-3" />}
             </button>
           </div>
-          <code className="block break-all font-mono text-[10px] text-specter-muted">
+          <code
+            role="button"
+            tabIndex={0}
+            onClick={() => copyValue(socksChannel)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') copyValue(socksChannel)
+            }}
+            className="block cursor-copy break-all font-mono text-[10px] text-specter-muted transition-colors hover:text-specter-accent"
+            title="Copy SOCKS channel template"
+          >
             {socksChannel}
           </code>
         </div>
@@ -338,6 +385,11 @@ function DeployWizard({
   const stepIdx = steps.indexOf(state.step)
 
   const providers = ['AWS', 'Azure', 'GCP', 'CloudFlare', 'DigitalOcean']
+  const runningListeners = listeners.filter((l) => l.status.toLowerCase() === 'running')
+  const listenerEndpoint = (listener: { port: number; protocol: string }) => {
+    const proto = listener.protocol === 'https' ? 'https' : 'http'
+    return `${proto}://${window.location.hostname}:${listener.port}`
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -441,7 +493,7 @@ function DeployWizard({
                   type="text"
                   value={state.name}
                   onChange={(e) => onUpdate({ name: e.target.value })}
-                  placeholder="azure-redir-01"
+                  placeholder="edge-relay-01"
                   className="w-full rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
                 />
               </div>
@@ -457,7 +509,7 @@ function DeployWizard({
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-specter-muted">Backend URL (teamserver + listener)</label>
-                <div className="flex gap-2">
+                <div className="grid gap-2">
                   <input
                     type="text"
                     value={state.backendUrl}
@@ -465,30 +517,33 @@ function DeployWizard({
                     placeholder="http://teamserver:8080"
                     className="flex-1 rounded border border-specter-border bg-specter-surface px-3 py-2 text-xs text-specter-text placeholder:text-specter-muted focus:border-specter-accent focus:outline-none"
                   />
-                  <select
-                    onChange={(e) => {
-                      if (e.target.value) onUpdate({ backendUrl: e.target.value })
-                    }}
-                    value=""
-                    className="rounded border border-specter-border bg-specter-surface px-2 py-2 text-xs text-specter-muted focus:border-specter-accent focus:outline-none"
-                  >
-                    <option value="">Auto-fill from listener...</option>
-                    {listeners
-                      .filter((l) => l.status === 'RUNNING')
-                      .map((l) => {
-                        const proto = l.protocol === 'https' ? 'https' : 'http'
-                        const host = window.location.hostname
-                        const url = `${proto}://${host}:${l.port}`
+                  <div>
+                    <label className="mb-1 block text-[10px] uppercase text-specter-muted">
+                      Use listener endpoint
+                    </label>
+                    <select
+                      onChange={(e) => {
+                        if (e.target.value) onUpdate({ backendUrl: e.target.value })
+                      }}
+                      value=""
+                      className="w-full rounded border border-specter-border bg-specter-surface px-2 py-2 text-xs text-specter-muted focus:border-specter-accent focus:outline-none"
+                    >
+                      <option value="">
+                        {runningListeners.length > 0 ? 'Select a running listener...' : 'No running listeners'}
+                      </option>
+                      {runningListeners.map((l) => {
+                        const url = listenerEndpoint(l)
                         return (
                           <option key={l.id} value={url}>
-                            {l.name} ({url})
+                            {l.name || l.id} - {l.protocol.toUpperCase()} on {url}
                           </option>
                         )
                       })}
-                  </select>
+                    </select>
+                  </div>
                 </div>
                 <p className="mt-1 text-[10px] text-specter-muted">
-                  Select a running listener or enter manually. The redirector will proxy C2 traffic to this address.
+                  This is the exact origin the redirector proxies to. Pick the listener that owns the payload keypair.
                 </p>
               </div>
             </div>

@@ -569,9 +569,9 @@ impl PayloadBuilder {
                 )));
             }
 
-            // Preserve the marker (16 bytes) and max_size field (4 bytes) so the
-            // stub can find them at runtime. Write config data into the reserved
-            // area starting at marker_pos + 20.
+            // Preserve the marker-sized prefix and max_size field while embedding.
+            // finalize_payload() scrubs the fixed CCCC bytes later; stubs address
+            // stub_config_region directly and only require the fixed offsets.
             let data_start = marker_pos + 20; // after marker(16) + max_size(4)
             let data_end = data_start + max_size;
             let data_end = data_end.min(payload.len());
@@ -866,9 +866,10 @@ transform:
             )
             .unwrap();
 
-        // The marker region should be patched (no more "CCCC..." at offset 64)
-        // Marker is preserved so the stub can find it at runtime
-        assert_eq!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
+        // The marker-sized prefix is scrubbed after embedding; the max_size field
+        // and config payload remain at their fixed offsets for the stub.
+        assert_ne!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
+        assert_eq!(&result.payload[80..84], &1024u32.to_le_bytes());
         // Payload size should be same as stub (in-place patching)
         assert_eq!(result.payload.len(), stub.len());
     }
@@ -1043,9 +1044,10 @@ transform:
             )
             .unwrap();
 
-        // Config marker should be patched
-        // Marker is preserved so the stub can find it at runtime
-        assert_eq!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
+        // Config marker should be scrubbed while preserving the fixed max_size
+        // and config-data offsets used by the stub.
+        assert_ne!(&result.payload[64..80], b"CCCCCCCCCCCCCCCC");
+        assert_eq!(&result.payload[80..84], &1024u32.to_le_bytes());
 
         // PIC blob size should be written at offset 2060
         let pic_size = u32::from_le_bytes([

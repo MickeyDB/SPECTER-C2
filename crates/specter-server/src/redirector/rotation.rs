@@ -198,7 +198,14 @@ pub async fn burn_and_replace(
     });
 
     // Step 2: Destroy infrastructure
-    super::deploy::destroy_terraform(pool, event_bus, id, infra_root).await?;
+    super::deploy::destroy_terraform(
+        pool,
+        event_bus,
+        id,
+        infra_root,
+        super::RedirectorState::Burned,
+    )
+    .await?;
 
     // Step 3: Burn the domain in the pool
     burn_domain(pool, &old_config.domain).await?;
