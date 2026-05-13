@@ -116,10 +116,11 @@ echo "PIC artifact: $PIC_SIZE bytes sha256=$PIC_SHA"
 
 echo
 echo "== Web UI =="
+echo "Using npm legacy peer resolution for install; build and type checks still run normally."
 if [[ -f "$WEB_DIR/package-lock.json" ]]; then
-  run npm --prefix "$WEB_DIR" ci
+  run npm --prefix "$WEB_DIR" ci --legacy-peer-deps
 else
-  run npm --prefix "$WEB_DIR" install
+  run npm --prefix "$WEB_DIR" install --legacy-peer-deps
 fi
 run npm --prefix "$WEB_DIR" run generate
 run npm --prefix "$WEB_DIR" run build
