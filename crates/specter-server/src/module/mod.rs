@@ -361,6 +361,12 @@ impl ModuleRepository {
     pub async fn seed_default_modules(&self) -> Result<(), sqlx::Error> {
         let defaults = [
             (
+                "smoke",
+                "1.0.0",
+                ModuleType::Pic,
+                "Smoke test module - minimal module execution validation",
+            ),
+            (
                 "socks5",
                 "1.0.0",
                 ModuleType::Pic,

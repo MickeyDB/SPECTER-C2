@@ -448,17 +448,19 @@ async fn package_nonexistent_module_returns_error() {
 // --- Seed default modules ---
 
 #[tokio::test]
-async fn seed_default_modules_registers_all_six() {
+async fn seed_default_modules_registers_all_defaults() {
     let pool = test_pool().await;
     let repo = ModuleRepository::with_signing_key(pool, test_signing_key());
 
     repo.seed_default_modules().await.unwrap();
 
     let modules = repo.list_modules().await.unwrap();
-    assert_eq!(modules.len(), 6);
+    assert_eq!(modules.len(), 7);
 
     let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
-    for expected in &["socks5", "token", "lateral", "inject", "exfil", "collect"] {
+    for expected in &[
+        "smoke", "socks5", "token", "lateral", "inject", "exfil", "collect",
+    ] {
         assert!(names.contains(expected), "missing module: {}", expected);
     }
 }
@@ -474,7 +476,7 @@ async fn seed_default_modules_is_idempotent() {
     let modules = repo.list_modules().await.unwrap();
     assert_eq!(
         modules.len(),
-        6,
+        7,
         "idempotent seed should not duplicate modules"
     );
 }
