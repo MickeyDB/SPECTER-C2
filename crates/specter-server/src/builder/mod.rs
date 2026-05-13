@@ -219,6 +219,17 @@ fn read_template_feature(path: &Path, key: &str) -> bool {
     text.lines().any(|line| line.trim() == format!("{key}=1"))
 }
 
+fn validate_required_pic_features(template_dir: &Path) -> Result<(), BuilderError> {
+    let features_path = template_dir.join("specter.features");
+    if !read_template_feature(&features_path, "profile_response_dynamic") {
+        return Err(BuilderError::Config(format!(
+            "implant artifact is missing required feature profile_response_dynamic=1 in {}; rebuild implant from current source before starting the teamserver",
+            features_path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn sha256_hex(data: &[u8]) -> String {
     let digest = Sha256::digest(data);
     hex::encode(digest)
@@ -354,6 +365,10 @@ impl PayloadBuilder {
                 );
                 self.templates.insert(*format, template);
             }
+        }
+
+        if self.templates.contains_key(&OutputFormat::RawShellcode) {
+            validate_required_pic_features(&self.template_dir)?;
         }
 
         // PIC blob entry is always at offset 0.
@@ -819,6 +834,14 @@ transform:
         }]
     }
 
+    fn write_required_pic_features(dir: &TempDir) {
+        std::fs::write(
+            dir.path().join("specter.features"),
+            "callback_tick=0\nbarebone=0\nbarebone_modules=0\ndev=0\nprofile_response_dynamic=1\n",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn test_builder_init_missing_dir() {
         let config = BuilderConfig {
@@ -834,6 +857,7 @@ transform:
         let dir = TempDir::new().unwrap();
         let mut f = std::fs::File::create(dir.path().join("specter.bin")).unwrap();
         f.write_all(&[0xCC; 64]).unwrap();
+        write_required_pic_features(&dir);
 
         let config = BuilderConfig {
             template_dir: dir.path().to_path_buf(),
@@ -880,6 +904,7 @@ transform:
         let dir = TempDir::new().unwrap();
         let template_data = vec![0x90; 128]; // NOP sled as fake PIC blob
         std::fs::write(dir.path().join("specter.bin"), &template_data).unwrap();
+        write_required_pic_features(&dir);
 
         let config = BuilderConfig {
             template_dir: dir.path().to_path_buf(),
@@ -916,6 +941,7 @@ transform:
     fn test_builder_rejects_stale_template() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("specter.bin"), vec![0x90; 128]).unwrap();
+        write_required_pic_features(&dir);
 
         let config = BuilderConfig {
             template_dir: dir.path().to_path_buf(),
@@ -940,6 +966,27 @@ transform:
         assert!(err
             .to_string()
             .contains("builder template 'specter.bin' is stale"));
+    }
+
+    #[test]
+    fn test_builder_rejects_unversioned_pic_features() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("specter.bin"), vec![0x90; 128]).unwrap();
+        std::fs::write(
+            dir.path().join("specter.features"),
+            "callback_tick=0\nbarebone=0\nbarebone_modules=0\ndev=0\n",
+        )
+        .unwrap();
+
+        let config = BuilderConfig {
+            template_dir: dir.path().to_path_buf(),
+        };
+        let err = match builder_init(&config) {
+            Ok(_) => panic!("builder should reject an unversioned PIC feature file"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("profile_response_dynamic=1"));
     }
 
     #[test]
@@ -1117,6 +1164,7 @@ transform:
         // Create a raw PIC template (specter.bin)
         let pic_data = vec![0x90; 128]; // NOP sled as fake PIC blob
         std::fs::write(dir.path().join("specter.bin"), &pic_data).unwrap();
+        write_required_pic_features(&dir);
 
         // Create a DLL stub with both config marker and PIC marker
         let mut stub = vec![0x00u8; 8192];

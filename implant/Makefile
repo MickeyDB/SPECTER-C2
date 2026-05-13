@@ -106,6 +106,7 @@ features:
 	@printf "barebone=%s\n" "$(if $(BAREBONE),1,0)" >> $(BUILD_DIR)/specter.features
 	@printf "barebone_modules=%s\n" "$(if $(BAREBONE_MODULES),1,0)" >> $(BUILD_DIR)/specter.features
 	@printf "dev=%s\n" "$(if $(DEV),1,0)" >> $(BUILD_DIR)/specter.features
+	@printf "profile_response_dynamic=1\n" >> $(BUILD_DIR)/specter.features
 
 modules: $(MOD_BUILD_DIR) $(MOD_BINS)
 	@echo "=== Built $(words $(MOD_BINS)) module(s) ==="
