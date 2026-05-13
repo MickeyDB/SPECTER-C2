@@ -1373,6 +1373,21 @@ static void handle_socks_data_task(IMPLANT_CONTEXT *ctx, TASK *task) {
         store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
 }
 
+static BOOL task_socks_log_is_printable(const BYTE *buf, DWORD len) {
+    if (!buf || len == 0 || len > BUS_OUTPUT_ENTRY_MAX)
+        return FALSE;
+
+    for (DWORD i = 0; i < len; i++) {
+        BYTE c = buf[i];
+        if (c == '\r' || c == '\n' || c == '\t')
+            continue;
+        if (c < 0x20 || c > 0x7e)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
 void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
 #if defined(SPECTER_BAREBONE) && !defined(SPECTER_BAREBONE_MODULES)
     (void)ctx;
@@ -1428,7 +1443,8 @@ void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
             continue;
 
 socks_output_log:
-            if (output_type != OUTPUT_BINARY && frame_len > 0) {
+            if (output_type != OUTPUT_BINARY &&
+                task_socks_log_is_printable(raw, frame_len)) {
                 char synthetic_log_id[] = {
                     's','o','c','k','s','_','l','o','g',0
                 };

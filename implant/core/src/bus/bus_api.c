@@ -240,29 +240,17 @@ typedef struct _OUTPUT_ENTRY_HDR {
     DWORD type;   /* OUTPUT_TEXT / OUTPUT_BINARY / OUTPUT_ERROR */
 } OUTPUT_ENTRY_HDR;
 
-static void output_crypt_at(OUTPUT_RING *ring, DWORD ring_pos,
-                            const BYTE *src, DWORD len, BYTE *dst) {
-    BYTE padded_in[CHACHA20_BLOCK_SIZE + sizeof(OUTPUT_ENTRY_HDR) + BUS_OUTPUT_ENTRY_MAX];
-    BYTE padded_out[CHACHA20_BLOCK_SIZE + sizeof(OUTPUT_ENTRY_HDR) + BUS_OUTPUT_ENTRY_MAX];
-    DWORD skip;
-    DWORD total;
+static DWORD output_entry_counter(DWORD ring_pos) {
+    return 1u + ring_pos;
+}
 
+static void output_crypt_entry(OUTPUT_RING *ring, DWORD entry_pos,
+                               const BYTE *src, DWORD len, BYTE *dst) {
     if (!ring || !src || !dst || len == 0)
         return;
 
-    skip = ring_pos % CHACHA20_BLOCK_SIZE;
-    total = skip + len;
-    if (total > sizeof(padded_in))
-        return;
-
-    spec_memset(padded_in, 0, skip);
-    spec_memcpy(padded_in + skip, src, len);
     spec_chacha20_encrypt(ring->enc_key, ring->enc_nonce,
-                          ring_pos / CHACHA20_BLOCK_SIZE,
-                          padded_in, total, padded_out);
-    spec_memcpy(dst, padded_out + skip, len);
-    spec_memset(padded_in, 0, total);
-    spec_memset(padded_out, 0, total);
+                          output_entry_counter(entry_pos), src, len, dst);
 }
 
 BOOL output_write(OUTPUT_RING *ring, const BYTE *data, DWORD len, DWORD type) {
@@ -291,7 +279,7 @@ BOOL output_write(OUTPUT_RING *ring, const BYTE *data, DWORD len, DWORD type) {
     spec_memcpy(plain_buf, &hdr, sizeof(OUTPUT_ENTRY_HDR));
     spec_memcpy(plain_buf + sizeof(OUTPUT_ENTRY_HDR), data, len);
 
-    output_crypt_at(ring, ring->head, plain_buf, total, enc_buf);
+    output_crypt_entry(ring, ring->head, plain_buf, total, enc_buf);
 
     /* Write encrypted bytes to ring buffer (wrapping) */
     for (DWORD i = 0; i < total; i++) {
@@ -322,8 +310,8 @@ DWORD output_drain(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
 
         /* Decrypt header */
         OUTPUT_ENTRY_HDR hdr;
-        output_crypt_at(ring, ring->tail, enc_hdr_buf,
-                        sizeof(OUTPUT_ENTRY_HDR), (BYTE *)&hdr);
+        output_crypt_entry(ring, ring->tail, enc_hdr_buf,
+                           sizeof(OUTPUT_ENTRY_HDR), (BYTE *)&hdr);
 
         DWORD total = sizeof(OUTPUT_ENTRY_HDR) + hdr.len;
 
@@ -343,7 +331,7 @@ DWORD output_drain(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
 
         /* Decrypt full entry */
         BYTE plain_entry[sizeof(OUTPUT_ENTRY_HDR) + BUS_OUTPUT_ENTRY_MAX];
-        output_crypt_at(ring, ring->tail, enc_entry, total, plain_entry);
+        output_crypt_entry(ring, ring->tail, enc_entry, total, plain_entry);
 
         /* Copy payload to dest (skip header) */
         spec_memcpy(dest + drained, plain_entry + sizeof(OUTPUT_ENTRY_HDR), hdr.len);
@@ -378,8 +366,8 @@ DWORD output_drain_one_typed(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len,
     }
 
     OUTPUT_ENTRY_HDR hdr;
-    output_crypt_at(ring, ring->tail, enc_hdr_buf,
-                    sizeof(OUTPUT_ENTRY_HDR), (BYTE *)&hdr);
+    output_crypt_entry(ring, ring->tail, enc_hdr_buf,
+                       sizeof(OUTPUT_ENTRY_HDR), (BYTE *)&hdr);
 
     DWORD total = sizeof(OUTPUT_ENTRY_HDR) + hdr.len;
     if (hdr.len > BUS_OUTPUT_ENTRY_MAX || total > ring->count || hdr.len > dest_len)
@@ -391,7 +379,7 @@ DWORD output_drain_one_typed(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len,
     }
 
     BYTE plain_entry[sizeof(OUTPUT_ENTRY_HDR) + BUS_OUTPUT_ENTRY_MAX];
-    output_crypt_at(ring, ring->tail, enc_entry, total, plain_entry);
+    output_crypt_entry(ring, ring->tail, enc_entry, total, plain_entry);
 
     spec_memcpy(dest, plain_entry + sizeof(OUTPUT_ENTRY_HDR), hdr.len);
     if (type_out)

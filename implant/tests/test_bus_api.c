@@ -526,6 +526,69 @@ static void test_output_ring_typed_unaligned_writes(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Test: typed output survives partial drains and ring wraparound      */
+/* ------------------------------------------------------------------ */
+
+static void fill_output_pattern(BYTE *buf, DWORD len, DWORD seed) {
+    for (DWORD i = 0; i < len; i++) {
+        buf[i] = (BYTE)((seed + (i * 13u)) & 0xFFu);
+    }
+}
+
+static void test_output_ring_typed_wraparound_interleaved(void) {
+    printf("\n--- output ring typed wraparound interleaved ---\n");
+
+    memset(&g_ctx, 0, sizeof(g_ctx));
+    bus_init(&g_ctx);
+    BUS_CONTEXT *bctx = (BUS_CONTEXT *)g_ctx.module_bus;
+    OUTPUT_RING *ring = &bctx->output_ring;
+
+    BYTE test_key[32], test_nonce[12];
+    memset(test_key, 0x7A, 32);
+    memset(test_nonce, 0xC3, 12);
+    bus_test_set_ring_key(ring, test_key, test_nonce);
+
+    BYTE expected[27][211];
+    DWORD expected_len[27];
+    DWORD expected_type[27];
+
+    for (DWORD i = 0; i < 17; i++) {
+        expected_len[i] = 211u - (i % 5u);
+        expected_type[i] = i % 3u;
+        fill_output_pattern(expected[i], expected_len[i], 0x30u + i);
+        check("wrap prefill write succeeds",
+              output_write(ring, expected[i], expected_len[i], expected_type[i]));
+    }
+
+    BYTE out[256];
+    for (DWORD i = 0; i < 10; i++) {
+        DWORD typ = 0xFFFFFFFF;
+        DWORD n = output_drain_one_typed(ring, out, sizeof(out), &typ);
+        check("wrap first drain length", n == expected_len[i]);
+        check("wrap first drain type", typ == expected_type[i]);
+        check_bytes("wrap first drain payload", out, expected[i], n);
+    }
+
+    for (DWORD i = 17; i < 27; i++) {
+        expected_len[i] = 211u - (i % 5u);
+        expected_type[i] = i % 3u;
+        fill_output_pattern(expected[i], expected_len[i], 0x30u + i);
+        check("wrap post-drain write succeeds",
+              output_write(ring, expected[i], expected_len[i], expected_type[i]));
+    }
+
+    for (DWORD i = 10; i < 27; i++) {
+        DWORD typ = 0xFFFFFFFF;
+        DWORD n = output_drain_one_typed(ring, out, sizeof(out), &typ);
+        check("wrap final drain length", n == expected_len[i]);
+        check("wrap final drain type", typ == expected_type[i]);
+        check_bytes("wrap final drain payload", out, expected[i], n);
+    }
+
+    check("ring empty after wrap drain", output_available(ring) == 0);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Test: output ring buffer overflow protection                       */
 /* ------------------------------------------------------------------ */
 
@@ -684,6 +747,7 @@ int main(void) {
     test_output_ring_roundtrip();
     test_output_ring_multiple_writes();
     test_output_ring_typed_unaligned_writes();
+    test_output_ring_typed_wraparound_interleaved();
     test_output_ring_overflow();
     test_output_write_edge_cases();
     test_output_drain_edge_cases();
