@@ -909,6 +909,7 @@ export function SessionInteract() {
               if (res.relay) {
                 lines.push(`\x1b[32m[socks]\x1b[0m state=${res.relay.state || 'unknown'} transport=${res.relay.transport || 'unknown'} bind=${res.relay.bindAddress} task=${res.relay.startedTaskId || 'unknown'}`)
                 if (res.relay.channelUrl) lines.push(`\x1b[32m[socks]\x1b[0m channel=${res.relay.channelUrl}`)
+                if (res.statusTaskId) lines.push(`\x1b[32m[socks]\x1b[0m ${res.statusTaskId}`)
               } else {
                 lines.push('\x1b[32m[socks]\x1b[0m no active relay for this session')
               }

@@ -177,6 +177,58 @@ impl SpecterGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))
     }
+
+    async fn refresh_socks_start_task_state(
+        &self,
+        relay: &crate::socks::SocksRelayInfo,
+    ) -> Option<String> {
+        let task = self
+            .task_dispatcher
+            .get_task(&relay.started_task_id)
+            .await
+            .ok()
+            .flatten()?;
+
+        let status = TaskStatus::try_from(task.status).unwrap_or(TaskStatus::Unspecified);
+        match status {
+            TaskStatus::Complete => {
+                self.socks_manager
+                    .mark_started_task_result(&relay.session_id, &relay.started_task_id, true)
+                    .await;
+            }
+            TaskStatus::Failed => {
+                self.socks_manager
+                    .mark_started_task_result(&relay.session_id, &relay.started_task_id, false)
+                    .await;
+            }
+            _ => {}
+        }
+
+        let age_secs = task
+            .created_at
+            .as_ref()
+            .map(|created| {
+                chrono::Utc::now()
+                    .timestamp()
+                    .saturating_sub(created.seconds)
+            })
+            .unwrap_or_default();
+        let mut detail = format!(
+            "start_task={} status={} age={}s",
+            relay.started_task_id,
+            status.as_str_name(),
+            age_secs
+        );
+        if !task.result.is_empty() {
+            let result = String::from_utf8_lossy(&task.result);
+            let preview = result.lines().next().unwrap_or("").trim();
+            if !preview.is_empty() {
+                detail.push_str(" result=");
+                detail.push_str(preview);
+            }
+        }
+        Some(detail)
+    }
 }
 
 /// Extract the authenticated operator context from gRPC request extensions.
@@ -1414,6 +1466,17 @@ impl SpecterService for SpecterGrpcService {
     ) -> Result<Response<ListSocksRelaysResponse>, Status> {
         require_permission(&request, "list_sessions")?;
         let req = request.into_inner();
+        let relays_for_refresh = self
+            .socks_manager
+            .list_relays()
+            .await
+            .into_iter()
+            .filter(|relay| req.session_id.is_empty() || relay.session_id == req.session_id)
+            .collect::<Vec<_>>();
+        for relay in &relays_for_refresh {
+            let _ = self.refresh_socks_start_task_state(relay).await;
+        }
+
         let relays = self
             .socks_manager
             .list_relays()
@@ -1439,6 +1502,10 @@ impl SpecterService for SpecterGrpcService {
     ) -> Result<Response<SocksStatusResponse>, Status> {
         require_permission(&request, "list_sessions")?;
         let req = request.into_inner();
+        let task_detail = match self.socks_manager.relay_info(&req.session_id).await {
+            Some(relay) => self.refresh_socks_start_task_state(&relay).await,
+            None => None,
+        };
         let relay = self
             .socks_manager
             .relay_info(&req.session_id)
@@ -1453,7 +1520,7 @@ impl SpecterService for SpecterGrpcService {
             });
 
         Ok(Response::new(SocksStatusResponse {
-            status_task_id: String::new(),
+            status_task_id: task_detail.unwrap_or_default(),
             relay,
         }))
     }
