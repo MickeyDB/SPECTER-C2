@@ -348,7 +348,8 @@ DWORD output_drain(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
     return drained;
 }
 
-DWORD output_drain_one(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
+DWORD output_drain_one_typed(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len,
+                             DWORD *type_out) {
     if (!ring || !dest || dest_len == 0 || ring->count < sizeof(OUTPUT_ENTRY_HDR))
         return 0;
 
@@ -378,6 +379,8 @@ DWORD output_drain_one(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
                           enc_entry, total, plain_entry);
 
     spec_memcpy(dest, plain_entry + sizeof(OUTPUT_ENTRY_HDR), hdr.len);
+    if (type_out)
+        *type_out = hdr.type;
 
     for (DWORD i = 0; i < total; i++) {
         ring->data[(ring->tail + i) % BUS_OUTPUT_RING_SIZE] = 0;
@@ -390,6 +393,10 @@ DWORD output_drain_one(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
 
     spec_memset(plain_entry, 0, total);
     return hdr.len;
+}
+
+DWORD output_drain_one(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len) {
+    return output_drain_one_typed(ring, dest, dest_len, NULL);
 }
 
 /* ------------------------------------------------------------------ */

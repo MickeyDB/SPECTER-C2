@@ -37,7 +37,7 @@
 #define WS_MAX_FRAME_HEADER     14      /* Max frame header size     */
 #define WS_SEND_BUF_SIZE        4096    /* Outbound message buffer   */
 #define WS_RECV_BUF_SIZE        8192    /* Inbound message buffer    */
-#define WS_HANDSHAKE_BUF_SIZE   1024    /* HTTP upgrade buffer       */
+#define WS_HANDSHAKE_BUF_SIZE   4096    /* HTTP upgrade buffer       */
 #define WS_MAX_PAYLOAD_PER_FRAME 4000   /* Max payload per frame     */
 #define WS_MASKING_KEY_SIZE     4       /* 32-bit masking key        */
 

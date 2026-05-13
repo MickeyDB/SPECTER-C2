@@ -119,6 +119,26 @@ pub async fn process_checkin(
             continue;
         }
 
+        if tr.task_id == "socks_log" {
+            let message = if success {
+                "socks module log"
+            } else {
+                "socks module error"
+            };
+            if success {
+                tracing::info!(session_id = %session_id, "{}", tr.result);
+            } else {
+                tracing::warn!(session_id = %session_id, "{}", tr.result);
+            }
+            if let Some(operation_log) = state.operation_log.as_ref() {
+                let level = if success { "info" } else { "error" };
+                let _ = operation_log
+                    .record(level, "module", "session", &session_id, message, tr.result.clone())
+                    .await;
+            }
+            continue;
+        }
+
         if let Some(socks_manager) = state.socks_manager.as_ref() {
             socks_manager
                 .mark_started_task_result(&session_id, &tr.task_id, success)

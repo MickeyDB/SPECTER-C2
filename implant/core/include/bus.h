@@ -166,6 +166,12 @@ DWORD output_drain(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len);
 DWORD output_drain_one(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len);
 
 /**
+ * Drain exactly one output entry and return its output type.
+ */
+DWORD output_drain_one_typed(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len,
+                             DWORD *type_out);
+
+/**
  * Reset the output ring buffer to empty state with a new key.
  */
 void output_reset(OUTPUT_RING *ring);
