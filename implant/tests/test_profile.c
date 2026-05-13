@@ -367,13 +367,80 @@ static void test_profile_embed_extract_json(void) {
             DWORD extracted_len = 0;
             DWORD ret = profile_extract_data(&cfg, (BYTE *)resp_body,
                                               (DWORD)strlen(resp_body),
-                                              extracted, &extracted_len);
+                                              extracted, sizeof(extracted),
+                                              &extracted_len);
             ASSERT(ret > 0, "extract produced output");
             ASSERT(extracted_len == test_len, "extracted length matches");
             ASSERT(spec_memcmp(extracted, test_data, test_len) == 0,
                    "extracted data matches original");
         }
     }
+}
+
+static DWORD test_b64_encode(const BYTE *in, DWORD in_len, char *out, DWORD out_size) {
+    static const char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    DWORD needed = ((in_len + 2) / 3) * 4;
+    if (needed >= out_size)
+        return 0;
+
+    DWORD oi = 0;
+    DWORD i = 0;
+    while (i + 2 < in_len) {
+        DWORD v = ((DWORD)in[i] << 16) | ((DWORD)in[i + 1] << 8) | in[i + 2];
+        out[oi++] = table[(v >> 18) & 0x3F];
+        out[oi++] = table[(v >> 12) & 0x3F];
+        out[oi++] = table[(v >> 6) & 0x3F];
+        out[oi++] = table[v & 0x3F];
+        i += 3;
+    }
+    if (i < in_len) {
+        DWORD v = (DWORD)in[i] << 16;
+        if (i + 1 < in_len)
+            v |= (DWORD)in[i + 1] << 8;
+        out[oi++] = table[(v >> 18) & 0x3F];
+        out[oi++] = table[(v >> 12) & 0x3F];
+        out[oi++] = (i + 1 < in_len) ? table[(v >> 6) & 0x3F] : '=';
+        out[oi++] = '=';
+    }
+    out[oi] = '\0';
+    return oi;
+}
+
+static void test_profile_extract_large_json_field(void) {
+    printf("Test: profile_extract_data large JSON field\n");
+
+    BYTE blob[4096];
+    DWORD blob_len = build_test_profile(blob, sizeof(blob));
+    PROFILE_CONFIG cfg;
+    profile_init(blob, blob_len, &cfg);
+
+    enum { RAW_LEN = 6144, BODY_CAP = 12288 };
+    BYTE raw[RAW_LEN];
+    char encoded[RAW_LEN * 2];
+    char body[BODY_CAP];
+    BYTE extracted[RAW_LEN + 16];
+
+    for (DWORD i = 0; i < RAW_LEN; i++) {
+        raw[i] = (BYTE)('A' + (i % 23));
+    }
+
+    DWORD encoded_len = test_b64_encode(raw, RAW_LEN, encoded, sizeof(encoded));
+    ASSERT(encoded_len > 4096, "test response exceeds old 4096-byte decode cap");
+
+    int body_len = snprintf(body, sizeof(body),
+                            "{\"ok\":true,\"message\":{\"text\":\"%s\"}}",
+                            encoded);
+    ASSERT(body_len > 0 && (DWORD)body_len < sizeof(body), "large JSON body built");
+
+    DWORD extracted_len = 0;
+    DWORD ret = profile_extract_data(&cfg, (BYTE *)body, (DWORD)body_len,
+                                      extracted, sizeof(extracted),
+                                      &extracted_len);
+    ASSERT(ret == RAW_LEN, "large extract returned full payload length");
+    ASSERT(extracted_len == RAW_LEN, "large extracted length matches");
+    ASSERT(spec_memcmp(extracted, raw, RAW_LEN) == 0,
+           "large extracted data matches original");
 }
 
 static void test_profile_get_method(void) {
@@ -600,6 +667,7 @@ int main(void) {
     test_uri_rotation_roundrobin();
     test_profile_build_headers();
     test_profile_embed_extract_json();
+    test_profile_extract_large_json_field();
     test_profile_get_method();
     test_lz4_roundtrip();
     test_lz4_small_input();

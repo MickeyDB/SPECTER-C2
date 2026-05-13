@@ -674,8 +674,10 @@ static const char *json_find_string(const char *json, DWORD json_len,
 }
 
 DWORD profile_extract_data(PROFILE_CONFIG *cfg, const BYTE *body, DWORD body_len,
-                            BYTE *data_out, DWORD *data_len_out) {
-    if (!cfg || !cfg->initialized || !body || body_len == 0 || !data_out || !data_len_out)
+                            BYTE *data_out, DWORD data_out_cap,
+                            DWORD *data_len_out) {
+    if (!cfg || !cfg->initialized || !body || body_len == 0 ||
+        !data_out || data_out_cap == 0 || !data_len_out)
         return 0;
 
     *data_len_out = 0;
@@ -683,7 +685,7 @@ DWORD profile_extract_data(PROFILE_CONFIG *cfg, const BYTE *body, DWORD body_len
     /* Use response embed points */
     if (cfg->response.embed_count == 0) {
         /* No embed points — treat entire body as raw data */
-        if (body_len > 4096) return 0;
+        if (body_len > data_out_cap) return 0;
         spec_memcpy(data_out, body, body_len);
         *data_len_out = body_len;
         return body_len;
@@ -699,14 +701,14 @@ DWORD profile_extract_data(PROFILE_CONFIG *cfg, const BYTE *body, DWORD body_len
         if (!val || val_len == 0) return 0;
 
         DWORD decoded = embed_decode(ep->encoding, val, val_len,
-                                      data_out, 4096);
+                                      data_out, data_out_cap);
         *data_len_out = decoded;
         return decoded;
     }
 
     /* Fallback: treat body as encoded data */
     DWORD decoded = embed_decode(ep->encoding, (const char *)body, body_len,
-                                  data_out, 4096);
+                                  data_out, data_out_cap);
     *data_len_out = decoded;
     return decoded;
 }

@@ -217,7 +217,8 @@ DWORD profile_embed_data(PROFILE_CONFIG *cfg, const BYTE *data, DWORD data_len,
  * Returns extracted data length, or 0 on error.
  */
 DWORD profile_extract_data(PROFILE_CONFIG *cfg, const BYTE *body, DWORD body_len,
-                            BYTE *data_out, DWORD *data_len_out);
+                            BYTE *data_out, DWORD data_out_cap,
+                            DWORD *data_len_out);
 
 /**
  * Get the HTTP method for requests (COMMS_HTTP_GET or COMMS_HTTP_POST).
