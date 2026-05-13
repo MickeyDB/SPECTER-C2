@@ -1,7 +1,26 @@
 use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
+use specter_common::checkin::{
+    serialize_binary_response, tlv_tags, CheckinResponse, PendingTaskPayload, TLV_VERSION,
+};
 use specter_server::db;
 use specter_server::module::{ModuleRepository, ModuleType};
+use specter_server::module_args::{encode_module_args, normalize_module_args, ModuleArg};
 use x25519_dalek::{PublicKey, StaticSecret};
+
+fn tlv_values(data: &[u8]) -> Vec<(u16, &[u8])> {
+    let mut values = Vec::new();
+    let mut pos = 0usize;
+    while pos + 6 <= data.len() {
+        let tag = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
+        let len = u32::from_le_bytes(data[pos + 2..pos + 6].try_into().unwrap()) as usize;
+        pos += 6;
+        assert!(pos + len <= data.len(), "malformed TLV length");
+        values.push((tag, &data[pos..pos + len]));
+        pos += len;
+    }
+    assert_eq!(pos, data.len(), "TLV body should end on a field boundary");
+    values
+}
 
 async fn test_pool() -> sqlx::SqlitePool {
     db::init_db(":memory:").await.unwrap()
@@ -245,6 +264,74 @@ async fn package_module_wire_format() {
     // Encrypted payload must be larger than original (nonce + tag overhead)
     // nonce(12) + ciphertext(blob.len()) + tag(16)
     assert_eq!(encrypted_size, 12 + blob.len() + 16);
+}
+
+#[tokio::test]
+async fn packaged_module_task_survives_binary_response_wire_format() {
+    let pool = test_pool().await;
+    let signing_key = test_signing_key();
+    let repo = ModuleRepository::with_signing_key(pool, signing_key);
+
+    let blob = b"module payload with binary bytes \x00\x80\xff";
+    let id = repo
+        .store_module("wire-socks5", "1.0.0", ModuleType::Pic, "wire test", blob)
+        .await
+        .unwrap();
+
+    let session_secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let session_pubkey = PublicKey::from(&session_secret);
+    let package = repo
+        .package_module(&id, session_pubkey.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(&package[..4], b"SPEC");
+
+    let normalized_args = normalize_module_args(
+        &encode_module_args(&[
+            ModuleArg::String("start".to_string()),
+            ModuleArg::Int32(250),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut task_args = package.clone();
+    task_args.push(0);
+    task_args.extend_from_slice(&normalized_args);
+
+    let response = CheckinResponse {
+        session_id: "session-wire".to_string(),
+        tasks: vec![PendingTaskPayload {
+            task_id: "task-wire".to_string(),
+            task_type: "module_load".to_string(),
+            arguments: task_args.clone(),
+        }],
+    };
+
+    let wire = serialize_binary_response(&response);
+    assert_eq!(wire[0], TLV_VERSION);
+
+    let mut task_blocks = tlv_values(&wire[1..])
+        .into_iter()
+        .filter(|(tag, _)| *tag == tlv_tags::TASK_BLOCK)
+        .collect::<Vec<_>>();
+    assert_eq!(task_blocks.len(), 1);
+
+    let fields = tlv_values(task_blocks.pop().unwrap().1);
+    let task_type = fields
+        .iter()
+        .find_map(|(tag, value)| (*tag == tlv_tags::TASK_TYPE).then_some(*value))
+        .unwrap();
+    let args = fields
+        .iter()
+        .find_map(|(tag, value)| (*tag == tlv_tags::TASK_ARGS).then_some(*value))
+        .unwrap();
+
+    assert_eq!(task_type, b"module_load");
+    assert_eq!(args, task_args);
+    assert_eq!(&args[..package.len()], package.as_slice());
+    assert_eq!(args[package.len()], 0);
+    assert_eq!(&args[package.len() + 1..], normalized_args.as_slice());
 }
 
 #[tokio::test]

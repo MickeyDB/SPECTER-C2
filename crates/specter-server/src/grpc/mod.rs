@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
@@ -29,6 +30,11 @@ use crate::session::SessionManager;
 use crate::socks::SocksManager;
 use crate::task::TaskDispatcher;
 use sqlx::SqlitePool;
+
+fn short_sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
 
 pub struct SpecterGrpcService {
     session_manager: Arc<SessionManager>,
@@ -152,6 +158,17 @@ impl SpecterGrpcService {
             task_args.push(0x00);
             task_args.extend_from_slice(&normalized);
         }
+
+        tracing::info!(
+            session_id = %session_id,
+            module_name = %module_name,
+            module_id = %module_id,
+            package_len = task_args.len() - if normalized.is_empty() { 0 } else { normalized.len() + 1 },
+            normalized_args_len = normalized.len(),
+            task_args_len = task_args.len(),
+            task_args_sha256_8 = %short_sha256_hex(&task_args),
+            "module task packaged"
+        );
 
         Ok(task_args)
     }

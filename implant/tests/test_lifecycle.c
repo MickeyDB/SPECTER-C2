@@ -197,10 +197,28 @@ static void test_modmgr_execute_pic(void) {
 
     /* Execute — in TEST_BUILD, loader_load_pic uses bus API's mem_alloc
      * which stubs to NULL in test mode, so this will fail at the load step. */
-    int slot = modmgr_execute(mgr, package, total_len, NULL, 0);
+    BYTE args[] = {
+        2,0,0,0,
+        0,0,0,0, 6,0,0,0, 's','t','a','r','t',0,
+        1,0,0,0, 4,0,0,0, 250,0,0,0
+    };
 
-    check(slot == -1, "modmgr_execute PIC fails gracefully when mem_alloc unavailable");
-    check(mgr->active_count == 0, "active_count unchanged after failed load");
+    int slot = modmgr_execute(mgr, package, total_len, args, sizeof(args));
+
+    check(slot >= 0, "modmgr_execute PIC returns a slot");
+    check(modmgr_last_error() == MODMGR_ERR_NONE, "modmgr_last_error is NONE after success");
+    check(mgr->active_count == 1, "active_count increments after guardian launch");
+    if (slot >= 0) {
+        LOADED_MODULE *mod = &mgr->slots[slot];
+        check(mod->module_id != 0, "module_id assigned");
+        check(mod->status == MODULE_STATUS_RUNNING, "module status is RUNNING");
+        check(mod->guardian_thread != NULL, "guardian handle set");
+        check(mod->args_len == sizeof(args), "module args length copied");
+        check(mod->args && memcmp(mod->args, args, sizeof(args)) == 0,
+              "module args copied byte-for-byte");
+        modmgr_cleanup(mgr, (DWORD)slot);
+        check(mgr->active_count == 0, "active_count returns to 0 after cleanup");
+    }
 
     free(package);
 }
@@ -272,6 +290,7 @@ static void test_modmgr_poll_completed(void) {
 
     /* Write some test output to the ring */
     output_reset(&mgr->output_rings[0]);
+    DWORD cleanup_before = modmgr_cleanup_generation(mgr);
 
     BYTE test_key[32], test_nonce[12];
     memset(test_key, 0xAA, 32);
@@ -309,7 +328,7 @@ static void test_modmgr_poll_completed(void) {
 
     check(mod->status == MODULE_STATUS_WIPED, "slot is WIPED after poll+cleanup");
     check(mgr->active_count == 0, "active_count is 0 after cleanup");
-    check(modmgr_cleanup_generation(mgr) == 1,
+    check(modmgr_cleanup_generation(mgr) == cleanup_before + 1,
           "cleanup_generation increments after completed cleanup");
 }
 
@@ -332,6 +351,7 @@ static void test_modmgr_poll_crashed(void) {
     mod->output_ring = &mgr->output_rings[2];
     mod->bus_api = &mgr->slot_apis[2];
     mgr->active_count = 1;
+    DWORD cleanup_before = modmgr_cleanup_generation(mgr);
 
     output_reset(&mgr->output_rings[2]);
 
@@ -351,7 +371,7 @@ static void test_modmgr_poll_crashed(void) {
 
     check(mod->status == MODULE_STATUS_WIPED, "crashed slot is WIPED after poll");
     check(mgr->active_count == 0, "active_count is 0 after crash cleanup");
-    check(modmgr_cleanup_generation(mgr) == 2,
+    check(modmgr_cleanup_generation(mgr) == cleanup_before + 1,
           "cleanup_generation increments after crashed cleanup");
 }
 

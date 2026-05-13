@@ -198,6 +198,20 @@ DWORD output_available(const OUTPUT_RING *ring);
 #define MODULE_FLAG_PERSISTENT   0x00000001
 #define MODULE_FLAG_SOCKS        0x00000002
 
+/* Module manager execution diagnostics */
+#define MODMGR_ERR_NONE             0
+#define MODMGR_ERR_INVALID_INPUT    1
+#define MODMGR_ERR_FULL             2
+#define MODMGR_ERR_NO_SLOT          3
+#define MODMGR_ERR_NO_CONTEXT       4
+#define MODMGR_ERR_BAD_HEADER       5
+#define MODMGR_ERR_VERIFY_FAILED    6
+#define MODMGR_ERR_ALLOC_FAILED     7
+#define MODMGR_ERR_DECRYPT_FAILED   8
+#define MODMGR_ERR_ARGS_ALLOC       9
+#define MODMGR_ERR_LOAD_FAILED      10
+#define MODMGR_ERR_GUARDIAN_FAILED  11
+
 /* COFF relocation types (IMAGE_REL_AMD64_*) */
 #define IMAGE_REL_AMD64_ABSOLUTE  0x0000
 #define IMAGE_REL_AMD64_ADDR64    0x0001
@@ -508,6 +522,11 @@ NTSTATUS modmgr_init(IMPLANT_CONTEXT *ctx);
  */
 int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
                    const BYTE *args, DWORD args_len);
+
+/**
+ * Return the most recent MODMGR_ERR_* value for diagnostics.
+ */
+DWORD modmgr_last_error(void);
 
 /**
  * Poll running modules: check status, drain completed output, collect

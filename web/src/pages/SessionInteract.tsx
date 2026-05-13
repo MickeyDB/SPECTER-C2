@@ -103,7 +103,7 @@ const KNOWN_COMMANDS = [
   'execute-assembly', 'inject', 'ps', 'ls', 'cd', 'pwd', 'cat', 'mkdir',
   'rm', 'cp', 'mv', 'whoami', 'env', 'netstat', 'ifconfig', 'arp',
   'screenshot', 'keylog', 'hashdump', 'mimikatz', 'token', 'pivot',
-  'socks', 'portfwd', 'exit', 'tasks', 'clear',
+  'module', 'module_load', 'load_module', 'socks', 'portfwd', 'exit', 'tasks', 'clear',
 ]
 
 const GLOBAL_HISTORY_KEY = 'specter-history-global'
@@ -518,7 +518,8 @@ function writeHelp(term: XTerminal, sessionId = '') {
     '  download <remote> [local]  — Download file from target',
     '',
     '\x1b[33mModules:\x1b[0m',
-    '  module_load <name> [args]  — Load and execute a module',
+    '  module <name> [args]       — Package, load, and execute a module',
+    '  module_load <name> [args]  — Alias for module',
     '  bof <name> [args]          — Load and execute a BOF',
     '  socks start [bind] [ms] [ws-url|via:<redirector>]',
     '                            — Start SOCKS relay; via can be a redirector name/id',
@@ -952,6 +953,43 @@ export function SessionInteract() {
         return
       }
 
+      if (command === 'module' || command === 'module_load' || command === 'load_module') {
+        const term = termRef.current
+        const [moduleName, ...moduleArgParts] = parts.slice(1)
+        if (!moduleName) {
+          if (term) {
+            writePersistedLine(term, id, '\x1b[31m[module]\x1b[0m usage: module <name> [args]')
+            writePrompt(term)
+          }
+          return
+        }
+
+        try {
+          const encoder = new TextEncoder()
+          const res = await specterClient.loadModule({
+            sessionId: id,
+            moduleName,
+            arguments: encoder.encode(moduleArgParts.join(' ')),
+          })
+          if (term) {
+            writePersistedLine(
+              term,
+              id,
+              `\x1b[32m[module]\x1b[0m queued ${moduleName} task=${res.taskId}${res.message ? ` ${res.message}` : ''}`
+            )
+            writePrompt(term)
+          }
+          fetchTasks()
+        } catch (err) {
+          if (term) {
+            const message = err instanceof Error ? err.message : 'module load failed'
+            writePersistedLine(term, id, `\x1b[31m[module]\x1b[0m ${message}`)
+            writePrompt(term)
+          }
+        }
+        return
+      }
+
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'command', command: trimmed, operator_id: '' }))
@@ -961,15 +999,6 @@ export function SessionInteract() {
       // Map commands to task types
       let taskType: string
       let taskArgs: string
-
-      if (command === 'module_load' || command === 'load_module') {
-        const term = termRef.current
-        if (term) {
-          writePersistedLine(term, id, '\x1b[31m[error]\x1b[0m module_load needs server-side packaging; use the Modules page or a module-specific command')
-          writePrompt(term)
-        }
-        return
-      }
 
       if (BUILTIN_TASKS.has(command)) {
         taskType = command

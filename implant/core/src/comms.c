@@ -562,6 +562,16 @@ static void parse_checkin_response(IMPLANT_CONTEXT *impl_ctx, COMMS_CONTEXT *com
     }
 }
 
+#ifdef TEST_BUILD
+void comms_test_parse_checkin_response(IMPLANT_CONTEXT *impl_ctx,
+                                       const BYTE *data,
+                                       DWORD len) {
+    parse_checkin_response(impl_ctx, NULL, data, len);
+}
+#endif
+
+#ifndef COMMS_TEST_PARSER_ONLY
+
 /* ------------------------------------------------------------------ */
 /*  API resolution                                                     */
 /* ------------------------------------------------------------------ */
@@ -2393,3 +2403,5 @@ COMMS_CONTEXT *comms_test_get_context(void) {
     return &g_comms_ctx;
 }
 #endif
+
+#endif /* COMMS_TEST_PARSER_ONLY */

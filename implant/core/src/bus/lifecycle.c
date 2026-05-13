@@ -40,6 +40,15 @@
 /* ------------------------------------------------------------------ */
 
 static MODULE_MANAGER g_modmgr;
+static DWORD g_modmgr_last_error = MODMGR_ERR_NONE;
+
+static void modmgr_set_error(DWORD code) {
+    g_modmgr_last_error = code;
+}
+
+DWORD modmgr_last_error(void) {
+    return g_modmgr_last_error;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Helper: find a free module slot                                     */
@@ -87,6 +96,7 @@ NTSTATUS modmgr_init(IMPLANT_CONTEXT *ctx) {
         return STATUS_INVALID_PARAMETER;
 
     spec_memset(&g_modmgr, 0, sizeof(MODULE_MANAGER));
+    modmgr_set_error(MODMGR_ERR_NONE);
     g_modmgr.implant_ctx = ctx;
     g_modmgr.next_module_id = 1;
     g_modmgr.initialized = TRUE;
@@ -105,25 +115,37 @@ NTSTATUS modmgr_init(IMPLANT_CONTEXT *ctx) {
 
 int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
                    const BYTE *args, DWORD args_len) {
-    if (!mgr || !mgr->initialized || !package || len == 0)
-        return -1;
+    modmgr_set_error(MODMGR_ERR_NONE);
 
-    if (mgr->active_count >= MODMGR_MAX_SLOTS)
+    if (!mgr || !mgr->initialized || !package || len == 0) {
+        modmgr_set_error(MODMGR_ERR_INVALID_INPUT);
         return -1;
+    }
+
+    if (mgr->active_count >= MODMGR_MAX_SLOTS) {
+        modmgr_set_error(MODMGR_ERR_FULL);
+        return -1;
+    }
 
     /* Find a free slot */
     int slot_idx = find_free_slot(mgr);
-    if (slot_idx < 0)
+    if (slot_idx < 0) {
+        modmgr_set_error(MODMGR_ERR_NO_SLOT);
         return -1;
+    }
 
     IMPLANT_CONTEXT *ctx = (IMPLANT_CONTEXT *)mgr->implant_ctx;
-    if (!ctx)
+    if (!ctx) {
+        modmgr_set_error(MODMGR_ERR_NO_CONTEXT);
         return -1;
+    }
 
     /* 1. Parse and verify the package header */
     const MODULE_PACKAGE_HDR *hdr = loader_parse_header(package, len);
-    if (!hdr)
+    if (!hdr) {
+        modmgr_set_error(MODMGR_ERR_BAD_HEADER);
         return -1;
+    }
 
 #ifndef TEST_BUILD
     /* Verify Ed25519 signature using teamserver's signing key from config. */
@@ -135,14 +157,18 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
         spec_memset(signing_key, 0, 32);
     }
 
-    if (!loader_verify_package(package, len, signing_key))
+    if (!loader_verify_package(package, len, signing_key)) {
+        modmgr_set_error(MODMGR_ERR_VERIFY_FAILED);
         return -1;
+    }
 #endif
 
     /* 2. Decrypt the package */
     BYTE *plaintext = (BYTE *)module_heap_alloc(MODULE_MAX_SIZE);
-    if (!plaintext)
+    if (!plaintext) {
+        modmgr_set_error(MODMGR_ERR_ALLOC_FAILED);
         return -1;
+    }
     DWORD plaintext_len = MODULE_MAX_SIZE;
 
 #ifndef TEST_BUILD
@@ -156,6 +182,7 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
     if (!loader_decrypt_package(package, len, implant_privkey, plaintext, &plaintext_len)) {
         spec_memset(plaintext, 0, MODULE_MAX_SIZE);
         module_heap_free(plaintext);
+        modmgr_set_error(MODMGR_ERR_DECRYPT_FAILED);
         return -1;
     }
 #else
@@ -164,6 +191,7 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
     plaintext_len = hdr->encrypted_size;
     if (plaintext_len > MODULE_MAX_SIZE) {
         module_heap_free(plaintext);
+        modmgr_set_error(MODMGR_ERR_ALLOC_FAILED);
         return -1;
     }
     spec_memcpy(plaintext, payload, plaintext_len);
@@ -184,6 +212,7 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
             spec_memset(plaintext, 0, plaintext_len);
             module_heap_free(plaintext);
             spec_memset(mod, 0, sizeof(LOADED_MODULE));
+            modmgr_set_error(MODMGR_ERR_ARGS_ALLOC);
             return -1;
         }
         spec_memcpy(mod->args, args, args_len);
@@ -212,6 +241,7 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
             module_heap_free(mod->args);
         }
         spec_memset(mod, 0, sizeof(LOADED_MODULE));
+        modmgr_set_error(MODMGR_ERR_LOAD_FAILED);
         return -1;
     }
 
@@ -241,6 +271,7 @@ int modmgr_execute(MODULE_MANAGER *mgr, const BYTE *package, DWORD len,
             module_heap_free(mod->args);
         }
         spec_memset(mod, 0, sizeof(LOADED_MODULE));
+        modmgr_set_error(MODMGR_ERR_GUARDIAN_FAILED);
         return -1;
     }
 

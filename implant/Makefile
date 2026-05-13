@@ -231,10 +231,13 @@ $(TEST_BIN_DIR)/test_sleep: $(TEST_DIR)/test_sleep.c $(SRC_DIR)/sleep.c $(SRC_DI
 $(TEST_BIN_DIR)/test_failover: $(TEST_DIR)/test_failover.c $(SRC_DIR)/comms.c $(SRC_DIR)/crypto.c $(SRC_DIR)/string.c $(SRC_DIR)/hash.c $(SRC_DIR)/profile.c $(SRC_DIR)/transform.c | $(TEST_BIN_DIR)
 	$(TEST_CC) $(TEST_CFLAGS) -Wno-unused-function -Wno-unused-variable -o $@ $^
 
+$(TEST_BIN_DIR)/test_checkin_response_parser: $(TEST_DIR)/test_checkin_response_parser.c $(SRC_DIR)/comms.c $(SRC_DIR)/string.c | $(TEST_BIN_DIR)
+	$(TEST_CC) $(TEST_CFLAGS) -DCOMMS_TEST_PARSER_ONLY -Wno-unused-function -Wno-unused-variable -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ $^
+
 $(TEST_BIN_DIR)/test_antianalysis: $(TEST_DIR)/test_antianalysis.c $(EVA_DIR)/antianalysis.c $(SRC_DIR)/string.c $(SRC_DIR)/hash.c | $(TEST_BIN_DIR)
 	$(TEST_CC) $(TEST_CFLAGS) -Wno-unused-function -o $@ $^
 
-test: $(TEST_BIN_DIR)/test_bus_api $(TEST_BIN_DIR)/test_ed25519 $(TEST_BIN_DIR)/test_coff_loader $(TEST_BIN_DIR)/test_lifecycle $(TEST_BIN_DIR)/test_profile $(TEST_BIN_DIR)/test_module_args $(TEST_BIN_DIR)/test_collect_safe_fail $(TEST_BIN_DIR)/test_socks5_safe_fail $(TEST_BIN_DIR)/test_exfil_safe_fail $(TEST_BIN_DIR)/test_token_safe_fail $(TEST_BIN_DIR)/test_inject_safe_fail $(TEST_BIN_DIR)/test_lateral_safe_fail $(TEST_BIN_DIR)/test_beacon_shim $(TEST_BIN_DIR)/test_extended_bof $(TEST_BIN_DIR)/test_channels $(TEST_BIN_DIR)/test_sleep $(TEST_BIN_DIR)/test_failover $(TEST_BIN_DIR)/test_antianalysis
+test: $(TEST_BIN_DIR)/test_bus_api $(TEST_BIN_DIR)/test_ed25519 $(TEST_BIN_DIR)/test_coff_loader $(TEST_BIN_DIR)/test_lifecycle $(TEST_BIN_DIR)/test_profile $(TEST_BIN_DIR)/test_module_args $(TEST_BIN_DIR)/test_collect_safe_fail $(TEST_BIN_DIR)/test_socks5_safe_fail $(TEST_BIN_DIR)/test_exfil_safe_fail $(TEST_BIN_DIR)/test_token_safe_fail $(TEST_BIN_DIR)/test_inject_safe_fail $(TEST_BIN_DIR)/test_lateral_safe_fail $(TEST_BIN_DIR)/test_beacon_shim $(TEST_BIN_DIR)/test_extended_bof $(TEST_BIN_DIR)/test_channels $(TEST_BIN_DIR)/test_sleep $(TEST_BIN_DIR)/test_failover $(TEST_BIN_DIR)/test_checkin_response_parser $(TEST_BIN_DIR)/test_antianalysis
 	@echo "=== Running Bus API Tests ==="
 	@$(TEST_BIN_DIR)/test_bus_api
 	@echo "=== Running Ed25519 Tests ==="
@@ -269,5 +272,7 @@ test: $(TEST_BIN_DIR)/test_bus_api $(TEST_BIN_DIR)/test_ed25519 $(TEST_BIN_DIR)/
 	@$(TEST_BIN_DIR)/test_sleep
 	@echo "=== Running Channel Failover Tests ==="
 	@$(TEST_BIN_DIR)/test_failover
+	@echo "=== Running Check-in Response Parser Tests ==="
+	@$(TEST_BIN_DIR)/test_checkin_response_parser
 	@echo "=== Running Anti-Analysis Tests ==="
 	@$(TEST_BIN_DIR)/test_antianalysis

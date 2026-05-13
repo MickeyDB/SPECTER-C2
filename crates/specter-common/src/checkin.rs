@@ -355,6 +355,61 @@ mod tlv_tests {
     }
 
     #[test]
+    fn test_binary_response_preserves_module_load_args_byte_for_byte() {
+        let mut module_args = Vec::new();
+        module_args.extend_from_slice(b"SPEC");
+        module_args.extend_from_slice(&1u32.to_le_bytes());
+        module_args.extend_from_slice(&0u32.to_le_bytes());
+        module_args.extend_from_slice(&[0x00, 0x7f, 0x80, 0xff, 0x41, 0x00, 0x42]);
+        module_args.push(0x00);
+        module_args.extend_from_slice(&2u32.to_le_bytes());
+        module_args.extend_from_slice(&0u32.to_le_bytes());
+        module_args.extend_from_slice(&6u32.to_le_bytes());
+        module_args.extend_from_slice(b"start\0");
+        module_args.extend_from_slice(&1u32.to_le_bytes());
+        module_args.extend_from_slice(&4u32.to_le_bytes());
+        module_args.extend_from_slice(&250u32.to_le_bytes());
+
+        let resp = CheckinResponse {
+            session_id: "module-session".to_string(),
+            tasks: vec![PendingTaskPayload {
+                task_id: "module-task-001".to_string(),
+                task_type: "module_load".to_string(),
+                arguments: module_args.clone(),
+            }],
+        };
+
+        let data = serialize_binary_response(&resp);
+        assert_eq!(data[0], TLV_VERSION);
+
+        let mut found_task = false;
+        tlv_iter(&data[1..], |tag, value| {
+            if tag != tlv_tags::TASK_BLOCK {
+                return;
+            }
+            found_task = true;
+
+            let mut task_id = Vec::new();
+            let mut task_type = Vec::new();
+            let mut task_args = Vec::new();
+            tlv_iter(value, |inner_tag, inner_value| match inner_tag {
+                tlv_tags::TASK_ID => task_id = inner_value.to_vec(),
+                tlv_tags::TASK_TYPE => task_type = inner_value.to_vec(),
+                tlv_tags::TASK_ARGS => task_args = inner_value.to_vec(),
+                _ => {}
+            })
+            .expect("task block should be valid nested TLV");
+
+            assert_eq!(task_id, b"module-task-001");
+            assert_eq!(task_type, b"module_load");
+            assert_eq!(task_args, module_args);
+        })
+        .expect("response body should be valid TLV");
+
+        assert!(found_task, "module_load task block should be present");
+    }
+
+    #[test]
     fn test_binary_response_multiple_tasks() {
         let resp = CheckinResponse {
             session_id: "sid".to_string(),
