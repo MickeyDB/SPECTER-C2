@@ -118,7 +118,7 @@ pub async fn run_server(cfg: ServerConfig) -> Result<(), Box<dyn std::error::Err
         Some(Arc::clone(&operation_log)),
         Some(Arc::clone(&socks_manager)),
     ));
-    let module_repository = Arc::new(ModuleRepository::new(pool.clone()));
+    let module_repository = Arc::new(ModuleRepository::init(pool.clone()).await?);
     let profile_store = Arc::new(ProfileStore::new(pool.clone()));
     let audit_log = Arc::new(AuditLog::new(pool.clone()));
     let webhook_manager = Arc::new(WebhookManager::new(pool.clone()));

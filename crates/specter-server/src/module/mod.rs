@@ -61,9 +61,57 @@ pub struct ModuleRepository {
 impl ModuleRepository {
     pub fn new(pool: SqlitePool) -> Self {
         // Generate a signing key pair for Ed25519.
-        // In production, this would be loaded from persistent storage.
         let signing_key = SigningKey::generate(&mut rand::thread_rng());
         Self { pool, signing_key }
+    }
+
+    pub async fn init(pool: SqlitePool) -> Result<Self, sqlx::Error> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS server_state (
+                key TEXT PRIMARY KEY,
+                value BLOB NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        let row = sqlx::query("SELECT value FROM server_state WHERE key = 'module_signing_key'")
+            .fetch_optional(&pool)
+            .await?;
+
+        if let Some(row) = row {
+            let bytes: Vec<u8> = row.get("value");
+            if bytes.len() == 32 {
+                let mut key_bytes = [0u8; 32];
+                key_bytes.copy_from_slice(&bytes);
+                let signing_key = SigningKey::from_bytes(&key_bytes);
+                tracing::info!("Loaded existing module signing key from database");
+                return Ok(Self { pool, signing_key });
+            }
+
+            tracing::warn!(
+                "Stored module signing key has invalid length {}; rotating key",
+                bytes.len()
+            );
+        }
+
+        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO server_state (key, value, updated_at)
+             VALUES ('module_signing_key', ?, ?)
+             ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at",
+        )
+        .bind(signing_key.to_bytes().as_slice())
+        .bind(now)
+        .execute(&pool)
+        .await?;
+        tracing::info!("Generated and persisted new module signing key");
+
+        Ok(Self { pool, signing_key })
     }
 
     /// Create with an explicit signing key (for deterministic testing).

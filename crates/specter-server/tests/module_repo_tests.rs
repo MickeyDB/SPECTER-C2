@@ -182,6 +182,17 @@ async fn signing_pubkey_matches_key() {
     assert_eq!(repo.signing_pubkey_bytes(), expected_pub);
 }
 
+#[tokio::test]
+async fn init_persists_signing_key_across_restarts() {
+    let pool = test_pool().await;
+    let first = ModuleRepository::init(pool.clone()).await.unwrap();
+    let first_pubkey = first.signing_pubkey_bytes();
+
+    let second = ModuleRepository::init(pool).await.unwrap();
+
+    assert_eq!(second.signing_pubkey_bytes(), first_pubkey);
+}
+
 // --- Package: wire format, encryption, signing ---
 
 #[tokio::test]

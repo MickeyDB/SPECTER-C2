@@ -178,6 +178,16 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 
     // CA key material — stores root CA cert + encrypted private key
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS server_state (
+            key TEXT PRIMARY KEY,
+            value BLOB NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS ca_state (
             id TEXT PRIMARY KEY DEFAULT 'root',
             ca_cert_pem TEXT NOT NULL,
