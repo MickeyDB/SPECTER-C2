@@ -1802,6 +1802,14 @@ impl SpecterService for SpecterGrpcService {
                         Status::invalid_argument(format!("Lab build option invalid: {e}"))
                     })?;
 
+                let template_summaries = self.payload_builder.template_summaries_for(fmt);
+                tracing::info!(
+                    build_id = %build_id,
+                    format = %fmt.as_str(),
+                    templates = ?template_summaries,
+                    "Payload builder template selection"
+                );
+
                 let result = self
                     .payload_builder
                     .build_with_evasion(

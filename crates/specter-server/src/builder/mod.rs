@@ -23,6 +23,7 @@ pub use yara::{scan_payload, YaraError, YaraMatch};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use x25519_dalek::PublicKey;
 
@@ -93,6 +94,10 @@ pub struct TemplateBlob {
     pub name: String,
     /// Output format this template supports.
     pub format: OutputFormat,
+    /// Path the template was loaded from.
+    pub source_path: PathBuf,
+    /// SHA-256 of the loaded bytes, used to catch stale in-memory templates.
+    pub sha256: String,
 }
 
 /// Configuration for payload builder initialization.
@@ -214,6 +219,55 @@ fn read_template_feature(path: &Path, key: &str) -> bool {
     text.lines().any(|line| line.trim() == format!("{key}=1"))
 }
 
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    hex::encode(digest)
+}
+
+impl TemplateBlob {
+    fn from_file(path: &Path, name: &str, format: OutputFormat) -> Result<Self, BuilderError> {
+        let data = std::fs::read(path)?;
+        let sha256 = sha256_hex(&data);
+        Ok(Self {
+            data,
+            name: name.to_string(),
+            format,
+            source_path: path.to_path_buf(),
+            sha256,
+        })
+    }
+
+    fn validate_fresh(&self) -> Result<(), BuilderError> {
+        let current = match std::fs::read(&self.source_path) {
+            Ok(current) => current,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let current_sha256 = sha256_hex(&current);
+        if current_sha256 != self.sha256 {
+            return Err(BuilderError::Config(format!(
+                "builder template '{}' is stale: loaded {} bytes sha256={}, disk now has {} bytes sha256={}; restart the teamserver after rebuilding implant artifacts",
+                self.name,
+                self.data.len(),
+                self.sha256,
+                current.len(),
+                current_sha256
+            )));
+        }
+        Ok(())
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "{}:{}:{} bytes sha256={}",
+            self.format.as_str(),
+            self.name,
+            self.data.len(),
+            self.sha256
+        )
+    }
+}
+
 impl PayloadBuilder {
     /// Initialize the payload builder with the given config.
     ///
@@ -291,16 +345,14 @@ impl PayloadBuilder {
         for (filename, format) in template_files {
             let path = self.template_dir.join(filename);
             if path.exists() {
-                let data = std::fs::read(&path)?;
-                tracing::info!("Loaded template '{}' ({} bytes)", filename, data.len());
-                self.templates.insert(
-                    *format,
-                    TemplateBlob {
-                        data,
-                        name: filename.to_string(),
-                        format: *format,
-                    },
+                let template = TemplateBlob::from_file(&path, filename, *format)?;
+                tracing::info!(
+                    "Loaded template '{}' ({} bytes, sha256={})",
+                    filename,
+                    template.data.len(),
+                    template.sha256
                 );
+                self.templates.insert(*format, template);
             }
         }
 
@@ -318,6 +370,31 @@ impl PayloadBuilder {
     /// Check if a particular output format is available (has a loaded template).
     pub fn has_format(&self, format: OutputFormat) -> bool {
         self.templates.contains_key(&format)
+    }
+
+    fn validate_template_freshness(&self, format: OutputFormat) -> Result<(), BuilderError> {
+        if let Some(template) = self.templates.get(&format) {
+            template.validate_fresh()?;
+        }
+        if format != OutputFormat::RawShellcode {
+            if let Some(pic_template) = self.templates.get(&OutputFormat::RawShellcode) {
+                pic_template.validate_fresh()?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn template_summaries_for(&self, format: OutputFormat) -> Vec<String> {
+        let mut summaries = Vec::new();
+        if let Some(template) = self.templates.get(&format) {
+            summaries.push(template.summary());
+        }
+        if format != OutputFormat::RawShellcode {
+            if let Some(pic_template) = self.templates.get(&OutputFormat::RawShellcode) {
+                summaries.push(pic_template.summary());
+            }
+        }
+        summaries
     }
 
     /// List available output formats.
@@ -397,6 +474,8 @@ impl PayloadBuilder {
         obfuscation_settings: &ObfuscationSettings,
         disable_profile: bool,
     ) -> Result<BuildResult, BuilderError> {
+        self.validate_template_freshness(format)?;
+
         // Get the PIC blob for key derivation (implant derives key from SHA256 of first 64 bytes)
         let pic_blob = self
             .templates
@@ -831,6 +910,36 @@ transform:
             result.payload[131],
         ]) as usize;
         assert_eq!(result.payload.len(), 128 + 4 + config_len);
+    }
+
+    #[test]
+    fn test_builder_rejects_stale_template() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("specter.bin"), vec![0x90; 128]).unwrap();
+
+        let config = BuilderConfig {
+            template_dir: dir.path().to_path_buf(),
+        };
+        let builder = builder_init(&config).unwrap();
+        std::fs::write(dir.path().join("specter.bin"), vec![0xCC; 128]).unwrap();
+
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+        let pubkey = PublicKey::from(&secret);
+
+        let err = builder
+            .build(
+                OutputFormat::RawShellcode,
+                &test_profile(),
+                &pubkey,
+                &test_channels(),
+                &SleepConfig::default(),
+                None,
+            )
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("builder template 'specter.bin' is stale"));
     }
 
     #[test]
