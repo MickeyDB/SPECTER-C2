@@ -137,17 +137,16 @@ async fn handle_socks_session(mut socket: WebSocket, state: HttpState, session_i
 
     tracing::info!("SOCKS interactive WebSocket attached for session {session_id}");
 
-    loop {
+    let close_reason = loop {
         tokio::select! {
             maybe_msg = socket.recv() => {
                 let Some(msg) = maybe_msg else {
-                    break;
+                    break "client disconnected".to_string();
                 };
                 let msg = match msg {
                     Ok(msg) => msg,
                     Err(e) => {
-                        tracing::debug!("SOCKS WebSocket recv error for {session_id}: {e}");
-                        break;
+                        break format!("recv error: {e}");
                     }
                 };
 
@@ -157,26 +156,37 @@ async fn handle_socks_session(mut socket: WebSocket, state: HttpState, session_i
                     }
                     Message::Ping(payload) => {
                         if socket.send(Message::Pong(payload)).await.is_err() {
-                            break;
+                            break "pong send failed".to_string();
                         }
                     }
-                    Message::Close(_) => break,
+                    Message::Close(frame) => {
+                        break match frame {
+                            Some(frame) => format!(
+                                "client close code={} reason={}",
+                                u16::from(frame.code),
+                                frame.reason
+                            ),
+                            None => "client close".to_string(),
+                        };
+                    }
                     _ => {}
                 }
             }
             outbound = outbound_rx.recv() => {
                 let Some(frame) = outbound else {
-                    break;
+                    break "relay outbound channel closed".to_string();
                 };
                 if socket.send(Message::Binary(frame)).await.is_err() {
-                    break;
+                    break "binary send failed".to_string();
                 }
             }
         }
-    }
+    };
 
     socks_manager.detach_interactive_channel(&session_id).await;
-    tracing::info!("SOCKS interactive WebSocket detached for session {session_id}");
+    tracing::info!(
+        "SOCKS interactive WebSocket detached for session {session_id}: {close_reason}"
+    );
 }
 
 async fn handle_operator_session(mut socket: WebSocket, state: HttpState, session_id: String) {
