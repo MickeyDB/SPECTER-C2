@@ -238,6 +238,8 @@ NTSTATUS bus_init(IMPLANT_CONTEXT *ctx);
 MODULE_BUS_API *bus_get_api(BUS_CONTEXT *bctx);
 BOOL output_write(OUTPUT_RING *ring, const BYTE *data, DWORD len, DWORD type);
 DWORD output_drain(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len);
+DWORD output_drain_one_typed(OUTPUT_RING *ring, BYTE *dest, DWORD dest_len,
+                             DWORD *type_out);
 void output_reset(OUTPUT_RING *ring);
 DWORD output_available(const OUTPUT_RING *ring);
 void bus_test_set_ring_key(OUTPUT_RING *ring, const BYTE key[32],
@@ -474,6 +476,56 @@ static void test_output_ring_multiple_writes(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Test: output ring typed one-by-one drain at unaligned offsets       */
+/* ------------------------------------------------------------------ */
+
+static void test_output_ring_typed_unaligned_writes(void) {
+    printf("\n--- output ring typed unaligned writes ---\n");
+
+    memset(&g_ctx, 0, sizeof(g_ctx));
+    bus_init(&g_ctx);
+    BUS_CONTEXT *bctx = (BUS_CONTEXT *)g_ctx.module_bus;
+    OUTPUT_RING *ring = &bctx->output_ring;
+
+    BYTE test_key[32], test_nonce[12];
+    memset(test_key, 0x42, 32);
+    memset(test_nonce, 0x24, 12);
+    bus_test_set_ring_key(ring, test_key, test_nonce);
+
+    const BYTE msg1[] = "short text";
+    const BYTE msg2[] = { 0x01, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x00,
+                          0x41, 0x42, 0x43, 0x44 };
+    const BYTE msg3[] = "error after binary";
+
+    check("typed write 1 succeeds",
+          output_write(ring, msg1, (DWORD)strlen((const char *)msg1), OUTPUT_TEXT));
+    check("typed write 2 succeeds",
+          output_write(ring, msg2, sizeof(msg2), OUTPUT_BINARY));
+    check("typed write 3 succeeds",
+          output_write(ring, msg3, (DWORD)strlen((const char *)msg3), OUTPUT_ERROR));
+
+    BYTE out[128];
+    DWORD typ = 0xFFFFFFFF;
+    DWORD n = output_drain_one_typed(ring, out, sizeof(out), &typ);
+    check("typed drain 1 length", n == (DWORD)strlen((const char *)msg1));
+    check("typed drain 1 type", typ == OUTPUT_TEXT);
+    check_bytes("typed drain 1 payload", out, msg1, n);
+
+    typ = 0xFFFFFFFF;
+    n = output_drain_one_typed(ring, out, sizeof(out), &typ);
+    check("typed drain 2 length", n == sizeof(msg2));
+    check("typed drain 2 type", typ == OUTPUT_BINARY);
+    check_bytes("typed drain 2 payload", out, msg2, n);
+
+    typ = 0xFFFFFFFF;
+    n = output_drain_one_typed(ring, out, sizeof(out), &typ);
+    check("typed drain 3 length", n == (DWORD)strlen((const char *)msg3));
+    check("typed drain 3 type", typ == OUTPUT_ERROR);
+    check_bytes("typed drain 3 payload", out, msg3, n);
+    check("ring empty after typed drain", output_available(ring) == 0);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Test: output ring buffer overflow protection                       */
 /* ------------------------------------------------------------------ */
 
@@ -631,6 +683,7 @@ int main(void) {
     test_bus_get_api_null();
     test_output_ring_roundtrip();
     test_output_ring_multiple_writes();
+    test_output_ring_typed_unaligned_writes();
     test_output_ring_overflow();
     test_output_write_edge_cases();
     test_output_drain_edge_cases();
