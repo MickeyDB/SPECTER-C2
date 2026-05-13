@@ -96,9 +96,21 @@ MOD_SRCS   = $(wildcard $(MOD_DIR)/*/$(notdir $(wildcard $(MOD_DIR)/*/*.c)))
 MOD_NAMES  = $(filter-out include,$(patsubst $(MOD_DIR)/%/,%,$(sort $(dir $(wildcard $(MOD_DIR)/*/*.c)))))
 MOD_BINS   = $(patsubst %,$(MOD_BUILD_DIR)/%.bin,$(MOD_NAMES))
 
-.PHONY: all clean size test modules modules-clean stubs stubs-clean pic-loader features
+.PHONY: all clean size test modules modules-clean stubs stubs-clean pic-loader features validate-profile-response-feature
 
-all: $(TARGET_BIN) features size
+all: validate-profile-response-feature $(TARGET_BIN) features size
+
+validate-profile-response-feature:
+	@if ! grep -q "resp_plain_cap = COMMS_RESPONSE_MAX_SIZE" $(SRC_DIR)/comms.c; then \
+		echo "error: comms.c is missing dynamic profile response buffer support"; \
+		echo "       expected resp_plain_cap = COMMS_RESPONSE_MAX_SIZE"; \
+		exit 1; \
+	fi
+	@if ! grep -q "resp_plain_cap);" $(SRC_DIR)/comms.c; then \
+		echo "error: comms.c is missing dynamic transform_recv output capacity"; \
+		echo "       expected transform_recv to use resp_plain_cap"; \
+		exit 1; \
+	fi
 
 features:
 	@mkdir -p $(BUILD_DIR)
