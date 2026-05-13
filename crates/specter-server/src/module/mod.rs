@@ -113,6 +113,47 @@ impl ModuleRepository {
         Ok(id)
     }
 
+    /// Insert or refresh a built-in module blob while preserving the stable
+    /// module ID for existing repositories.
+    async fn upsert_builtin_module(
+        &self,
+        name: &str,
+        version: &str,
+        module_type: ModuleType,
+        description: &str,
+        blob: &[u8],
+    ) -> Result<(), sqlx::Error> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().timestamp();
+        let signature = self.signing_key.sign(blob);
+
+        sqlx::query(
+            "INSERT INTO module_repository \
+             (module_id, name, version, module_type, description, blob, signature, \
+              created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(name, version) DO UPDATE SET \
+                module_type = excluded.module_type, \
+                description = excluded.description, \
+                blob = excluded.blob, \
+                signature = excluded.signature, \
+                updated_at = excluded.updated_at",
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(version)
+        .bind(module_type.as_str())
+        .bind(description)
+        .bind(blob)
+        .bind(signature.to_bytes().as_slice())
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Get module metadata by ID.
     pub async fn get_module(&self, module_id: &str) -> Result<Option<StoredModule>, sqlx::Error> {
         let row = sqlx::query(
@@ -310,19 +351,18 @@ impl ModuleRepository {
         ];
 
         for (name, version, module_type, description) in &defaults {
-            // Skip if already registered
-            if let Ok(Some(_)) = self.get_module_by_name(name).await {
-                continue;
-            }
-
             // Try to load the compiled .bin from the build output
             let bin_path = format!("implant/build/modules/{}.bin", name);
-            let blob = std::fs::read(&bin_path).unwrap_or_else(|_| {
-                // Use a stub blob so the module is still registered in the DB
-                vec![0xCC; 16]
-            });
+            let blob = match std::fs::read(&bin_path) {
+                Ok(blob) => blob,
+                Err(_) if self.get_module_by_name(name).await?.is_some() => continue,
+                Err(_) => {
+                    // Use a stub blob so the module is still registered in the DB
+                    vec![0xCC; 16]
+                }
+            };
 
-            self.store_module(name, version, *module_type, description, &blob)
+            self.upsert_builtin_module(name, version, *module_type, description, &blob)
                 .await?;
         }
 
